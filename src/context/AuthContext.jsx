@@ -5,7 +5,9 @@ const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
+  const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [profileLoading, setProfileLoading] = useState(false)
   const [authenticating, setAuthenticating] = useState(false)
 
   useEffect(() => {
@@ -34,7 +36,7 @@ export function AuthProvider({ children }) {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!ignore) {
         setUser(session?.user ?? null)
-    setLoading(false)
+        setLoading(false)
       }
     })
 
@@ -43,6 +45,40 @@ export function AuthProvider({ children }) {
       subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    let ignore = false
+
+    const loadProfile = async (authUserId) => {
+      setProfileLoading(true)
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('full_name, email, role')
+        .eq('auth_user_id', authUserId)
+        .maybeSingle()
+
+      if (!ignore) {
+        if (error) {
+          console.warn('Error loading user profile', error.message)
+          setProfile(null)
+        } else {
+          setProfile(data ?? null)
+        }
+        setProfileLoading(false)
+      }
+    }
+
+    if (user?.id) {
+      loadProfile(user.id)
+    } else {
+      setProfile(null)
+      setProfileLoading(false)
+    }
+
+    return () => {
+      ignore = true
+    }
+  }, [user?.id])
 
   const login = useCallback(async (email, password) => {
     setAuthenticating(true)
@@ -72,9 +108,11 @@ export function AuthProvider({ children }) {
 
   const value = {
     user,
+    profile,
     login,
     logout,
     loading,
+    profileLoading,
     authenticating
   }
 

@@ -10,8 +10,8 @@ import {
   mockSupplyBatches,
   mockSupplyDocuments,
   mockSupplyLines,
-  mockSupplyQualityChecks,
 } from '@/data/mockSupplies'
+import { SUPPLY_QUALITY_PARAMETERS } from '@/constants/supplyQuality'
 
 const STATUS_BADGES = {
   RECEIVED: 'bg-blue-100 text-blue-800',
@@ -57,7 +57,7 @@ function SupplyDetail() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const { supply, lines, batches } = useMemo(() => {
+  const { supply, lines, batches, qualityChecks, qualityItems, qualityParameters } = useMemo(() => {
     const passedSupply = location.state?.supply
     const fallbackSupply =
       mockSupplies.find((entry) => String(entry.id) === String(supplyId)) ?? null
@@ -65,7 +65,14 @@ function SupplyDetail() {
     const resolvedSupply = passedSupply ?? fallbackSupply
 
     if (!resolvedSupply) {
-      return { supply: null, lines: [], batches: [] }
+      return {
+        supply: null,
+        lines: [],
+        batches: [],
+        qualityChecks: [],
+        qualityItems: [],
+        qualityParameters: SUPPLY_QUALITY_PARAMETERS,
+      }
     }
 
     const passedLines = Array.isArray(location.state?.supplyLines)
@@ -76,6 +83,18 @@ function SupplyDetail() {
       ? location.state.supplyBatches
       : null
 
+    const passedQualityChecks = Array.isArray(location.state?.supplyQualityChecks)
+      ? location.state.supplyQualityChecks
+      : null
+
+    const passedQualityItems = Array.isArray(location.state?.supplyQualityItems)
+      ? location.state.supplyQualityItems
+      : null
+
+    const passedQualityParameters = Array.isArray(location.state?.qualityParameters)
+      ? location.state.qualityParameters
+      : null
+
     return {
       supply: resolvedSupply,
       lines:
@@ -84,6 +103,9 @@ function SupplyDetail() {
       batches:
         passedBatches ??
         mockSupplyBatches.filter((batch) => batch.supply_id === resolvedSupply.id),
+      qualityChecks: passedQualityChecks ?? [],
+      qualityItems: passedQualityItems ?? [],
+      qualityParameters: passedQualityParameters ?? SUPPLY_QUALITY_PARAMETERS,
     }
   }, [location.state, supplyId])
 
@@ -118,10 +140,79 @@ function SupplyDetail() {
     }, {})
   }, [documents])
 
-  const qualityChecks = useMemo(
-    () => mockSupplyQualityChecks.filter((check) => check.supply_id === supply?.id),
-    [supply?.id]
-  )
+  const qualityParameterLookup = useMemo(() => {
+    const lookup = new Map()
+
+    qualityParameters.forEach((parameter) => {
+      if (parameter?.id !== undefined && parameter?.id !== null) {
+        lookup.set(String(parameter.id), parameter)
+      }
+      if (parameter?.code) {
+        lookup.set(parameter.code, parameter)
+      }
+    })
+
+    SUPPLY_QUALITY_PARAMETERS.forEach((parameter) => {
+      if (!lookup.has(parameter.code)) {
+        lookup.set(parameter.code, parameter)
+      }
+    })
+
+    return lookup
+  }, [qualityParameters])
+
+  const qualityEvaluationRows = useMemo(() => {
+    if (!Array.isArray(qualityItems) || qualityItems.length === 0) {
+      return []
+    }
+
+    const orderMap = new Map(
+      SUPPLY_QUALITY_PARAMETERS.map((parameter, index) => [parameter.code, index]),
+    )
+
+    return qualityItems.map((item) => {
+      const metadata =
+        qualityParameterLookup.get(String(item.parameter_id)) ||
+        (item.parameter_code ? qualityParameterLookup.get(item.parameter_code) : undefined)
+
+      let scoreValue = item.score
+      if (typeof scoreValue !== 'number') {
+        const parsedScore = Number.parseInt(scoreValue ?? '', 10)
+        scoreValue = Number.isFinite(parsedScore) ? parsedScore : null
+      }
+
+      const code =
+        item.parameter_code ??
+        (metadata && 'code' in metadata ? metadata.code : undefined)
+
+      return {
+        id: item.id ?? `${item.quality_check_id ?? 'check'}-${item.parameter_id ?? item.parameter_code}`,
+        name: item.parameter_name ?? metadata?.name ?? 'Quality parameter',
+        specification: item.parameter_specification ?? metadata?.specification ?? '',
+        score: scoreValue,
+        remarks: item.remarks ?? '',
+        order:
+          code && orderMap.has(code) ? orderMap.get(code) : Number.MAX_SAFE_INTEGER,
+      }
+    })
+    .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER))
+  }, [qualityItems, qualityParameterLookup])
+
+  const primaryQualityCheck = useMemo(() => {
+    if (!Array.isArray(qualityChecks) || qualityChecks.length === 0) {
+      return null
+    }
+    return [...qualityChecks].sort((a, b) => {
+      const aTime = a?.evaluated_at ? new Date(a.evaluated_at).getTime() : 0
+      const bTime = b?.evaluated_at ? new Date(b.evaluated_at).getTime() : 0
+      return bTime - aTime
+    })[0]
+  }, [qualityChecks])
+
+  const overallScoreValue =
+    primaryQualityCheck?.overall_score !== undefined && primaryQualityCheck?.overall_score !== null
+      ? Number(primaryQualityCheck.overall_score)
+      : null
 
   const handleBack = () => {
     navigate('/supplies')
@@ -380,32 +471,58 @@ function SupplyDetail() {
               <CardDescription>Inspection results recorded during receiving.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {qualityChecks.length === 0 ? (
+              {qualityEvaluationRows.length === 0 ? (
                 <p className="text-sm text-text-dark/70">No quality checks recorded.</p>
               ) : (
-                qualityChecks.map((check) => (
-                  <div
-                    key={check.id}
-                    className="rounded-lg border border-olive-light/40 bg-olive-light/10 px-4 py-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <p className="font-medium text-text-dark">{check.check}</p>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                          check.status === 'PASS'
-                            ? 'bg-green-100 text-green-700'
-                            : check.status === 'FAIL'
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-yellow-100 text-yellow-700'
-                        }`}
-                      >
-                        {check.status}
+                <>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {Number.isFinite(overallScoreValue) ? (
+                      <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                        Overall score: {overallScoreValue.toFixed(2)}
                       </span>
-                    </div>
-                    <p className="text-sm text-text-dark/80">{check.result || 'Result pending'}</p>
-                    <p className="text-xs text-text-dark/60">{check.remarks || 'No remarks captured.'}</p>
+                    ) : null}
+                    {primaryQualityCheck?.evaluated_at ? (
+                      <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                        Evaluated {formatDateTime(primaryQualityCheck.evaluated_at)}
+                      </span>
+                    ) : null}
+                    <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                      Parameters reviewed: {qualityEvaluationRows.length}
+                    </span>
                   </div>
-                ))
+                  <div className="overflow-hidden rounded-xl border border-olive-light/40 bg-white">
+                    <table className="min-w-full divide-y divide-olive-light/30">
+                      <thead className="bg-olive-light/20">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Quality parameter
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Specification / Standard
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Score
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Remarks / Corrective actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-olive-light/30">
+                        {qualityEvaluationRows.map((row) => (
+                          <tr key={row.id} className="bg-white">
+                            <td className="px-4 py-3 text-sm font-medium text-text-dark">{row.name}</td>
+                            <td className="px-4 py-3 text-sm text-text-dark/80">{row.specification}</td>
+                            <td className="px-4 py-3 text-sm text-text-dark/80">{row.score ?? '—'}</td>
+                            <td className="px-4 py-3 text-sm text-text-dark/80">
+                              {row.remarks?.trim() ? row.remarks.trim() : 'No remarks'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

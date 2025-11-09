@@ -11,6 +11,8 @@ import { useAuth } from '@/context/AuthContext'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useSuppliers } from '@/hooks/useSuppliers'
+import QualityEvaluationTable from '@/components/supplies/QualityEvaluationTable'
+import { SUPPLY_QUALITY_PARAMETERS, SUPPLY_QUALITY_SCORE_LEGEND } from '@/constants/supplyQuality'
 
 function formatDateTime(value) {
   if (!value) {
@@ -84,6 +86,31 @@ function getMonthGrid(monthDate) {
 
 const WEEK_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
+const STEPS = ['Basic information', 'Supply batches', 'Quality evaluation', 'Review & submit']
+
+function createInitialQualityEntries() {
+  return SUPPLY_QUALITY_PARAMETERS.reduce((accumulator, parameter) => {
+    accumulator[parameter.code] = {
+      score: 3,
+      remarks: parameter.defaultRemarks ?? '',
+    }
+    return accumulator
+  }, {})
+}
+
+function calculateAverageScore(entries) {
+  const scores = Object.values(entries)
+    .map((entry) => Number(entry.score))
+    .filter((value) => Number.isFinite(value))
+
+  if (scores.length === 0) {
+    return null
+  }
+
+  const total = scores.reduce((sum, value) => sum + value, 0)
+  return Math.round((total / scores.length) * 100) / 100
+}
+
 function Supplies() {
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -91,9 +118,13 @@ function Supplies() {
   const [supplies, setSupplies] = useState([])
   const [supplyLines, setSupplyLines] = useState([])
   const [supplyBatches, setSupplyBatches] = useState([])
+  const [supplyQualityChecks, setSupplyQualityChecks] = useState([])
+  const [supplyQualityItems, setSupplyQualityItems] = useState([])
   const [warehouses, setWarehouses] = useState([])
   const [products, setProducts] = useState([])
   const [units, setUnits] = useState([])
+  const [qualityParameters, setQualityParameters] = useState(SUPPLY_QUALITY_PARAMETERS)
+  const [qualityEntries, setQualityEntries] = useState(() => createInitialQualityEntries())
   const [loadingData, setLoadingData] = useState(true)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
@@ -114,15 +145,46 @@ function Supplies() {
   const currentUserName = useMemo(() => user?.name || user?.email || '', [user])
   const [profileId, setProfileId] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [formData, setFormData] = useState({
-    doc_no: '',
-    warehouse_id: '',
-    supplier_id: '',
-    received_at: new Date().toISOString().slice(0, 16),
-    received_by: '',
-    doc_status: 'ACCEPTED',
-    supply_batches: [{ product_id: '', unit_id: '', qty: '' }],
-  })
+  const [currentStep, setCurrentStep] = useState(0)
+  const isLastStep = currentStep === STEPS.length - 1
+
+  const computeNextDocNumber = useCallback(() => {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    const datePart = `${year}${month}${day}`
+
+    let maxSequence = 0
+    supplies.forEach((supply) => {
+      const docNumber = supply?.doc_no ?? ''
+      const match = /^SUP-\d{8}-(\d+)$/.exec(docNumber)
+      if (match) {
+        const sequence = Number.parseInt(match[1], 10)
+        if (!Number.isNaN(sequence) && sequence > maxSequence) {
+          maxSequence = sequence
+        }
+      }
+    })
+
+    const nextSequence = maxSequence + 1
+    return `SUP-${datePart}-${String(nextSequence).padStart(3, '0')}`
+  }, [supplies])
+
+  const getInitialFormData = useCallback(
+    () => ({
+      doc_no: computeNextDocNumber(),
+      warehouse_id: '',
+      supplier_id: '',
+      received_at: new Date().toISOString().slice(0, 16),
+      received_by: currentUserName,
+      doc_status: 'ACCEPTED',
+      supply_batches: [{ product_id: '', unit_id: '', qty: '' }],
+    }),
+    [computeNextDocNumber, currentUserName],
+  )
+
+  const [formData, setFormData] = useState(() => getInitialFormData())
 
   const supplierList = useMemo(() => (Array.isArray(supplierOptions) ? supplierOptions : []), [supplierOptions])
 
@@ -135,6 +197,16 @@ function Supplies() {
     })
     return map
   }, [supplierList])
+
+  const qualityParameterIdMap = useMemo(() => {
+    const map = new Map()
+    qualityParameters.forEach((parameter) => {
+      if (parameter?.code) {
+        map.set(parameter.code, parameter.id ?? null)
+      }
+    })
+    return map
+  }, [qualityParameters])
 
   const warehouseLabelMap = useMemo(() => {
     const map = new Map()
@@ -177,6 +249,11 @@ function Supplies() {
       return matchesSearch && matchesFrom && matchesTo
     })
   }, [searchTerm, receivedFrom, receivedTo, displaySupplies])
+
+  const qualityAverageScore = useMemo(
+    () => calculateAverageScore(qualityEntries),
+    [qualityEntries],
+  )
 
   const totalAcceptedKg = useMemo(
     () =>
@@ -417,9 +494,96 @@ function Supplies() {
     return `LOT-${currentYear}-${String(nextBatchNumber + index).padStart(3, '0')}`
   }
 
-  const handleSubmit = async (event) => {
+  const handleQualityEntryChange = (code, entry) => {
+    const scoreValue =
+      typeof entry.score === 'number' && Number.isFinite(entry.score) ? entry.score : ''
+
+    setQualityEntries((previous) => ({
+      ...previous,
+      [code]: {
+        score: scoreValue,
+        remarks: entry.remarks,
+      },
+    }))
+  }
+
+  const validateStep = useCallback(
+    (step) => {
+      if (step === 0) {
+        if (
+          !formData.warehouse_id ||
+          !formData.supplier_id ||
+          !formData.received_at ||
+          !formData.doc_status
+        ) {
+          toast.error('Complete all required fields before continuing.')
+          return false
+        }
+      }
+
+      if (step === 1) {
+        if (formData.supply_batches.length === 0) {
+          toast.error('Add at least one batch to continue.')
+          return false
+        }
+
+        const hasIncompleteBatch = formData.supply_batches.some(
+          (batch) => !batch.product_id || !batch.unit_id || !batch.qty,
+        )
+
+        if (hasIncompleteBatch) {
+          toast.error('Complete all batch details before continuing.')
+          return false
+        }
+      }
+
+      if (step === 2) {
+        const missingScore = qualityParameters.find((parameter) => {
+          const entry = qualityEntries[parameter.code]
+          const score = Number(entry?.score)
+          return !Number.isFinite(score) || score < 1 || score > 3
+        })
+
+        if (missingScore) {
+          toast.error(`Provide a score for ${missingScore.name} before continuing.`)
+          return false
+        }
+      }
+
+      return true
+    },
+    [formData, qualityEntries, qualityParameters],
+  )
+
+  const handleStepBack = () => {
+    setCurrentStep((previous) => Math.max(previous - 1, 0))
+  }
+
+  const handleFormSubmit = async (event) => {
     event.preventDefault()
 
+    if (currentStep < STEPS.length - 1) {
+      if (validateStep(currentStep)) {
+        setCurrentStep((previous) => Math.min(previous + 1, STEPS.length - 1))
+      }
+      return
+    }
+
+    for (let step = 0; step < STEPS.length - 1; step += 1) {
+      if (!validateStep(step)) {
+        setCurrentStep(step)
+        return
+      }
+    }
+
+    if (!validateStep(currentStep)) {
+      return
+    }
+
+    await handleSaveSupply()
+  }
+
+  const handleSaveSupply = async () => {
     if (isSubmitting) {
       return
     }
@@ -431,16 +595,29 @@ function Supplies() {
     }
 
     const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
-    const receivedAtISO = new Date().toISOString()
-    const qualityStatus = formData.doc_status === 'ACCEPTED' ? 'PASSED' : 'PENDING'
+    const receivedAtISO = formData.received_at
+      ? new Date(formData.received_at).toISOString()
+      : new Date().toISOString()
+    const hasPendingQuality = Object.values(qualityEntries).some(
+      (entry) => Number(entry.score) < 3,
+    )
+    const overallScore = calculateAverageScore(qualityEntries)
+    const qualityStatus = hasPendingQuality ? 'PENDING' : 'PASSED'
+    const qualityCheckStatus = hasPendingQuality ? 'PENDING' : 'PASS'
 
     const validLines = formData.supply_batches.filter((batch) => batch.product_id && batch.unit_id && batch.qty)
+
+    if (validLines.length === 0) {
+      toast.error('Add at least one supply batch before saving.')
+      return
+    }
 
     setIsSubmitting(true)
     try {
       const { data: insertedSupply, error: insertSupplyError } = await supabase
         .from('supplies')
         .insert({
+          doc_no: formData.doc_no || computeNextDocNumber(),
           warehouse_id: warehouseId,
           supplier_id: supplierId,
           reference: null,
@@ -520,18 +697,99 @@ function Supplies() {
         }
       }
 
+      let parameterIdLookup = new Map(qualityParameterIdMap)
+
+      const parametersNeedingSeed = qualityParameters.filter(
+        (parameter) => !parameterIdLookup.get(parameter.code),
+      )
+
+      if (parametersNeedingSeed.length > 0) {
+        const { data: seededParameters, error: seedError } = await supabase
+          .from('quality_parameters')
+          .upsert(
+            parametersNeedingSeed.map((parameter) => ({
+              code: parameter.code,
+              name: parameter.name,
+              specification: parameter.specification,
+            })),
+            { onConflict: 'code' },
+          )
+          .select('id, code')
+
+        if (seedError) {
+          throw seedError
+        }
+
+        if (Array.isArray(seededParameters)) {
+          seededParameters.forEach((parameter) => {
+            parameterIdLookup.set(parameter.code, parameter.id)
+          })
+          setQualityParameters((previous) =>
+            previous.map((parameter) => ({
+              ...parameter,
+              id: parameterIdLookup.get(parameter.code) ?? parameter.id ?? null,
+            })),
+          )
+        }
+      }
+
+      const { data: qualityCheckRow, error: qualityCheckError } = await supabase
+        .from('supply_quality_checks')
+        .insert({
+          supply_id: newSupplyId,
+          check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
+          status: qualityCheckStatus,
+          result: qualityCheckStatus,
+          performed_by: profileId ?? null,
+          performed_at: new Date().toISOString(),
+          evaluated_at: new Date().toISOString(),
+          evaluated_by: profileId ?? null,
+          overall_score: overallScore,
+        })
+        .select('id')
+        .single()
+
+      if (qualityCheckError) {
+        throw qualityCheckError
+      }
+
+      const qualityItemsPayload = qualityParameters
+        .map((parameter) => {
+          const entry = qualityEntries[parameter.code]
+          if (!entry) {
+            return null
+          }
+
+          const parameterId = parameterIdLookup.get(parameter.code)
+          if (!parameterId) {
+            throw new Error(`Quality parameter ${parameter.code} is missing an id.`)
+          }
+
+          return {
+            quality_check_id: qualityCheckRow.id,
+            parameter_id: parameterId,
+            score: Number(entry.score),
+            remarks: entry.remarks?.trim() ? entry.remarks.trim() : null,
+          }
+        })
+        .filter(Boolean)
+
+      if (qualityItemsPayload.length > 0) {
+        const { error: qualityItemsError } = await supabase
+          .from('supply_quality_check_items')
+          .insert(qualityItemsPayload)
+        if (qualityItemsError) {
+          throw qualityItemsError
+        }
+      }
+
       toast.success('Supply captured successfully.')
       await loadSuppliesData()
-      setFormData({
-        doc_no: '',
-        warehouse_id: '',
-        supplier_id: '',
-        received_at: new Date().toISOString().slice(0, 16),
-        received_by: currentUserName,
-        doc_status: 'ACCEPTED',
-        supply_batches: [{ product_id: '', unit_id: '', qty: '' }],
-      })
+      setFormData(getInitialFormData())
+      setQualityEntries(createInitialQualityEntries())
+      setCurrentStep(0)
       setIsModalOpen(false)
+      window.location.reload()
     } catch (error) {
       console.error('Error capturing supply', error)
       toast.error(error.message ?? 'Unable to capture supply.')
@@ -542,28 +800,46 @@ function Supplies() {
 
   const closeModal = () => {
     setIsModalOpen(false)
-    setFormData({
-      doc_no: '',
-      warehouse_id: '',
-      supplier_id: '',
-      received_at: new Date().toISOString().slice(0, 16),
-      received_by: currentUserName,
-      doc_status: 'ACCEPTED',
-      supply_batches: [{ product_id: '', unit_id: '', qty: '' }],
-    })
+    setFormData(getInitialFormData())
+    setQualityEntries(createInitialQualityEntries())
+    setCurrentStep(0)
   }
 
   const handleRowClick = (supply) => {
     const lines = supplyLines.filter((line) => line.supply_id === supply.id)
     const batches = supplyBatches.filter((batch) => batch.supply_id === supply.id)
+    const qualityChecksForSupply = supplyQualityChecks.filter((check) => check.supply_id === supply.id)
+    const qualityItemsForSupply = supplyQualityItems
+      .filter((item) => qualityChecksForSupply.some((check) => check.id === item.quality_check_id))
+      .map((item) => {
+        const parameter = qualityParameters.find(
+          (entry) => entry.id && item.parameter_id && String(entry.id) === String(item.parameter_id),
+        )
+        return {
+          ...item,
+          parameter_code: parameter?.code ?? null,
+          parameter_name: parameter?.name ?? null,
+          parameter_specification: parameter?.specification ?? null,
+        }
+      })
     navigate(`/supplies/${supply.id}`, {
       state: {
         supply,
         supplyLines: lines,
         supplyBatches: batches,
+        supplyQualityChecks: qualityChecksForSupply,
+        supplyQualityItems: qualityItemsForSupply,
+        qualityParameters,
       },
     })
   }
+
+  const handleOpenModal = useCallback(() => {
+    setFormData(getInitialFormData())
+    setQualityEntries(createInitialQualityEntries())
+    setCurrentStep(0)
+    setIsModalOpen(true)
+  }, [getInitialFormData])
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40'
@@ -577,21 +853,73 @@ function Supplies() {
     }
   }, [suppliersError])
 
+  useEffect(() => {
+    setQualityEntries((previous) => {
+      const next = { ...previous }
+      let changed = false
+
+      qualityParameters.forEach((parameter) => {
+        if (!next[parameter.code]) {
+          next[parameter.code] = {
+            score: 3,
+            remarks: parameter.defaultRemarks ?? '',
+          }
+          changed = true
+        }
+      })
+
+      Object.keys(next).forEach((code) => {
+        if (!qualityParameters.some((parameter) => parameter.code === code)) {
+          delete next[code]
+          changed = true
+        }
+      })
+
+      return changed ? next : previous
+    })
+  }, [qualityParameters])
+
   const loadReferenceData = useCallback(async () => {
     try {
-      const [warehousesResponse, productsResponse, unitsResponse] = await Promise.all([
+      const [
+        warehousesResponse,
+        productsResponse,
+        unitsResponse,
+        qualityParametersResponse,
+      ] = await Promise.all([
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
         supabase.from('products').select('id, name, sku').order('name', { ascending: true }),
         supabase.from('units').select('id, name, symbol').order('name', { ascending: true }),
+        supabase.from('quality_parameters').select('id, code, name, specification').order('id', {
+          ascending: true,
+        }),
       ])
 
       if (warehousesResponse.error) throw warehousesResponse.error
       if (productsResponse.error) throw productsResponse.error
       if (unitsResponse.error) throw unitsResponse.error
+      if (qualityParametersResponse.error) throw qualityParametersResponse.error
 
       setWarehouses(warehousesResponse.data ?? [])
       setProducts(productsResponse.data ?? [])
       setUnits(unitsResponse.data ?? [])
+
+      const qualityData = qualityParametersResponse.data ?? []
+      if (qualityData.length > 0) {
+        const map = new Map(qualityData.map((entry) => [entry.code, entry]))
+        const merged = SUPPLY_QUALITY_PARAMETERS.map((parameter) => {
+          const match = map.get(parameter.code)
+          return {
+            ...parameter,
+            id: match?.id ?? parameter.id ?? null,
+            name: match?.name ?? parameter.name,
+            specification: match?.specification ?? parameter.specification,
+          }
+        })
+        setQualityParameters(merged)
+      } else {
+        setQualityParameters(SUPPLY_QUALITY_PARAMETERS)
+      }
     } catch (error) {
       console.error('Error loading reference data', error)
       toast.error('Unable to load reference data for supplies.')
@@ -601,22 +929,34 @@ function Supplies() {
   const loadSuppliesData = useCallback(async () => {
     setLoadingData(true)
     try {
-      const [suppliesResponse, linesResponse, batchesResponse] = await Promise.all([
+      const [
+        suppliesResponse,
+        linesResponse,
+        batchesResponse,
+        qualityChecksResponse,
+        qualityItemsResponse,
+      ] = await Promise.all([
         supabase
           .from('supplies')
           .select('*')
           .order('received_at', { ascending: false, nullsFirst: false }),
         supabase.from('supply_lines').select('*'),
         supabase.from('supply_batches').select('*'),
+        supabase.from('supply_quality_checks').select('*'),
+        supabase.from('supply_quality_check_items').select('*'),
       ])
 
       if (suppliesResponse.error) throw suppliesResponse.error
       if (linesResponse.error) throw linesResponse.error
       if (batchesResponse.error) throw batchesResponse.error
+      if (qualityChecksResponse.error) throw qualityChecksResponse.error
+      if (qualityItemsResponse.error) throw qualityItemsResponse.error
 
       setSupplies(suppliesResponse.data ?? [])
       setSupplyLines(linesResponse.data ?? [])
       setSupplyBatches(batchesResponse.data ?? [])
+      setSupplyQualityChecks(qualityChecksResponse.data ?? [])
+      setSupplyQualityItems(qualityItemsResponse.data ?? [])
     } catch (error) {
       console.error('Error loading supplies data', error)
       toast.error('Unable to load supplies from Supabase.')
@@ -664,7 +1004,7 @@ function Supplies() {
         title="Supplies"
         activeItem="supplies"
         actions={
-          <Button className="bg-olive hover:bg-olive-dark" onClick={() => setIsModalOpen(true)}>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
             <Plus className="mr-2 h-4 w-4" />
             New Supply
           </Button>
@@ -867,227 +1207,472 @@ function Supplies() {
               </Button>
             </div>
 
-            <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+            <div className="border-b border-olive-light/20 bg-olive-light/10 px-5 py-4 sm:px-6">
+              <ol className="flex flex-wrap gap-3">
+                {STEPS.map((label, index) => {
+                  const isActive = index === currentStep
+                  const isComplete = index < currentStep
+                  return (
+                    <li key={label} className="flex items-center gap-2 text-sm">
+                      <span
+                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${
+                          isActive
+                            ? 'bg-olive text-white'
+                            : isComplete
+                            ? 'bg-olive-light text-olive-dark'
+                            : 'border border-olive-light/60 bg-white text-text-dark/60'
+                        }`}
+                      >
+                        {index + 1}
+                      </span>
+                      <span
+                        className={`font-medium ${
+                          isActive ? 'text-text-dark' : 'text-text-dark/60'
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ol>
+            </div>
+
+            <form onSubmit={handleFormSubmit} className="flex-1 overflow-y-auto">
               <div className="space-y-6 p-5 sm:p-6 lg:p-8">
-                <section className={sectionCardClass}>
-                  <div className="mb-6 flex items-center justify-between gap-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-text-dark">Basic Information</h3>
-                      <p className="text-sm text-text-dark/70">
-                        Key details required before receiving the stock.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-12">
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="doc_no">Document number</Label>
-                      <Input
-                        id="doc_no"
-                        value={formData.doc_no || `SUP-2024-${String(supplies.length + 1).padStart(3, '0')}`}
-                        readOnly
-                        className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
-                      />
-                      <p className="text-xs text-text-dark/60">
-                        Automatically generated after saving.
-                      </p>
-                    </div>
-
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="warehouse_id">Warehouse *</Label>
-                      <select
-                        id="warehouse_id"
-                        required
-                        className={baseFieldClass}
-                        value={formData.warehouse_id}
-                        onChange={(event) => handleInputChange('warehouse_id', event.target.value)}
-                        disabled={isSubmitting || warehouses.length === 0}
-                      >
-                        <option value="">Select warehouse</option>
-                        {warehouses.map((warehouse) => (
-                          <option key={warehouse.id} value={warehouse.id}>
-                            {warehouse.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="supplier_id">Supplier *</Label>
-                      <select
-                        id="supplier_id"
-                        required
-                        className={baseFieldClass}
-                        value={formData.supplier_id}
-                        onChange={(event) => handleInputChange('supplier_id', event.target.value)}
-                        disabled={isSubmitting || suppliersLoading || supplierList.length === 0}
-                      >
-                        <option value="">Select supplier</option>
-                        {supplierList.map((supplier) => (
-                          <option key={supplier.id} value={supplier.id}>
-                            {supplier.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="received_at">Received at *</Label>
-                      <Input
-                        id="received_at"
-                        type="datetime-local"
-                        required
-                        value={formData.received_at}
-                        onChange={(event) => handleInputChange('received_at', event.target.value)}
-                        className={baseFieldClass}
-                      />
-                    </div>
-
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="received_by">Received by</Label>
-                      <Input
-                        id="received_by"
-                        value={formData.received_by}
-                        readOnly
-                        className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
-                        placeholder="Receiving operator"
-                      />
-                      <p className="text-xs text-text-dark/60">
-                        Automatically assigned from the logged-in user.
-                      </p>
-                    </div>
-
-                    <div className="space-y-2 lg:col-span-6">
-                      <Label htmlFor="doc_status">Status *</Label>
-                      <select
-                        id="doc_status"
-                        required
-                        className={baseFieldClass}
-                        value={formData.doc_status}
-                        onChange={(event) => handleInputChange('doc_status', event.target.value)}
-                      >
-                        {STATUS_OPTIONS.map((status) => (
-                          <option key={status} value={status}>
-                            {status}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </section>
-
-                <section className={sectionCardClass}>
-                  <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold text-text-dark">Supply batches</h3>
-                      <p className="text-sm text-text-dark/70">
-                        Add each batch received in this supply. Quantities should reflect actual intake.
-                      </p>
-                    </div>
-                    <Button type="button" variant="outline" size="sm" onClick={addSupplyBatch} className="border-olive-light/60" disabled={isSubmitting}>
-                      Add batch
-                    </Button>
-                  </div>
-
-                  <div className="space-y-6">
-                    {formData.supply_batches.map((batch, index) => (
-                      <div
-                        key={index}
-                        className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md"
-                      >
-                        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="text-xs font-semibold uppercase tracking-widest text-text-dark/50">
-                              Batch {index + 1}
-                            </p>
-                            <p className="mt-1 text-sm text-text-dark/70">
-                              Suggested lot
-                              <span className="ml-1 inline-flex items-center rounded-full bg-olive-light/30 px-2 py-0.5 text-xs font-medium text-text-dark">
-                                {generateLotNumberPreview(index)}
-                              </span>
-                            </p>
-                          </div>
-                          {formData.supply_batches.length > 1 && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="text-red-600 hover:text-red-700"
-                              onClick={() => removeSupplyBatch(index)}
-                              disabled={isSubmitting}
-                            >
-                              Remove
-                            </Button>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-                          <div className="space-y-2 lg:col-span-5">
-                            <Label htmlFor={`product_${index}`}>Product *</Label>
-                            <select
-                              id={`product_${index}`}
-                              required
-                              className={baseFieldClass}
-                              value={batch.product_id}
-                              onChange={(event) => handleSupplyBatchChange(index, 'product_id', event.target.value)}
-                              disabled={isSubmitting || products.length === 0}
-                            >
-                              <option value="">Select product</option>
-                              {products.map((product) => (
-                                <option key={product.id} value={product.id}>
-                                  {product.name}
-                                  {product.sku ? ` (${product.sku})` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-2 lg:col-span-4">
-                            <Label htmlFor={`unit_${index}`}>Unit *</Label>
-                            <select
-                              id={`unit_${index}`}
-                              required
-                              className={baseFieldClass}
-                              value={batch.unit_id}
-                              onChange={(event) => handleSupplyBatchChange(index, 'unit_id', event.target.value)}
-                              disabled={isSubmitting || units.length === 0}
-                            >
-                              <option value="">Select unit</option>
-                              {units.map((unit) => (
-                                <option key={unit.id} value={unit.id}>
-                                  {unit.name}
-                                  {unit.symbol ? ` (${unit.symbol})` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-2 lg:col-span-3">
-                            <Label htmlFor={`qty_${index}`}>Quantity *</Label>
-                            <Input
-                              id={`qty_${index}`}
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              required
-                              value={batch.qty}
-                              onChange={(event) => handleSupplyBatchChange(index, 'qty', event.target.value)}
-                              placeholder="e.g. 120"
-                              className={baseFieldClass}
-                            />
-                          </div>
-                        </div>
+                {currentStep === 0 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Basic Information</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Key details required before receiving the stock.
+                        </p>
                       </div>
-                    ))}
-                  </div>
-                </section>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-12">
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="doc_no">Document number</Label>
+                        <Input
+                          id="doc_no"
+                          value={formData.doc_no}
+                          readOnly
+                          className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
+                        />
+                        <p className="text-xs text-text-dark/60">Automatically generated after saving.</p>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="warehouse_id">Warehouse *</Label>
+                        <select
+                          id="warehouse_id"
+                          required
+                          className={baseFieldClass}
+                          value={formData.warehouse_id}
+                          onChange={(event) => handleInputChange('warehouse_id', event.target.value)}
+                          disabled={isSubmitting || warehouses.length === 0}
+                        >
+                          <option value="">Select warehouse</option>
+                          {warehouses.map((warehouse) => (
+                            <option key={warehouse.id} value={warehouse.id}>
+                              {warehouse.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="supplier_id">Supplier *</Label>
+                        <select
+                          id="supplier_id"
+                          required
+                          className={baseFieldClass}
+                          value={formData.supplier_id}
+                          onChange={(event) => handleInputChange('supplier_id', event.target.value)}
+                          disabled={isSubmitting || suppliersLoading || supplierList.length === 0}
+                        >
+                          <option value="">Select supplier</option>
+                          {supplierList.map((supplier) => (
+                            <option key={supplier.id} value={supplier.id}>
+                              {supplier.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="received_at">Received at *</Label>
+                        <Input
+                          id="received_at"
+                          type="datetime-local"
+                          required
+                          value={formData.received_at}
+                          onChange={(event) => handleInputChange('received_at', event.target.value)}
+                          className={baseFieldClass}
+                        />
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="received_by">Received by</Label>
+                        <Input
+                          id="received_by"
+                          value={formData.received_by}
+                          readOnly
+                          className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
+                          placeholder="Receiving operator"
+                        />
+                        <p className="text-xs text-text-dark/60">
+                          Automatically assigned from the logged-in user.
+                        </p>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="doc_status">Status *</Label>
+                        <select
+                          id="doc_status"
+                          required
+                          className={baseFieldClass}
+                          value={formData.doc_status}
+                          onChange={(event) => handleInputChange('doc_status', event.target.value)}
+                        >
+                          {STATUS_OPTIONS.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 1 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Supply batches</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Add each batch received in this supply. Quantities should reflect actual intake.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={addSupplyBatch}
+                        className="border-olive-light/60"
+                        disabled={isSubmitting}
+                      >
+                        Add batch
+                      </Button>
+                    </div>
+
+                    <div className="space-y-6">
+                      {formData.supply_batches.map((batch, index) => (
+                        <div
+                          key={index}
+                          className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md"
+                        >
+                          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-widest text-text-dark/50">
+                                Batch {index + 1}
+                              </p>
+                              <p className="mt-1 text-sm text-text-dark/70">
+                                Suggested lot
+                                <span className="ml-1 inline-flex items-center rounded-full bg-olive-light/30 px-2 py-0.5 text-xs font-medium text-text-dark">
+                                  {generateLotNumberPreview(index)}
+                                </span>
+                              </p>
+                            </div>
+                            {formData.supply_batches.length > 1 && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700"
+                                onClick={() => removeSupplyBatch(index)}
+                                disabled={isSubmitting}
+                              >
+                                Remove
+                              </Button>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+                            <div className="space-y-2 lg:col-span-5">
+                              <Label htmlFor={`product_${index}`}>Product *</Label>
+                              <select
+                                id={`product_${index}`}
+                                required
+                                className={baseFieldClass}
+                                value={batch.product_id}
+                                onChange={(event) =>
+                                  handleSupplyBatchChange(index, 'product_id', event.target.value)
+                                }
+                                disabled={isSubmitting || products.length === 0}
+                              >
+                                <option value="">Select product</option>
+                                {products.map((product) => (
+                                  <option key={product.id} value={product.id}>
+                                    {product.name}
+                                    {product.sku ? ` (${product.sku})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-2 lg:col-span-4">
+                              <Label htmlFor={`unit_${index}`}>Unit *</Label>
+                              <select
+                                id={`unit_${index}`}
+                                required
+                                className={baseFieldClass}
+                                value={batch.unit_id}
+                                onChange={(event) =>
+                                  handleSupplyBatchChange(index, 'unit_id', event.target.value)
+                                }
+                                disabled={isSubmitting || units.length === 0}
+                              >
+                                <option value="">Select unit</option>
+                                {units.map((unit) => (
+                                  <option key={unit.id} value={unit.id}>
+                                    {unit.name}
+                                    {unit.symbol ? ` (${unit.symbol})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-2 lg:col-span-3">
+                              <Label htmlFor={`qty_${index}`}>Quantity *</Label>
+                              <Input
+                                id={`qty_${index}`}
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                required
+                                value={batch.qty}
+                                onChange={(event) =>
+                                  handleSupplyBatchChange(index, 'qty', event.target.value)
+                                }
+                                placeholder="e.g. 120"
+                                className={baseFieldClass}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 2 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Quality evaluation</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Score each parameter and capture remarks for transparency.
+                        </p>
+                      </div>
+                    </div>
+
+                    <QualityEvaluationTable
+                      parameters={qualityParameters}
+                      entries={qualityEntries}
+                      legend={SUPPLY_QUALITY_SCORE_LEGEND}
+                      onEntryChange={handleQualityEntryChange}
+                    />
+                  </section>
+                )}
+
+                {currentStep === 3 && (
+                  <section className="space-y-6">
+                    <div className={sectionCardClass}>
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-text-dark">Review basic details</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Confirm the core information before submission.
+                        </p>
+                      </div>
+                      <dl className="grid gap-4 sm:grid-cols-2">
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Document number
+                          </dt>
+                          <dd className="text-sm font-medium text-text-dark">{formData.doc_no}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Warehouse
+                          </dt>
+                          <dd className="text-sm font-medium text-text-dark">
+                            {warehouseLabelMap.get(parseInt(formData.warehouse_id, 10)) || 'Not set'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Supplier
+                          </dt>
+                          <dd className="text-sm font-medium text-text-dark">
+                            {supplierLabelMap.get(parseInt(formData.supplier_id, 10)) || 'Not set'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Received at
+                          </dt>
+                          <dd className="text-sm font-medium text-text-dark">
+                            {formatDateTime(formData.received_at)}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                            Status
+                          </dt>
+                          <dd className="text-sm font-medium text-text-dark">{formData.doc_status}</dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    <div className={sectionCardClass}>
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-text-dark">Review batches</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Ensure quantities and products are captured correctly.
+                        </p>
+                      </div>
+                      <div className="overflow-hidden rounded-xl border border-olive-light/40 bg-white">
+                        <table className="min-w-full divide-y divide-olive-light/30">
+                          <thead className="bg-olive-light/20">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Batch
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Product
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Unit
+                              </th>
+                              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Quantity
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-olive-light/30">
+                            {formData.supply_batches.map((batch, index) => {
+                              const product = products.find(
+                                (item) => String(item.id) === String(batch.product_id),
+                              )
+                              const unit = units.find((item) => String(item.id) === String(batch.unit_id))
+                              return (
+                                <tr key={`review-batch-${index}`} className="bg-white">
+                                  <td className="px-4 py-3 text-sm font-medium text-text-dark">
+                                    Batch {index + 1}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-text-dark/80">
+                                    {product ? product.name : 'Not set'}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-text-dark/80">
+                                    {unit ? unit.name : 'Not set'}
+                                  </td>
+                                  <td className="px-4 py-3 text-right text-sm font-medium text-text-dark">
+                                    {batch.qty || '0'}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className={sectionCardClass}>
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-text-dark">Review quality evaluation</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Confirm recorded scores before submitting the supply.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                          Average score: {qualityAverageScore ?? '—'}
+                        </span>
+                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                          Entries: {qualityParameters.length}
+                        </span>
+                      </div>
+                      <div className="mt-4 overflow-hidden rounded-xl border border-olive-light/40 bg-white">
+                        <table className="min-w-full divide-y divide-olive-light/30">
+                          <thead className="bg-olive-light/20">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Parameter
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Score
+                              </th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                                Remarks
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-olive-light/30">
+                            {qualityParameters.map((parameter) => {
+                              const entry = qualityEntries[parameter.code]
+                              return (
+                                <tr key={`review-quality-${parameter.code}`} className="bg-white">
+                                  <td className="px-4 py-3 text-sm font-medium text-text-dark">
+                                    {parameter.name}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-text-dark/80">
+                                    {entry?.score ?? '—'}
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-text-dark/80">
+                                    {entry?.remarks?.trim() ? entry.remarks.trim() : 'No remarks'}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </section>
+                )}
               </div>
 
-              <div className="flex flex-col gap-3 border-t border-olive-light/30 bg-olive-light/20 p-5 sm:flex-row sm:items-center sm:justify-end sm:gap-4 sm:p-6">
-                <Button type="button" variant="outline" onClick={closeModal} className="border-olive-light/60" disabled={isSubmitting}>
+              <div className="flex flex-col gap-3 border-t border-olive-light/30 bg-olive-light/20 p-5 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:p-6">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeModal}
+                  className="border-olive-light/60"
+                  disabled={isSubmitting}
+                >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                  {isSubmitting ? 'Saving…' : 'Save Supply'}
-                </Button>
+                <div className="flex items-center gap-2">
+                  {currentStep > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleStepBack}
+                      className="border-olive-light/60"
+                      disabled={isSubmitting}
+                    >
+                      Back
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    className="bg-olive hover:bg-olive-dark disabled:cursor-not-allowed disabled:bg-olive-light/60"
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? 'Saving…' : isLastStep ? 'Submit Supply' : 'Next'}
+                  </Button>
+                </div>
               </div>
             </form>
           </div>
