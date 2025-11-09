@@ -1,0 +1,1395 @@
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Plus, Edit, Trash2, X } from 'lucide-react'
+import PageLayout from '@/components/layout/PageLayout'
+import ResponsiveTable from '@/components/ResponsiveTable'
+import { toast } from 'sonner'
+import { useSuppliers } from '@/hooks/useSuppliers'
+import { supabase } from '@/lib/supabaseClient'
+import { useAuth } from '@/context/AuthContext'
+
+const createUniqueId = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
+
+const createDocumentTypeEntry = () => ({
+  clientId: createUniqueId('doc'),
+  type: '',
+  files: [],
+})
+
+const createCertificateTypeEntry = () => ({
+  clientId: createUniqueId('cert'),
+  type: '',
+  files: [],
+})
+
+const createEmptyFormErrors = () => ({
+  fields: {},
+  documents: {},
+  certificates: {},
+  proof_of_residence: null,
+})
+
+const hasValidationErrors = (errors) =>
+  Object.keys(errors.fields).length > 0 ||
+  Object.keys(errors.documents).length > 0 ||
+  Object.keys(errors.certificates).length > 0 ||
+  Boolean(errors.proof_of_residence)
+
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const isValidEmail = (value) => emailPattern.test(value)
+
+const requiredText = (value) => value?.trim() ?? ''
+
+const optionalText = (value) => {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+const optionalInteger = (value) => {
+  const trimmed = value?.toString().trim()
+  if (!trimmed) {
+    return null
+  }
+  const parsed = Number.parseInt(trimmed, 10)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+const formatPreviewFileSize = (size) => {
+  if (typeof size !== 'number') {
+    return null
+  }
+  if (size < 1024) {
+    return `${size} B`
+  }
+  if (size < 1024 * 1024) {
+    return `${Math.max(1, Math.round(size / 1024))} KB`
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const createDefaultSupplier = () => ({
+  name: '',
+  supplier_type: 'NUT',
+  phone: '',
+  email: '',
+  country: 'South Africa',
+  address: '',
+  is_halal_certified: false,
+  primary_contact_name: '',
+  primary_contact_email: '',
+  primary_contact_phone: '',
+  supplier_age: '',
+  gender: '',
+  number_of_employees: '',
+  number_of_dependants: '',
+  banking_details: '',
+  proof_of_residence: [],
+  documents: [createDocumentTypeEntry()],
+  certificates: [createCertificateTypeEntry()],
+})
+
+const documentTypeOptions = [
+  { value: '', label: 'Select a type' },
+  { value: 'REGISTRATION', label: 'Registration' },
+  { value: 'COMPLIANCE', label: 'Compliance' },
+  { value: 'CONTRACT', label: 'Contract' },
+  { value: 'OTHER', label: 'Other' },
+]
+
+const certificateTypeOptions = [
+  { value: '', label: 'Select a type' },
+  { value: 'HALAL', label: 'Halal Certificate' },
+  { value: 'ISO9001', label: 'ISO 9001' },
+  { value: 'ISO22000', label: 'ISO 22000' },
+  { value: 'KOSHER', label: 'Kosher Certificate' },
+  { value: 'OTHER', label: 'Other' },
+]
+
+const SUPPLIER_FORM_STEPS = [
+  {
+    id: 'basic',
+    title: 'Basic Information',
+    description: 'Capture the supplier profile and high-level details.',
+    fieldKeys: ['name', 'supplier_type', 'country', 'phone', 'email', 'address'],
+  },
+  {
+    id: 'additional',
+    title: 'Additional Details',
+    description: 'Add contact people and demographics.',
+    fieldKeys: [
+      'primary_contact_name',
+      'primary_contact_phone',
+      'primary_contact_email',
+      'supplier_age',
+      'gender',
+      'number_of_employees',
+      'number_of_dependants',
+      'banking_details',
+    ],
+    includeProofOfResidence: true,
+  },
+  {
+    id: 'documents',
+    title: 'Documents',
+    description: 'Upload key documents and certifications.',
+    fieldKeys: [],
+    includeDocuments: true,
+    includeCertificates: true,
+  },
+]
+
+function Suppliers() {
+  const { suppliers, setSuppliers, loading: loadingSuppliers, error: suppliersError, refresh } = useSuppliers()
+  const { user } = useAuth()
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [formData, setFormData] = useState(createDefaultSupplier())
+  const [formErrors, setFormErrors] = useState(createEmptyFormErrors())
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [deletingSupplierId, setDeletingSupplierId] = useState(null)
+  const [profileId, setProfileId] = useState(null)
+  const [activeStep, setActiveStep] = useState(0)
+  const totalSteps = SUPPLIER_FORM_STEPS.length
+  const currentStepIndex = Math.min(activeStep, totalSteps - 1)
+  const currentStep = SUPPLIER_FORM_STEPS[currentStepIndex]
+  const isLastStep = currentStepIndex === totalSteps - 1
+  const isFirstStep = currentStepIndex === 0
+  const navigate = useNavigate()
+
+  const supplierTypeOptions = [
+    { id: 1, label: 'Nut Supplier', value: 'NUT' },
+    { id: 2, label: 'Operational Supplier', value: 'OPERATIONAL' },
+  ]
+
+  const genderOptions = [
+    { value: '', label: 'Select gender' },
+    { value: 'MALE', label: 'Male' },
+    { value: 'FEMALE', label: 'Female' },
+  ]
+
+  useEffect(() => {
+    if (suppliersError) {
+      toast.error(suppliersError.message ?? 'Unable to load suppliers from Supabase.')
+    }
+  }, [suppliersError])
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!user?.id) {
+        setProfileId(null)
+        return
+      }
+
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle()
+
+      if (error) {
+        console.warn('Unable to load user profile id', error)
+        setProfileId(null)
+        return
+      }
+
+      setProfileId(data?.id ?? null)
+    }
+
+    loadProfile()
+  }, [user?.id])
+
+  const resetFormState = () => {
+    setFormData(createDefaultSupplier())
+    setFormErrors(createEmptyFormErrors())
+    setIsSubmitting(false)
+    setActiveStep(0)
+  }
+
+  const filterErrorsForStep = (errors, step) => {
+    if (!errors) {
+      return null
+    }
+
+    const filtered = createEmptyFormErrors()
+
+    step.fieldKeys?.forEach((field) => {
+      if (errors.fields[field]) {
+        filtered.fields[field] = errors.fields[field]
+      }
+    })
+
+    if (step.includeDocuments) {
+      filtered.documents = errors.documents
+    }
+
+    if (step.includeCertificates) {
+      filtered.certificates = errors.certificates
+    }
+    if (step.includeProofOfResidence) {
+      filtered.proof_of_residence = errors.proof_of_residence
+    }
+
+    return hasValidationErrors(filtered) ? filtered : null
+  }
+
+  const handleSupplierClick = (supplier) => {
+    navigate(`/suppliers-customers/suppliers/${supplier.id}`)
+  }
+
+  const handleOpenModal = () => {
+    resetFormState()
+    setIsModalOpen(true)
+  }
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false)
+    resetFormState()
+  }
+
+  const handleEditSupplier = (supplier) => {
+    if (!supplier?.id) return
+    navigate(`/suppliers-customers/suppliers/${supplier.id}/edit`)
+  }
+
+  const handleDeleteSupplier = async (supplier) => {
+    if (!supplier?.id) return
+
+    const confirmed = window.confirm(
+      `Delete supplier "${supplier.name}"? This will remove their profile and associated documents.`
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setDeletingSupplierId(supplier.id)
+    try {
+      const { error: docsError } = await supabase
+        .from('documents')
+        .delete()
+        .eq('owner_type', 'supplier')
+        .eq('owner_id', supplier.id)
+
+      if (docsError) {
+        console.warn('Failed to delete supplier documents', docsError)
+      }
+
+      const { error: deleteError } = await supabase.from('suppliers').delete().eq('id', supplier.id)
+      if (deleteError) {
+        throw deleteError
+      }
+
+      setSuppliers((prev = []) => prev.filter((item) => item.id !== supplier.id))
+      toast.success(`Supplier "${supplier.name}" removed`)
+    } catch (error) {
+      console.error('Error deleting supplier', error)
+      toast.error(error.message ?? 'Unable to delete supplier.')
+    } finally {
+      setDeletingSupplierId(null)
+    }
+  }
+
+  const clearFieldError = (field) => {
+    setFormErrors((prev) => {
+      if (!prev.fields[field]) {
+        return prev
+      }
+      const nextFields = { ...prev.fields }
+      delete nextFields[field]
+      return { ...prev, fields: nextFields }
+    })
+  }
+
+  const clearDocumentError = (clientId) => {
+    setFormErrors((prev) => {
+      if (!prev.documents[clientId]) {
+        return prev
+      }
+      const nextDocuments = { ...prev.documents }
+      delete nextDocuments[clientId]
+      return { ...prev, documents: nextDocuments }
+    })
+  }
+
+  const clearCertificateError = (clientId) => {
+    setFormErrors((prev) => {
+      if (!prev.certificates[clientId]) {
+        return prev
+      }
+      const nextCertificates = { ...prev.certificates }
+      delete nextCertificates[clientId]
+      return { ...prev, certificates: nextCertificates }
+    })
+  }
+
+  const handleChange = (event) => {
+    const { name, value, type, checked } = event.target
+    const nextValue = type === 'checkbox' ? checked : value
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: nextValue,
+    }))
+    clearFieldError(name)
+  }
+
+  const handleSupplierTypeChange = (event) => {
+    const { value } = event.target
+    setFormData((prev) => ({
+      ...prev,
+      supplier_type: value
+    }))
+  }
+
+  const handleDocumentTypeChange = (clientId, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      documents: prev.documents.map((entry) =>
+        entry.clientId === clientId ? { ...entry, type: value } : entry
+      ),
+    }))
+    clearDocumentError(clientId)
+  }
+
+  const handleDocumentFilesChange = (clientId, fileList) => {
+    const files = Array.from(fileList ?? [])
+    setFormData((prev) => ({
+      ...prev,
+      documents: prev.documents.map((entry) =>
+        entry.clientId === clientId ? { ...entry, files } : entry
+      ),
+    }))
+    clearDocumentError(clientId)
+  }
+
+  const handleAddDocumentType = () => {
+    setFormData((prev) => ({
+      ...prev,
+      documents: [...prev.documents, createDocumentTypeEntry()],
+    }))
+  }
+
+  const handleRemoveDocumentType = (clientId) => {
+    setFormData((prev) => {
+      const remaining = prev.documents.filter((entry) => entry.clientId !== clientId)
+      return {
+        ...prev,
+        documents: remaining.length > 0 ? remaining : [createDocumentTypeEntry()],
+      }
+    })
+    clearDocumentError(clientId)
+  }
+
+  const handleCertificateTypeChange = (clientId, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      certificates: prev.certificates.map((entry) =>
+        entry.clientId === clientId ? { ...entry, type: value } : entry
+      ),
+    }))
+    clearCertificateError(clientId)
+  }
+
+  const handleCertificateFilesChange = (clientId, fileList) => {
+    const files = Array.from(fileList ?? [])
+    setFormData((prev) => ({
+      ...prev,
+      certificates: prev.certificates.map((entry) =>
+        entry.clientId === clientId ? { ...entry, files } : entry
+      ),
+    }))
+    clearCertificateError(clientId)
+  }
+
+  const clearProofOfResidenceError = () => {
+    setFormErrors((prev) => ({
+      ...prev,
+      proof_of_residence: null,
+    }))
+  }
+
+  const handleProofOfResidenceChange = (event) => {
+    const files = Array.from(event.target.files ?? [])
+    setFormData((prev) => ({
+      ...prev,
+      proof_of_residence: files.slice(0, 1),
+    }))
+    clearProofOfResidenceError()
+  }
+
+  const removeProofOfResidence = () => {
+    setFormData((prev) => ({
+      ...prev,
+      proof_of_residence: [],
+    }))
+    clearProofOfResidenceError()
+  }
+
+  const handleAddCertificateType = () => {
+    setFormData((prev) => ({
+      ...prev,
+      certificates: [...prev.certificates, createCertificateTypeEntry()],
+    }))
+  }
+
+  const handleRemoveCertificateType = (clientId) => {
+    setFormData((prev) => {
+      const remaining = prev.certificates.filter((entry) => entry.clientId !== clientId)
+      return {
+        ...prev,
+        certificates: remaining.length > 0 ? remaining : [createCertificateTypeEntry()],
+      }
+    })
+    clearCertificateError(clientId)
+  }
+
+  const validateForm = (data) => {
+    const errors = createEmptyFormErrors()
+
+    if (!data.name || !data.name.trim()) {
+      errors.fields.name = 'Supplier name is required.'
+    }
+
+    const trimmedEmail = data.email?.trim()
+    if (trimmedEmail && !isValidEmail(trimmedEmail)) {
+      errors.fields.email = 'Enter a valid email address.'
+    }
+
+    const trimmedPrimaryEmail = data.primary_contact_email?.trim()
+    if (trimmedPrimaryEmail && !isValidEmail(trimmedPrimaryEmail)) {
+      errors.fields.primary_contact_email = 'Enter a valid email address.'
+    }
+
+    const integerFieldValidations = [
+      { field: 'supplier_age', label: 'Supplier age' },
+      { field: 'number_of_employees', label: 'Number of employees' },
+      { field: 'number_of_dependants', label: 'Number of dependants' },
+    ]
+
+    integerFieldValidations.forEach(({ field, label }) => {
+      const rawValue = data[field]
+      if (rawValue === '' || rawValue === null || rawValue === undefined) {
+        return
+      }
+
+      const parsed = Number.parseInt(rawValue, 10)
+      if (Number.isNaN(parsed) || parsed < 0) {
+        errors.fields[field] = `${label} must be a positive number.`
+      }
+    })
+
+    data.documents.forEach((entry) => {
+      const trimmedType = entry.type?.trim() ?? ''
+      const hasFiles = entry.files.length > 0
+
+      if (trimmedType && !hasFiles) {
+        errors.documents[entry.clientId] = 'Upload at least one file for this type.'
+      } else if (!trimmedType && hasFiles) {
+        errors.documents[entry.clientId] = 'Select a document type for the uploaded files.'
+      }
+    })
+
+    data.certificates.forEach((entry) => {
+      const trimmedType = entry.type?.trim() ?? ''
+      const hasFiles = entry.files.length > 0
+
+      if (trimmedType && !hasFiles) {
+        errors.certificates[entry.clientId] = 'Upload the certificate files for this type.'
+      } else if (!trimmedType && hasFiles) {
+        errors.certificates[entry.clientId] = 'Select a certificate type for the uploaded files.'
+      }
+    })
+
+    return hasValidationErrors(errors) ? errors : null
+  }
+
+  const handleFinalSubmit = async () => {
+    if (!user?.id) {
+      toast.error('You need to be signed in to create suppliers.')
+      return
+    }
+
+    setFormErrors(createEmptyFormErrors())
+    setIsSubmitting(true)
+
+    const payload = {
+      name: requiredText(formData.name),
+      supplier_type: formData.supplier_type || null,
+      primary_contact_name: optionalText(formData.primary_contact_name),
+      phone: optionalText(formData.phone),
+      email: optionalText(formData.email),
+      country: optionalText(formData.country),
+      address: optionalText(formData.address),
+      is_halal_certified: Boolean(formData.is_halal_certified),
+      supplier_age: optionalInteger(formData.supplier_age),
+      gender: optionalText(formData.gender),
+      number_of_employees: optionalInteger(formData.number_of_employees),
+      number_of_dependants: optionalInteger(formData.number_of_dependants),
+      banking_details: optionalText(formData.banking_details),
+    }
+
+    try {
+      const { data, error: insertError } = await supabase.from('suppliers').insert(payload).select().single()
+
+      if (insertError) {
+        throw insertError
+      }
+
+      const documentRows = formData.documents
+        .filter((entry) => entry.type && entry.files.length > 0)
+        .flatMap((entry) =>
+          entry.files.map((file) => ({
+            owner_type: 'supplier',
+            owner_id: data.id,
+            name: file.name,
+            doc_type: entry.type,
+            storage_path: `suppliers/${data.id}/${file.name}`,
+            uploaded_by: profileId ?? null
+          }))
+        )
+
+      const certificateRows = formData.certificates
+        .filter((entry) => entry.type && entry.files.length > 0)
+        .flatMap((entry) =>
+          entry.files.map((file) => ({
+            owner_type: 'supplier',
+            owner_id: data.id,
+            name: file.name,
+            doc_type: entry.type,
+            storage_path: `suppliers/${data.id}/certificates/${file.name}`,
+            uploaded_by: profileId ?? null
+          }))
+        )
+
+      const proofRows = formData.proof_of_residence.map((file) => ({
+        owner_type: 'supplier',
+        owner_id: data.id,
+        name: file.name,
+        doc_type: 'PROOF_OF_RESIDENCE',
+        storage_path: `suppliers/${data.id}/proof-of-residence/${file.name}`,
+        uploaded_by: profileId ?? null
+      }))
+
+      const rowsToInsert = [...documentRows, ...certificateRows, ...proofRows]
+
+      if (rowsToInsert.length > 0) {
+        const { error: docsError } = await supabase.from('documents').insert(rowsToInsert)
+        if (docsError) {
+          console.error('Error inserting supplier documents', docsError)
+          toast.error('Supplier saved but documents failed to register.')
+        }
+      }
+
+      toast.success('Supplier added')
+      setSuppliers((previous = []) => [data, ...previous.filter((item) => item.id !== data.id)])
+      resetFormState()
+      setIsModalOpen(false)
+    } catch (error) {
+      console.error('Error creating supplier', error)
+      toast.error(error.message ?? 'Unable to create supplier in Supabase.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleStepSubmit = async (event) => {
+    event.preventDefault()
+
+    if (isSubmitting) {
+      return
+    }
+
+    const validationErrors = validateForm(formData)
+
+    if (validationErrors) {
+      if (isLastStep) {
+        setFormErrors(validationErrors)
+        return
+      }
+
+      const stepErrors = filterErrorsForStep(validationErrors, currentStep)
+      if (stepErrors) {
+        setFormErrors(stepErrors)
+        return
+      }
+
+      setFormErrors(createEmptyFormErrors())
+    } else {
+      setFormErrors(createEmptyFormErrors())
+    }
+
+    if (isLastStep) {
+      await handleFinalSubmit()
+      return
+    }
+
+    setActiveStep((prev) => Math.min(prev + 1, totalSteps - 1))
+  }
+
+  const handleBack = () => {
+    setFormErrors(createEmptyFormErrors())
+    setActiveStep((prev) => Math.max(prev - 1, 0))
+  }
+
+  const primaryActionLabel = isLastStep
+    ? isSubmitting
+      ? 'Saving…'
+      : 'Save Supplier'
+    : 'Next Step'
+
+  const columns = [
+    {
+      key: 'name',
+      header: 'Name',
+      accessor: 'name',
+      cellClassName: 'font-medium text-text-dark',
+    },
+    {
+      key: 'type',
+      header: 'Type',
+      accessor: 'supplier_type',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'contact',
+      header: 'Primary Contact',
+      render: (supplier) => supplier.primary_contact_name || '-',
+      mobileRender: (supplier) => supplier.primary_contact_name || '-',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'phone',
+      header: 'Phone',
+      render: (supplier) => supplier.phone || '-',
+      mobileRender: (supplier) => supplier.phone || '-',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'email',
+      header: 'Email',
+      render: (supplier) => supplier.email || '-',
+      mobileRender: (supplier) => supplier.email || '-',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'country',
+      header: 'Country',
+      render: (supplier) => supplier.country || '-',
+      mobileRender: (supplier) => supplier.country || '-',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'halal',
+      header: 'Halal Certified',
+      render: (supplier) => (
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+            supplier.is_halal_certified ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {supplier.is_halal_certified ? 'Yes' : 'No'}
+        </span>
+      ),
+      mobileRender: (supplier) => (
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+            supplier.is_halal_certified ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+          }`}
+        >
+          {supplier.is_halal_certified ? 'Yes' : 'No'}
+        </span>
+      ),
+      mobileHeader: 'Halal',
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      headerClassName: 'text-right',
+      cellClassName: 'text-right',
+      mobileValueClassName: 'flex w-full justify-end gap-2',
+      render: (supplier) => (
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-olive-light/60 text-text-dark hover:bg-olive-light/40"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleEditSupplier(supplier)
+            }}
+          >
+            <Edit className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-red-600 hover:text-red-700"
+            disabled={deletingSupplierId === supplier.id}
+            onClick={(event) => {
+              event.stopPropagation()
+              handleDeleteSupplier(supplier)
+            }}
+          >
+            {deletingSupplierId === supplier.id ? (
+              <span className="text-xs">Deleting…</span>
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      ),
+      mobileRender: (supplier) => (
+        <div className="flex w-full justify-end gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-olive-light/60 text-text-dark hover:bg-olive-light/40"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleEditSupplier(supplier)
+            }}
+          >
+            <Edit className="mr-1 h-4 w-4" />
+            Edit
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-red-600 hover:text-red-700"
+            disabled={deletingSupplierId === supplier.id}
+            onClick={(event) => {
+              event.stopPropagation()
+              handleDeleteSupplier(supplier)
+            }}
+          >
+            {deletingSupplierId === supplier.id ? (
+              <span className="text-xs">Deleting…</span>
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <PageLayout
+      title="Suppliers"
+      activeItem="suppliersCustomers"
+      actions={
+        <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark">
+          <Plus className="mr-2 h-4 w-4" />
+          Add Supplier
+        </Button>
+      }
+      contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+    >
+      <Card className="bg-white border-olive-light/30">
+        <CardHeader>
+          <CardTitle className="text-text-dark">Suppliers</CardTitle>
+          <CardDescription>Manage supplier information</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loadingSuppliers ? (
+            <div className="flex items-center justify-center py-16 text-sm text-text-dark/60">
+              Loading suppliers from Supabase…
+            </div>
+          ) : suppliers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <p className="text-sm font-medium text-text-dark">No suppliers captured yet.</p>
+              <p className="text-sm text-text-dark/60">
+                Add your first supplier to start building the Nutaria directory.
+              </p>
+              <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark">
+                <Plus className="mr-2 h-4 w-4" />
+                Add Supplier
+              </Button>
+            </div>
+          ) : (
+            <ResponsiveTable columns={columns} data={suppliers} rowKey="id" onRowClick={handleSupplierClick} />
+          )}
+        </CardContent>
+      </Card>
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
+              <div>
+                <h2 className="text-xl font-semibold text-text-dark">Add Supplier</h2>
+                <p className="text-sm text-text-dark/70">Capture supplier profile and documents</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleCloseModal}
+                className="text-text-dark hover:bg-olive-light/10"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+            <form id="supplier-form" onSubmit={handleStepSubmit} className="flex-1 overflow-hidden bg-beige/10">
+              <div className="border-b border-olive-light/30 bg-olive-light/20 px-6 py-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Step {currentStepIndex + 1} of {totalSteps}
+                    </p>
+                    <h3 className="text-lg font-semibold text-text-dark">{currentStep.title}</h3>
+                    <p className="text-sm text-text-dark/70">{currentStep.description}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {SUPPLIER_FORM_STEPS.map((step, index) => {
+                      const isActive = index === currentStepIndex
+                      const isCompleted = index < currentStepIndex
+                      const badgeClass = isActive
+                        ? 'bg-olive text-white'
+                        : isCompleted
+                          ? 'bg-olive/70 text-white'
+                          : 'bg-white text-text-dark border border-olive-light/60'
+                      return (
+                        <div
+                          key={step.id}
+                          className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${badgeClass}`}
+                        >
+                          <span>{index + 1}</span>
+                          <span className="hidden sm:inline">{step.title}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto px-6 py-6">
+                {currentStep.id === 'basic' && (
+                  <div className="space-y-8">
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Supplier Profile</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Capture the core details that appear in the directory.
+                      </p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="name">Supplier Name*</Label>
+                          <Input
+                            id="name"
+                            name="name"
+                            value={formData.name}
+                            onChange={handleChange}
+                            placeholder="Acme Farms"
+                            disabled={isSubmitting}
+                            className={formErrors.fields.name ? 'border-red-300 focus-visible:ring-red-500' : undefined}
+                          />
+                          {formErrors.fields.name && (
+                            <p className="text-xs text-red-600">{formErrors.fields.name}</p>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="supplier_type">Supplier Type</Label>
+                          <select
+                            id="supplier_type"
+                            name="supplier_type"
+                            value={formData.supplier_type}
+                            onChange={handleSupplierTypeChange}
+                            disabled={isSubmitting}
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {supplierTypeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="country">Country</Label>
+                          <Input
+                            id="country"
+                            name="country"
+                            value={formData.country}
+                            onChange={handleChange}
+                            placeholder="South Africa"
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="phone">Main Phone</Label>
+                          <Input
+                            id="phone"
+                            name="phone"
+                            value={formData.phone}
+                            onChange={handleChange}
+                            placeholder="+27 21 555 1234"
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="email">Main Email</Label>
+                          <Input
+                            id="email"
+                            name="email"
+                            type="email"
+                            value={formData.email}
+                            onChange={handleChange}
+                            placeholder="hello@acmefarms.co.za"
+                            disabled={isSubmitting}
+                            className={formErrors.fields.email ? 'border-red-300 focus-visible:ring-red-500' : undefined}
+                          />
+                          {formErrors.fields.email && (
+                            <p className="text-xs text-red-600">{formErrors.fields.email}</p>
+                          )}
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="address">Address</Label>
+                          <textarea
+                            id="address"
+                            name="address"
+                            value={formData.address}
+                            onChange={handleChange}
+                            rows={3}
+                            placeholder="Street, City, Postal Code"
+                            disabled={isSubmitting}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-sm font-medium text-text-dark sm:col-span-2">
+                          <input
+                            type="checkbox"
+                            name="is_halal_certified"
+                            checked={formData.is_halal_certified}
+                            onChange={handleChange}
+                            className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                            disabled={isSubmitting}
+                          />
+                          Halal Certified
+                        </label>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {currentStep.id === 'additional' && (
+                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Primary Contact</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Who should Nutaria teams reach out to for this supplier.
+                      </p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="primary_contact_name">Contact Name</Label>
+                          <Input
+                            id="primary_contact_name"
+                            name="primary_contact_name"
+                            value={formData.primary_contact_name}
+                            onChange={handleChange}
+                            placeholder="Jane Smith"
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="primary_contact_phone">Contact Phone</Label>
+                          <Input
+                            id="primary_contact_phone"
+                            name="primary_contact_phone"
+                            value={formData.primary_contact_phone}
+                            onChange={handleChange}
+                            placeholder="+27 82 456 7890"
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="primary_contact_email">Contact Email</Label>
+                          <Input
+                            id="primary_contact_email"
+                            name="primary_contact_email"
+                            type="email"
+                            value={formData.primary_contact_email}
+                            onChange={handleChange}
+                            placeholder="jane.smith@acmefarms.co.za"
+                            disabled={isSubmitting}
+                            className={
+                              formErrors.fields.primary_contact_email
+                                ? 'border-red-300 focus-visible:ring-red-500'
+                                : undefined
+                            }
+                          />
+                          {formErrors.fields.primary_contact_email && (
+                            <p className="text-xs text-red-600">{formErrors.fields.primary_contact_email}</p>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Supplier Details</h3>
+                      <p className="text-sm text-text-dark/70">Capture workforce numbers and verification information.</p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="supplier_age">Supplier Age</Label>
+                          <Input
+                            id="supplier_age"
+                            name="supplier_age"
+                            type="number"
+                            min="0"
+                            value={formData.supplier_age}
+                            onChange={handleChange}
+                            placeholder="e.g. 12"
+                            disabled={isSubmitting}
+                            className={
+                              formErrors.fields.supplier_age ? 'border-red-300 focus-visible:ring-red-500' : undefined
+                            }
+                          />
+                          {formErrors.fields.supplier_age && (
+                            <p className="text-xs text-red-600">{formErrors.fields.supplier_age}</p>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="gender">Gender</Label>
+                          <select
+                            id="gender"
+                            name="gender"
+                            value={formData.gender}
+                            onChange={handleChange}
+                            disabled={isSubmitting}
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {genderOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="number_of_employees">Number of Employees</Label>
+                          <Input
+                            id="number_of_employees"
+                            name="number_of_employees"
+                            type="number"
+                            min="0"
+                            value={formData.number_of_employees}
+                            onChange={handleChange}
+                            placeholder="e.g. 45"
+                            disabled={isSubmitting}
+                            className={
+                              formErrors.fields.number_of_employees
+                                ? 'border-red-300 focus-visible:ring-red-500'
+                                : undefined
+                            }
+                          />
+                          {formErrors.fields.number_of_employees && (
+                            <p className="text-xs text-red-600">{formErrors.fields.number_of_employees}</p>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="number_of_dependants">Number of Dependants</Label>
+                          <Input
+                            id="number_of_dependants"
+                            name="number_of_dependants"
+                            type="number"
+                            min="0"
+                            value={formData.number_of_dependants}
+                            onChange={handleChange}
+                            placeholder="e.g. 3"
+                            disabled={isSubmitting}
+                            className={
+                              formErrors.fields.number_of_dependants
+                                ? 'border-red-300 focus-visible:ring-red-500'
+                                : undefined
+                            }
+                          />
+                          {formErrors.fields.number_of_dependants && (
+                            <p className="text-xs text-red-600">{formErrors.fields.number_of_dependants}</p>
+                          )}
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="banking_details">Banking Details</Label>
+                          <textarea
+                            id="banking_details"
+                            name="banking_details"
+                            value={formData.banking_details}
+                            onChange={handleChange}
+                            rows={3}
+                            placeholder="Bank name, account number, and branch code"
+                            disabled={isSubmitting}
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label htmlFor="proof_of_residence">Proof of Residence</Label>
+                          <Input
+                            id="proof_of_residence"
+                            type="file"
+                            onChange={handleProofOfResidenceChange}
+                            disabled={isSubmitting}
+                          />
+                          {formData.proof_of_residence.length === 0 ? (
+                            <p className="text-sm text-text-dark/60">Upload a recent utility bill or official proof.</p>
+                          ) : (
+                            <ul className="space-y-1 rounded-md border border-olive-light/40 bg-olive-light/10 p-3 text-sm text-text-dark">
+                              {formData.proof_of_residence.map((file, index) => (
+                                <li key={`proof-file-${index}`} className="flex items-center justify-between gap-2">
+                                  <span className="truncate">{file.name}</span>
+                                  {formatPreviewFileSize(file.size) && (
+                                    <span className="text-xs text-text-dark/50">{formatPreviewFileSize(file.size)}</span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {formData.proof_of_residence.length > 0 && (
+                            <div className="flex justify-end">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700"
+                                onClick={removeProofOfResidence}
+                                disabled={isSubmitting}
+                              >
+                                Remove File
+                              </Button>
+                            </div>
+                          )}
+                          {formErrors.proof_of_residence && (
+                            <p className="text-xs text-red-600">{formErrors.proof_of_residence}</p>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {currentStep.id === 'documents' && (
+                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Document Types</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Upload key business documents (e.g., registration, compliance)
+                      </p>
+                      <div className="mt-4 space-y-4">
+                        {formData.documents.map((documentType) => {
+                          const documentError = formErrors.documents[documentType.clientId]
+                          const documentTypeId = `document-type-${documentType.clientId}`
+                          const documentFilesId = `document-files-${documentType.clientId}`
+
+                          return (
+                            <div
+                              key={documentType.clientId}
+                              className={`rounded-md border p-4 space-y-3 ${
+                                documentError ? 'border-red-300 bg-red-50/50' : 'border-olive-light/40 bg-olive-light/10'
+                              }`}
+                            >
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label htmlFor={documentTypeId}>Document Type</Label>
+                                  <select
+                                    id={documentTypeId}
+                                    value={documentType.type}
+                                    onChange={(event) =>
+                                      handleDocumentTypeChange(documentType.clientId, event.target.value)
+                                    }
+                                    className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                                      documentError ? 'border-red-300 focus-visible:ring-red-500' : 'focus-visible:ring-olive'
+                                    }`}
+                                    disabled={isSubmitting}
+                                  >
+                                    {documentTypeOptions.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label htmlFor={documentFilesId}>Files</Label>
+                                  <Input
+                                    id={documentFilesId}
+                                    type="file"
+                                    multiple
+                                    onChange={(event) =>
+                                      handleDocumentFilesChange(documentType.clientId, event.target.files)
+                                    }
+                                    disabled={isSubmitting}
+                                  />
+                                </div>
+                              </div>
+                              {documentType.files.length === 0 ? (
+                                <p className="text-sm text-text-dark/60">No files uploaded for this type yet.</p>
+                              ) : (
+                                <ul className="space-y-1 text-sm text-text-dark">
+                                  {documentType.files.map((file, fileIndex) => (
+                                    <li
+                                      key={`${documentType.clientId}-file-${fileIndex}`}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span className="truncate">{file.name}</span>
+                                      {formatPreviewFileSize(file.size) && (
+                                        <span className="text-xs text-text-dark/50">{formatPreviewFileSize(file.size)}</span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              {documentError && <p className="text-xs text-red-600">{documentError}</p>}
+                              {formData.documents.length > 1 && (
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-red-600 hover:text-red-700"
+                                    onClick={() => handleRemoveDocumentType(documentType.clientId)}
+                                    disabled={isSubmitting}
+                                  >
+                                    Remove Type
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                        <Button type="button" variant="outline" onClick={handleAddDocumentType} disabled={isSubmitting}>
+                          Add Another Document Type
+                        </Button>
+                      </div>
+                    </section>
+
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Certificates</h3>
+                      <p className="text-sm text-text-dark/70">Upload compliance certificates (e.g., Halal)</p>
+                      <div className="mt-4 space-y-4">
+                        {formData.certificates.map((certificateType) => {
+                          const certificateError = formErrors.certificates[certificateType.clientId]
+                          const certificateTypeId = `certificate-type-${certificateType.clientId}`
+                          const certificateFilesId = `certificate-files-${certificateType.clientId}`
+
+                          return (
+                            <div
+                              key={certificateType.clientId}
+                              className={`rounded-md border p-4 space-y-3 ${
+                                certificateError ? 'border-red-300 bg-red-50/50' : 'border-olive-light/40 bg-olive-light/10'
+                              }`}
+                            >
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="space-y-2">
+                                  <Label htmlFor={certificateTypeId}>Certificate Type</Label>
+                                  <select
+                                    id={certificateTypeId}
+                                    value={certificateType.type}
+                                    onChange={(event) =>
+                                      handleCertificateTypeChange(certificateType.clientId, event.target.value)
+                                    }
+                                    className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                                      certificateError ? 'border-red-300 focus-visible:ring-red-500' : 'focus-visible:ring-olive'
+                                    }`}
+                                    disabled={isSubmitting}
+                                  >
+                                    {certificateTypeOptions.map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label htmlFor={certificateFilesId}>Certificate Files</Label>
+                                  <Input
+                                    id={certificateFilesId}
+                                    type="file"
+                                    multiple
+                                    onChange={(event) =>
+                                      handleCertificateFilesChange(certificateType.clientId, event.target.files)
+                                    }
+                                    disabled={isSubmitting}
+                                  />
+                                </div>
+                              </div>
+                              {certificateType.files.length === 0 ? (
+                                <p className="text-sm text-text-dark/60">No files uploaded for this certificate yet.</p>
+                              ) : (
+                                <ul className="space-y-1 text-sm text-text-dark">
+                                  {certificateType.files.map((file, fileIndex) => (
+                                    <li
+                                      key={`${certificateType.clientId}-file-${fileIndex}`}
+                                      className="flex items-center justify-between gap-2"
+                                    >
+                                      <span className="truncate">{file.name}</span>
+                                      {formatPreviewFileSize(file.size) && (
+                                        <span className="text-xs text-text-dark/50">{formatPreviewFileSize(file.size)}</span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              {certificateError && <p className="text-xs text-red-600">{certificateError}</p>}
+                              {formData.certificates.length > 1 && (
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-red-600 hover:text-red-700"
+                                    onClick={() => handleRemoveCertificateType(certificateType.clientId)}
+                                    disabled={isSubmitting}
+                                  >
+                                    Remove Type
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                        <Button type="button" variant="outline" onClick={handleAddCertificateType} disabled={isSubmitting}>
+                          Add Another Certificate Type
+                        </Button>
+                      </div>
+                    </section>
+                  </div>
+                )}
+              </div>
+            </form>
+
+            <div className="flex flex-col gap-3 border-t border-olive-light/30 bg-olive-light/20 p-5 sm:flex-row sm:items-center sm:justify-end sm:gap-4 sm:p-6">
+              <Button type="button" variant="outline" onClick={handleCloseModal} disabled={isSubmitting}>
+                Cancel
+              </Button>
+              {!isFirstStep && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleBack}
+                  disabled={isSubmitting}
+                  className="text-text-dark hover:bg-olive-light/20"
+                >
+                  Previous Step
+                </Button>
+              )}
+              <Button
+                type="submit"
+                form="supplier-form"
+                className="bg-olive hover:bg-olive-dark"
+                disabled={isSubmitting}
+              >
+                {primaryActionLabel}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </PageLayout>
+  )
+}
+
+export default Suppliers
+
