@@ -31,7 +31,7 @@
    - New supply appears in table with correct quality status (`PASSED` if all 3, else `PENDING`).
 
 6. **Persistence**
-   - Inspect Supabase tables (`supplies`, `supply_quality_checks`, `supply_quality_check_items`) to confirm inserts.
+   - Inspect Supabase tables (`supplies`, `supply_lines`, `supply_batches`, `supply_quality_checks`, `supply_quality_check_items`) to confirm inserts.
    - Reload the page; new supply should still show quality metadata.
    - Open the supply detail view; quality section lists captured rows, overall score, and remarks.
 

@@ -1,30 +1,302 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { AlertCircle, ArrowUpRight, BarChart3 } from 'lucide-react'
+import { AlertCircle, ArrowUpRight, BarChart3, Loader2 } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { mockProducts, mockStockLevels } from '@/data/mockDashboardData'
+import { supabase } from '@/lib/supabaseClient'
+
+const QUALITY_HOLD_STATUSES = new Set(['PENDING', 'HOLD'])
+
+function parseNumber(value) {
+  if (value === null || value === undefined) {
+    return 0
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0
+  }
+  const numeric = Number.parseFloat(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function toNullableNumber(value) {
+  if (value === null || value === undefined) {
+    return null
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+  const numeric = Number.parseFloat(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function roundNumber(value) {
+  const numeric = Number.isFinite(value) ? value : parseNumber(value)
+  return Math.round(numeric * 100) / 100
+}
 
 function StockLevels() {
-  const [stockLevels] = useState(mockStockLevels)
+  const [stockLevels, setStockLevels] = useState([])
+  const [products, setProducts] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
   const [warehouseFilter, setWarehouseFilter] = useState('ALL')
   const [showLowStockOnly, setShowLowStockOnly] = useState(false)
   const [coverageThreshold, setCoverageThreshold] = useState(14)
+  const [loading, setLoading] = useState(true)
+  const [errors, setErrors] = useState([])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadStockLevels() {
+      setLoading(true)
+      const collectedErrors = []
+
+      try {
+        const {
+          data: batchRows,
+          error: batchError,
+        } = await supabase
+          .from('supply_batches')
+          .select(
+            'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'
+          )
+
+        if (batchError) {
+          collectedErrors.push(`supply_batches: ${batchError.message}`)
+          if (isMounted) {
+            setStockLevels([])
+            setProducts([])
+          }
+          return
+        }
+
+        const batches = Array.isArray(batchRows) ? batchRows : []
+
+        if (batches.length === 0) {
+          if (isMounted) {
+            setStockLevels([])
+            setProducts([])
+          }
+          return
+        }
+
+        const productIds = Array.from(
+          new Set(batches.map((batch) => batch.product_id).filter((value) => value !== null && value !== undefined))
+        )
+        const supplyIds = Array.from(
+          new Set(batches.map((batch) => batch.supply_id).filter((value) => value !== null && value !== undefined))
+        )
+        const batchUnitIds = Array.from(
+          new Set(batches.map((batch) => batch.unit_id).filter((value) => value !== null && value !== undefined))
+        )
+
+        const [
+          {
+            data: productRows,
+            error: productError,
+          },
+          {
+            data: supplyRows,
+            error: supplyError,
+          },
+        ] = await Promise.all([
+          productIds.length > 0
+            ? supabase
+                .from('products')
+                .select(
+                  'id, name, sku, reorder_point, safety_stock, target_stock, base_unit_id, pack_size, status'
+                )
+                .in('id', productIds)
+            : Promise.resolve({ data: [], error: null }),
+          supplyIds.length > 0
+            ? supabase.from('supplies').select('id, warehouse_id').in('id', supplyIds)
+            : Promise.resolve({ data: [], error: null }),
+        ])
+
+        if (productError) {
+          collectedErrors.push(`products: ${productError.message}`)
+        }
+        if (supplyError) {
+          collectedErrors.push(`supplies: ${supplyError.message}`)
+        }
+
+        const productsData = Array.isArray(productRows) ? productRows : []
+        const suppliesData = Array.isArray(supplyRows) ? supplyRows : []
+
+        const warehouseIds = Array.from(
+          new Set(suppliesData.map((supply) => supply.warehouse_id).filter((value) => value !== null && value !== undefined))
+        )
+
+        const {
+          data: warehouseRows,
+          error: warehouseError,
+        } = warehouseIds.length > 0
+          ? await supabase.from('warehouses').select('id, name').in('id', warehouseIds)
+          : { data: [], error: null }
+
+        if (warehouseError) {
+          collectedErrors.push(`warehouses: ${warehouseError.message}`)
+        }
+
+        const baseUnitIds = productsData
+          .map((product) => product.base_unit_id)
+          .filter((value) => value !== null && value !== undefined)
+
+        const allUnitIds = Array.from(new Set([...batchUnitIds, ...baseUnitIds]))
+
+        const {
+          data: unitRows,
+          error: unitError,
+        } = allUnitIds.length > 0
+          ? await supabase.from('units').select('id, name, symbol').in('id', allUnitIds)
+          : { data: [], error: null }
+
+        if (unitError) {
+          collectedErrors.push(`units: ${unitError.message}`)
+        }
+
+        const productsMap = new Map(productsData.map((product) => [product.id, product]))
+        const suppliesMap = new Map(suppliesData.map((supply) => [supply.id, supply]))
+        const warehousesMap = new Map((Array.isArray(warehouseRows) ? warehouseRows : []).map((warehouse) => [warehouse.id, warehouse]))
+        const unitsMap = new Map((Array.isArray(unitRows) ? unitRows : []).map((unit) => [unit.id, unit]))
+
+        const aggregated = new Map()
+
+        batches.forEach((batch) => {
+          const productId = batch.product_id
+          if (productId === null || productId === undefined) {
+            return
+          }
+
+          const supply = suppliesMap.get(batch.supply_id)
+          const warehouseId = supply?.warehouse_id ?? null
+          const aggregationKey = `${productId}-${warehouseId ?? 'none'}`
+
+          if (!aggregated.has(aggregationKey)) {
+            const defaultUnitId = batch.unit_id ?? productsMap.get(productId)?.base_unit_id ?? null
+            aggregated.set(aggregationKey, {
+              id: aggregationKey,
+              product_id: productId,
+              warehouse_id: warehouseId,
+              unit_id: defaultUnitId,
+              received: 0,
+              accepted: 0,
+              rejected: 0,
+              hold: 0,
+            })
+          }
+
+          const record = aggregated.get(aggregationKey)
+          const receivedQty = parseNumber(batch.received_qty)
+          const acceptedQty = parseNumber(batch.accepted_qty)
+          const rejectedQty = parseNumber(batch.rejected_qty)
+          const status = (batch.quality_status ?? '').toUpperCase()
+          const inferredPending = Math.max(receivedQty - acceptedQty - rejectedQty, 0)
+
+          record.received += receivedQty
+          record.accepted += acceptedQty
+          record.rejected += rejectedQty
+
+          if (QUALITY_HOLD_STATUSES.has(status)) {
+            record.hold += inferredPending
+          } else if (status === 'FAILED') {
+            record.hold += Math.max(rejectedQty, 0)
+          }
+        })
+
+        const rows = Array.from(aggregated.values()).map((record) => {
+          const product = productsMap.get(record.product_id)
+          const warehouse = record.warehouse_id ? warehousesMap.get(record.warehouse_id) : null
+          const unitRecord =
+            (record.unit_id !== null && record.unit_id !== undefined && unitsMap.get(record.unit_id)) ??
+            (product?.base_unit_id ? unitsMap.get(product.base_unit_id) : null)
+
+          const reorderPoint = toNullableNumber(product?.reorder_point)
+          const safetyStock = toNullableNumber(product?.safety_stock)
+          const onHand = Math.max(record.accepted + record.hold, 0)
+          const qualityHold = Math.max(record.hold, 0)
+          const availableSnapshot = Math.max(onHand - qualityHold, 0)
+
+          let lowStockReason = null
+          if (reorderPoint !== null && availableSnapshot < reorderPoint) {
+            lowStockReason = 'Below reorder point'
+          } else if (safetyStock !== null && availableSnapshot < safetyStock) {
+            lowStockReason = 'Below safety stock'
+          }
+
+          return {
+            id: record.id,
+            product_id: record.product_id,
+            product_name: product?.name ?? 'Unknown product',
+            product_sku: product?.sku ?? '',
+            warehouse_id: record.warehouse_id,
+            warehouse_name: warehouse?.name ?? '—',
+            on_hand: roundNumber(onHand),
+            allocated: 0,
+            quality_hold: roundNumber(qualityHold),
+            in_transit: 0,
+            unit: unitRecord?.symbol ?? unitRecord?.name ?? '',
+            reorder_point: reorderPoint,
+            safety_stock: safetyStock,
+            cycle_count_due_at: null,
+            low_stock_reason: lowStockReason,
+            notes: null,
+            packSize: product?.pack_size ?? null,
+            status: product?.status ?? null,
+          }
+        })
+
+        rows.sort((a, b) => {
+          const nameCompare = a.product_name.localeCompare(b.product_name)
+          if (nameCompare !== 0) {
+            return nameCompare
+          }
+          return a.warehouse_name.localeCompare(b.warehouse_name)
+        })
+
+        if (isMounted) {
+          setProducts(productsData)
+          setStockLevels(rows)
+        }
+      } catch (error) {
+        collectedErrors.push(
+          error instanceof Error ? error.message : 'Unexpected error while loading stock levels'
+        )
+      } finally {
+        if (isMounted) {
+          setErrors(Array.from(new Set(collectedErrors.filter(Boolean))))
+          setLoading(false)
+        }
+      }
+    }
+
+    loadStockLevels()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   const productLookup = useMemo(
     () =>
-      mockProducts.reduce((accumulator, product) => {
+      products.reduce((accumulator, product) => {
         accumulator[product.id] = product
         return accumulator
       }, {}),
-    []
+    [products]
   )
 
   const warehouses = useMemo(
-    () => Array.from(new Set(stockLevels.map((entry) => entry.warehouse_name))).sort(),
+    () =>
+      Array.from(
+        new Set(
+          stockLevels
+            .map((entry) => entry.warehouse_name)
+            .filter((name) => typeof name === 'string' && name.trim().length > 0)
+        )
+      ).sort(),
     [stockLevels]
   )
 
@@ -332,6 +604,17 @@ function StockLevels() {
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
+          {errors.length > 0 ? (
+            <div className="rounded-md border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
+              <p className="font-medium">Some data could not be loaded:</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {errors.map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-5">
             <div className="sm:col-span-2">
               <Label htmlFor="stock-search">Search</Label>
@@ -383,7 +666,18 @@ function StockLevels() {
             </div>
           </div>
 
-          <ResponsiveTable columns={columns} data={filteredStockLevels} rowKey="id" />
+          {loading ? (
+            <div className="flex items-center justify-center py-10 text-sm text-text-dark/70">
+              <Loader2 className="mr-2 h-5 w-5 animate-spin text-olive" />
+              Loading stock levels…
+            </div>
+          ) : filteredStockLevels.length === 0 ? (
+            <div className="rounded-md border border-dashed border-olive-light/60 bg-olive-light/10 p-8 text-center text-sm text-text-dark/70">
+              No stock batches recorded yet. Add supplies to see stock levels here.
+            </div>
+          ) : (
+            <ResponsiveTable columns={columns} data={filteredStockLevels} rowKey="id" />
+          )}
         </CardContent>
       </Card>
     </PageLayout>
