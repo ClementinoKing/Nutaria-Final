@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Edit, Trash2, X, Minus, Eye } from 'lucide-react'
+import { Plus, Trash2, X, Minus, Eye, Layers } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
-import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
+
+const generateStepCode = (sequence) => `STEP-${String(sequence).padStart(2, '0')}`
 
 const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
   year: 'numeric',
@@ -47,7 +48,6 @@ function Processes() {
   const [formData, setFormData] = useState({
     code: '',
     name: '',
-    description: '',
     steps: []
   })
   const navigate = useNavigate()
@@ -58,7 +58,7 @@ function Processes() {
 
     const { data, error: fetchError } = await supabase
       .from('processes')
-      .select('id, code, name, description, created_at')
+      .select('id, code, name, created_at, steps:process_steps(count)')
       .order('created_at', { ascending: false, nullsFirst: false })
 
     if (fetchError) {
@@ -70,7 +70,19 @@ function Processes() {
       return
     }
 
-    setProcesses(Array.isArray(data) ? data : [])
+    const normalizedProcesses = Array.isArray(data)
+      ? data.map((process) => ({
+          id: process.id,
+          code: process.code,
+          name: process.name,
+          created_at: process.created_at,
+          step_count: Array.isArray(process.steps) && process.steps.length > 0
+            ? Number(process.steps[0]?.count ?? 0)
+            : 0,
+        }))
+      : []
+
+    setProcesses(normalizedProcesses)
     setLoading(false)
   }, [])
 
@@ -112,7 +124,6 @@ function Processes() {
     setFormData({
       code: '',
       name: '',
-      description: '',
       steps: []
     })
   }
@@ -129,7 +140,7 @@ function Processes() {
     const newStep = {
       id: Date.now(), // temporary ID for React key
       seq: formData.steps.length + 1,
-      step_code: '',
+      step_code: generateStepCode(formData.steps.length + 1),
       step_name: '',
       requires_qc: false,
       default_location_id: ''
@@ -145,7 +156,8 @@ function Processes() {
       .filter(step => step.id !== stepId)
       .map((step, index) => ({
         ...step,
-        seq: index + 1
+        seq: index + 1,
+        step_code: generateStepCode(index + 1)
       }))
     setFormData(prev => ({
       ...prev,
@@ -154,6 +166,9 @@ function Processes() {
   }
 
   const handleStepChange = (stepId, field, value) => {
+    if (field === 'step_code') {
+      return
+    }
     setFormData(prev => ({
       ...prev,
       steps: prev.steps.map(step =>
@@ -172,10 +187,10 @@ function Processes() {
     }
 
     const invalidSteps = formData.steps.filter(
-      step => !(step.step_code ?? '').trim() || !(step.step_name ?? '').trim()
+      step => !(step.step_name ?? '').trim()
     )
     if (invalidSteps.length > 0) {
-      toast.error('Please fill in all required fields for each step (Step Code and Step Name).')
+      toast.error('Please provide a name for each step.')
       return false
     }
 
@@ -197,13 +212,12 @@ function Processes() {
       const processPayload = {
         code: formData.code.trim(),
         name: formData.name.trim(),
-        description: formData.description?.trim() || null,
       }
 
       const { data: insertedProcess, error: insertProcessError } = await supabase
         .from('processes')
         .insert(processPayload)
-        .select('id, code, name, description, created_at')
+        .select('id, code, name, created_at')
         .single()
 
       if (insertProcessError) {
@@ -214,7 +228,7 @@ function Processes() {
         const stepsPayload = formData.steps.map((step, index) => ({
           process_id: insertedProcess.id,
           seq: index + 1,
-          step_code: (step.step_code ?? '').trim(),
+          step_code: generateStepCode(index + 1),
           step_name: (step.step_name ?? '').trim(),
           description: null,
           requires_qc: Boolean(step.requires_qc),
@@ -234,7 +248,17 @@ function Processes() {
       }
 
       toast.success('Process added successfully.')
-      setProcesses(previous => (insertedProcess ? [insertedProcess, ...previous] : previous))
+      setProcesses(previous =>
+        insertedProcess
+          ? [
+              {
+                ...insertedProcess,
+                step_count: formData.steps.length,
+              },
+              ...previous,
+            ]
+          : previous,
+      )
       handleCloseModal()
     } catch (submitError) {
       console.error('Error creating process', submitError)
@@ -245,7 +269,7 @@ function Processes() {
     }
   }
 
-  const emptyMessage = useMemo(() => {
+  const emptyStateLabel = useMemo(() => {
     if (loading) {
       return 'Loading processes…'
     }
@@ -255,86 +279,15 @@ function Processes() {
     return 'No processes found.'
   }, [error, loading])
 
-  const columns = [
-    {
-      key: 'code',
-      header: 'Code',
-      accessor: 'code',
-      cellClassName: 'font-medium text-text-dark',
+  const handleViewProcess = useCallback(
+    (processId) => {
+      if (!processId) {
+        return
+      }
+      navigate(`/process/processes/${processId}`)
     },
-    {
-      key: 'name',
-      header: 'Name',
-      accessor: 'name',
-    },
-    {
-      key: 'description',
-      header: 'Description',
-      render: (process) => process.description || '-',
-      mobileRender: (process) => process.description || '-',
-      cellClassName: 'text-text-dark/70',
-      mobileValueClassName: 'text-text-dark',
-    },
-    {
-      key: 'created_at',
-      header: 'Created At',
-      render: (process) => formatDate(process.created_at),
-      mobileRender: (process) => formatDate(process.created_at),
-      cellClassName: 'text-sm text-text-dark/70',
-      mobileValueClassName: 'text-sm text-text-dark',
-    },
-    {
-      key: 'actions',
-      header: 'Actions',
-      headerClassName: 'text-right',
-      cellClassName: 'text-right',
-      mobileValueClassName: 'flex w-full justify-end gap-2',
-      render: (process) => (
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(event) => {
-              event.stopPropagation()
-              event.preventDefault()
-              navigate(`/process/processes/${process.id}`)
-            }}
-            className="text-olive hover:text-olive-dark"
-          >
-            <Eye className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm">
-            <Edit className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      ),
-      mobileRender: (process) => (
-        <div className="flex w-full justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(event) => {
-              event.stopPropagation()
-              event.preventDefault()
-              navigate(`/process/processes/${process.id}`)
-            }}
-            className="text-olive hover:text-olive-dark"
-          >
-            <Eye className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm">
-            <Edit className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      ),
-    },
-  ]
+    [navigate],
+  )
 
   return (
     <PageLayout
@@ -351,7 +304,6 @@ function Processes() {
       <Card className="bg-white border-olive-light/30">
         <CardHeader>
           <CardTitle className="text-text-dark">Factory Processes</CardTitle>
-          <CardDescription>Manage factory processing workflows</CardDescription>
         </CardHeader>
         <CardContent>
           {error ? (
@@ -359,12 +311,75 @@ function Processes() {
               {error.message ?? 'Unable to load processes from Supabase.'}
             </div>
           ) : null}
-          <ResponsiveTable
-            columns={columns}
-            data={loading ? [] : processes}
-            rowKey="id"
-            emptyMessage={emptyMessage}
-          />
+
+          {loading ? (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div
+                  key={`process-skeleton-${index}`}
+                  className="animate-pulse rounded-xl border border-olive-light/40 bg-olive-light/10 p-6"
+                >
+                  <div className="h-3 w-20 rounded-full bg-olive-light/60" />
+                  <div className="mt-4 h-5 w-3/4 rounded-full bg-olive-light/50" />
+                  <div className="mt-6 flex gap-3">
+                    <div className="h-8 w-20 rounded-lg bg-olive-light/60" />
+                    <div className="h-8 w-20 rounded-lg bg-olive-light/60" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : processes.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center text-text-dark/60">
+              <Layers className="h-10 w-10 text-olive" />
+              <div>
+                <p className="text-base font-medium text-text-dark">Nothing to show yet</p>
+                <p className="text-sm">{emptyStateLabel}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {processes.map((process) => (
+                <div
+                  key={process.id}
+                  className="group flex h-full flex-col justify-between rounded-xl border border-olive-light/40 bg-white p-6 shadow-sm transition-all duration-200 hover:border-olive hover:shadow-lg"
+                >
+                  <div className="flex flex-col gap-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="inline-flex items-center rounded-full border border-olive/40 bg-olive/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
+                        {process.code}
+                      </span>
+                      <span className="rounded-full bg-olive-light/30 px-3 py-1 text-xs font-semibold text-olive-dark">
+                        {process.step_count} {process.step_count === 1 ? 'step' : 'steps'}
+                      </span>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-text-dark group-hover:text-olive-dark">
+                        {process.name}
+                      </h3>
+                      <p className="mt-2 text-sm text-text-dark/60">
+                        Created {formatDate(process.created_at)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-between gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-olive hover:bg-olive-light/20 hover:text-olive-dark"
+                      onClick={() => handleViewProcess(process.id)}
+                    >
+                      <Eye className="mr-2 h-4 w-4" />
+                      View
+                    </Button>
+                    <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -420,21 +435,6 @@ function Processes() {
                   />
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="description" className="text-text-dark">
-                    Description
-                  </Label>
-                  <textarea
-                    id="description"
-                    name="description"
-                    placeholder="Enter process description..."
-                    value={formData.description}
-                    onChange={handleInputChange}
-                    rows={4}
-                    className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </div>
-
                 {/* Process Steps Section */}
                 <div className="space-y-3 pt-4 border-t border-olive-light/20">
                   <div className="flex items-center justify-between">
@@ -484,17 +484,13 @@ function Processes() {
                           <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-1">
                               <Label className="text-xs text-text-dark">
-                                Step Code <span className="text-red-500">*</span>
+                                Step Code
                               </Label>
                               <Input
                                 type="text"
-                                placeholder="e.g., STEP-001"
-                                value={step.step_code}
-                                onChange={(e) =>
-                                  handleStepChange(step.id, 'step_code', e.target.value)
-                                }
-                                className="bg-white text-sm"
-                                required
+                                value={generateStepCode(index + 1)}
+                                readOnly
+                                className="bg-olive-light/10 text-sm text-text-dark/80"
                               />
                             </div>
 

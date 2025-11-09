@@ -145,12 +145,14 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       {/* Sidebar Header */}
       <div className="p-4 border-b border-olive-light/20">
         <div className="flex items-center justify-between">
-          {sidebarOpen && (
-            <div>
-              <h2 className="text-xl font-bold">Nutaria</h2>
-              <p className="text-xs text-white/70">Inventory System</p>
-            </div>
-          )}
+          <img
+            src="/img/logos/Nutaria_logo.svg"
+            alt="Nutaria logo"
+            className={cn(
+              'transition-all',
+              sidebarOpen ? 'h-20 w-auto' : 'hidden'
+            )}
+          />
           <Button
             variant="ghost"
             size="icon"
