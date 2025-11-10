@@ -30,6 +30,7 @@ create table if not exists public.documents (
   name text not null,
   doc_type text null,
   storage_path text not null,
+  expiry_date date null,
   uploaded_by uuid null,
   uploaded_at timestamp with time zone null default now(),
   constraint documents_pkey primary key (id),
@@ -66,4 +67,7 @@ alter table if exists public.documents
   add constraint documents_owner_type_check check (
     owner_type = any (array['supply', 'shipment', 'supplier'])
   );
+
+alter table if exists public.documents
+  add column if not exists expiry_date date null;
 

@@ -2,11 +2,46 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { LogOut, LayoutDashboard, Menu, X, Package, Warehouse, Ruler, Package2, TrendingUp, ArrowRight, ChevronDown, ChevronRight, ArrowDownCircle, Truck, PackageSearch, Users as UsersIcon, FileText, Layers, Cog, Settings, Building2, UserCheck, FileCheck, BadgeCheck, FolderOpen, Eye, Activity } from 'lucide-react'
+import {
+  LogOut,
+  LayoutDashboard,
+  Menu,
+  X,
+  Package,
+  Warehouse,
+  Ruler,
+  Package2,
+  TrendingUp,
+  ArrowRight,
+  ChevronDown,
+  ChevronRight,
+  ArrowDownCircle,
+  Truck,
+  PackageSearch,
+  Users as UsersIcon,
+  FileText,
+  Layers,
+  Cog,
+  Settings,
+  Building2,
+  UserCheck,
+  FileCheck,
+  BadgeCheck,
+  FolderOpen,
+  Eye,
+  Activity,
+  ListChecks,
+  Sun,
+  Moon,
+} from 'lucide-react'
+import { useDailyChecks } from '@/context/DailyChecksContext'
+import { useTheme } from '@/context/ThemeContext'
 
 function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDesktop = false }) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { remainingCount: dailyRemainingCount } = useDailyChecks()
+  const { theme, toggleTheme } = useTheme()
   const [expandedMenus, setExpandedMenus] = useState({
     inventory: false,
     process: false,
@@ -37,7 +72,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       ]
     },
     { 
-      name: 'Suppliers & Customers', 
+      name: 'Partner', 
       icon: Building2, 
       key: 'suppliersCustomers',
       submenu: [
@@ -46,6 +81,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       ]
     },
     { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments' },
+    {
+      name: 'Daily Checks',
+      icon: ListChecks,
+      key: 'daily-checks',
+      path: '/daily-checks',
+      badge: dailyRemainingCount,
+    },
     {
       name: 'Users',
       icon: UsersIcon,
@@ -143,7 +185,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       )}
     >
       {/* Sidebar Header */}
-      <div className="p-4 border-b border-olive-light/20">
+      <div className="border-b border-olive-light/20 p-4">
         <div className="flex items-center justify-between">
           <img
             src="/img/logos/Nutaria_logo.svg"
@@ -157,7 +199,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
             variant="ghost"
             size="icon"
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="text-white hover:bg-white/10 ml-auto"
+            className="ml-auto text-white hover:bg-white/10"
           >
             {sidebarOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
           </Button>
@@ -165,11 +207,12 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+      <nav className="flex-1 space-y-2 overflow-y-auto p-4">
         {navigationItems.map((item) => {
           const Icon = item.icon
           const isActive = item.submenu ? isMenuActive(item.key) : (activeItem === item.key || location.pathname === item.path)
           const isExpanded = item.submenu ? expandedMenus[item.key] : false
+          const showBadge = item.key === 'daily-checks' && Number.isFinite(item.badge) && item.badge > 0
           
           if (item.submenu) {
             return (
@@ -180,11 +223,10 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
                       toggleMenu(item.key)
                     }
                   }}
-                  className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-                    isActive
-                      ? 'bg-olive text-white'
-                      : 'text-white/80 hover:bg-white/10 hover:text-white'
-                  }`}
+                  className={cn(
+                    'flex w-full items-center space-x-3 rounded-lg px-4 py-3 transition-colors',
+                    isActive ? 'bg-olive text-white' : 'text-white/80 hover:bg-white/10 hover:text-white'
+                  )}
                 >
                   <Icon className="h-6 w-6 flex-shrink-0" />
                   {sidebarOpen && (
@@ -207,11 +249,12 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
                         <button
                           key={subItem.key}
                           onClick={() => handleNavigation(subItem)}
-                          className={`w-full flex items-center space-x-3 px-4 py-2 rounded-lg transition-colors text-sm ${
+                          className={cn(
+                            'flex w-full items-center space-x-3 rounded-lg px-4 py-2 text-sm transition-colors',
                             isSubActive
                               ? 'bg-olive/50 text-white'
                               : 'text-white/70 hover:bg-white/10 hover:text-white'
-                          }`}
+                          )}
                         >
                           <SubIcon className="h-5 w-5 flex-shrink-0" />
                           <span className="text-sm font-medium">{subItem.name}</span>
@@ -228,42 +271,71 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
             <button
               key={item.key}
               onClick={() => handleNavigation(item)}
-              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-                isActive
-                  ? 'bg-olive text-white'
-                  : 'text-white/80 hover:bg-white/10 hover:text-white'
-              }`}
+              className={cn(
+                'relative flex w-full items-center space-x-3 rounded-lg px-4 py-3 text-left transition-colors',
+                isActive ? 'bg-olive text-white' : 'text-white/80 hover:bg-white/10 hover:text-white'
+              )}
             >
-              <Icon className="h-6 w-6 flex-shrink-0" />
-              {sidebarOpen && <span className="text-sm font-medium">{item.name}</span>}
+              <div className="flex items-center gap-3">
+                <Icon className="h-6 w-6 flex-shrink-0" />
+                {sidebarOpen && <span className="text-sm font-medium">{item.name}</span>}
+              </div>
+              {showBadge && (
+                sidebarOpen ? (
+                <span className="ml-auto inline-flex min-h-[1.5rem] min-w-[1.5rem] items-center justify-center rounded-full bg-orange-500 px-2 text-xs font-semibold text-white">
+                    {item.badge}
+                  </span>
+                ) : (
+                <span className="absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-orange-500" />
+                )
+              )}
             </button>
           )
         })}
       </nav>
 
       {/* Sidebar Footer */}
-      <div className="p-4 border-t border-olive-light/20">
-        <div className="flex items-center space-x-3 mb-3">
-          <div className="h-8 w-8 rounded-full bg-olive flex items-center justify-center flex-shrink-0">
-            <span className="text-sm font-medium text-white">
+      <div className="border-t border-olive-light/20 p-4">
+        <div className="mb-3 flex items-center space-x-3">
+          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-olive text-white">
+            <span className="text-sm font-medium">
               {user?.email?.charAt(0).toUpperCase() || 'U'}
             </span>
           </div>
           {sidebarOpen && (
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-white truncate">{user?.email || 'User'}</p>
+              <p className="truncate text-sm font-medium text-white">{user?.email || 'User'}</p>
               <p className="text-xs text-white/70">Admin</p>
             </div>
           )}
         </div>
-        <Button
-          variant="outline"
-          onClick={onLogout}
-          className={`w-full bg-white/10 border-white/20 text-white hover:bg-white/20 ${!sidebarOpen ? 'px-2' : ''}`}
-        >
-          <LogOut className={`h-5 w-5 ${sidebarOpen ? 'mr-2' : ''}`} />
-          {sidebarOpen && <span>Logout</span>}
-        </Button>
+        <div className={cn('flex w-full gap-2', !sidebarOpen && 'flex-col')}>
+          <Button
+            variant="outline"
+            onClick={onLogout}
+            className={cn(
+              'flex-[3] border-white/20 bg-white/10 text-white hover:bg-white/20',
+              !sidebarOpen && 'w-full px-2'
+            )}
+          >
+            <LogOut className={`h-5 w-5 ${sidebarOpen ? 'mr-2' : ''}`} />
+            {sidebarOpen && <span>Logout</span>}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={toggleTheme}
+            className={cn(
+              'flex-1 border-white/20 bg-white/10 text-white hover:bg-white/20',
+              !sidebarOpen && 'w-full px-2'
+            )}
+            title="Toggle theme"
+            aria-label="Toggle theme"
+            aria-pressed={theme === 'dark'}
+          >
+            {theme === 'dark' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+          </Button>
+        </div>
       </div>
     </aside>
   )

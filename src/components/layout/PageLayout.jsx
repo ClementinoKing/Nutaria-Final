@@ -39,23 +39,26 @@ function PageLayout({
   }, [isDesktop])
 
   const headerClasses = cn(
-    'bg-white border-b border-olive-light/20 shadow-sm',
+    'border-b border-border bg-card text-foreground shadow-sm transition-colors',
     stickyHeader && 'sticky top-0 z-20',
     headerClassName
   )
 
   const mainContainerClasses = cn(
-    'flex min-h-dvh flex-col transition-[margin] duration-300 md:min-h-screen',
+    'flex min-h-dvh flex-col bg-background transition-[margin] duration-300 md:min-h-screen',
     isDesktop && sidebarOpen ? 'md:ml-80' : isDesktop ? 'md:ml-20' : '',
     mainClassName
   )
 
-  const contentClasses = cn('flex-1 px-4 py-6 sm:px-6 lg:px-8', contentClassName)
+  const contentClasses = cn(
+    'flex-1 px-4 py-6 text-foreground transition-colors sm:px-6 lg:px-8',
+    contentClassName
+  )
 
   const actionsWrapperClasses = 'flex flex-wrap items-center gap-2'
 
   return (
-    <div className="relative min-h-screen bg-beige">
+    <div className="relative min-h-screen bg-background text-foreground transition-colors duration-300">
       <Sidebar
         sidebarOpen={sidebarOpen}
         setSidebarOpen={setSidebarOpen}
@@ -67,7 +70,7 @@ function PageLayout({
 
       {sidebarOpen && !isDesktop && (
         <div
-          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm transition-opacity md:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
         />
@@ -86,7 +89,7 @@ function PageLayout({
                 >
                   <Menu className="h-5 w-5" />
                 </button>
-                <h1 className="text-xl font-semibold text-text-dark sm:text-2xl">{title}</h1>
+                <h1 className="text-xl font-semibold sm:text-2xl">{title}</h1>
               </div>
               {actions && (
                 <div className={cn(actionsWrapperClasses, 'sm:items-center sm:justify-end')}>
