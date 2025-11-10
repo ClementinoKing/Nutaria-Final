@@ -14,6 +14,25 @@ import { useAuth } from '@/context/AuthContext'
 
 const CERTIFICATE_DOC_TYPES = new Set(['HALAL', 'ISO9001', 'ISO22000', 'KOSHER', 'OTHER'])
 
+const BANK_OPTIONS = [
+  { value: '', label: 'Select a bank' },
+  { value: 'Capitec Bank', label: 'Capitec Bank' },
+  { value: 'Standard Bank', label: 'Standard Bank' },
+  { value: 'First National Bank (FNB)', label: 'First National Bank (FNB)' },
+  { value: 'Absa Bank', label: 'Absa Bank' },
+  { value: 'Nedbank', label: 'Nedbank' },
+  { value: 'Discovery Bank', label: 'Discovery Bank' },
+  { value: 'TymeBank', label: 'TymeBank' },
+  { value: 'African Bank', label: 'African Bank' },
+  { value: 'Investec Bank', label: 'Investec Bank' },
+  { value: 'Bidvest Bank', label: 'Bidvest Bank' },
+  { value: 'Sasfin Bank', label: 'Sasfin Bank' },
+  { value: 'Ubank', label: 'Ubank' },
+  { value: 'Albaraka Bank', label: 'Albaraka Bank' },
+  { value: 'HBZ Bank', label: 'HBZ Bank' },
+  { value: 'Access Bank South Africa', label: 'Access Bank South Africa' },
+]
+
 const createUniqueId = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
 const createDocumentTypeEntry = () => ({
@@ -89,7 +108,6 @@ const createDefaultSupplier = () => ({
   email: '',
   country: 'South Africa',
   address: '',
-  is_halal_certified: false,
   primary_contact_name: '',
   primary_contact_email: '',
   primary_contact_phone: '',
@@ -97,7 +115,9 @@ const createDefaultSupplier = () => ({
   gender: '',
   number_of_employees: '',
   number_of_dependants: '',
-  banking_details: '',
+  bank: '',
+  account_number: '',
+  branch: '',
   proof_of_residence: [],
   documents: [createDocumentTypeEntry()],
 })
@@ -113,6 +133,12 @@ const DOCUMENT_TYPE_OPTIONS = [
   { value: 'ISO22000', label: 'ISO 22000' },
   { value: 'KOSHER', label: 'Kosher Certificate' },
 ]
+
+const hasHalalCertificate = (documents = []) =>
+  documents.some((entry) => {
+    const normalizedType = entry.type?.toString().trim().toUpperCase()
+    return normalizedType === 'HALAL' && Array.isArray(entry.files) && entry.files.length > 0
+  })
 
 const SUPPLIER_FORM_STEPS = [
   {
@@ -133,7 +159,9 @@ const SUPPLIER_FORM_STEPS = [
       'gender',
       'number_of_employees',
       'number_of_dependants',
-      'banking_details',
+      'bank',
+      'account_number',
+      'branch',
     ],
     includeProofOfResidence: true,
   },
@@ -475,6 +503,8 @@ function Suppliers() {
     setFormErrors(createEmptyFormErrors())
     setIsSubmitting(true)
 
+    const isHalalCertified = hasHalalCertificate(formData.documents)
+
     const payload = {
       name: requiredText(formData.name),
       supplier_type: formData.supplier_type || null,
@@ -483,12 +513,14 @@ function Suppliers() {
       email: optionalText(formData.email),
       country: optionalText(formData.country),
       address: optionalText(formData.address),
-      is_halal_certified: Boolean(formData.is_halal_certified),
+      is_halal_certified: isHalalCertified,
       supplier_age: optionalInteger(formData.supplier_age),
       gender: optionalText(formData.gender),
       number_of_employees: optionalInteger(formData.number_of_employees),
       number_of_dependants: optionalInteger(formData.number_of_dependants),
-      banking_details: optionalText(formData.banking_details),
+      bank: optionalText(formData.bank),
+      account_number: optionalText(formData.account_number),
+      branch: optionalText(formData.branch),
     }
 
     try {
@@ -914,17 +946,6 @@ function Suppliers() {
                             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                           />
                         </div>
-                        <label className="flex items-center gap-2 text-sm font-medium text-text-dark sm:col-span-2">
-                          <input
-                            type="checkbox"
-                            name="is_halal_certified"
-                            checked={formData.is_halal_certified}
-                            onChange={handleChange}
-                            className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                            disabled={isSubmitting}
-                          />
-                          Halal Certified
-                        </label>
                       </div>
                     </section>
                   </div>
@@ -1066,16 +1087,42 @@ function Suppliers() {
                           )}
                         </div>
                         <div className="space-y-2 sm:col-span-2">
-                          <Label htmlFor="banking_details">Banking Details</Label>
-                          <textarea
-                            id="banking_details"
-                            name="banking_details"
-                            value={formData.banking_details}
+                          <Label htmlFor="bank">Bank</Label>
+                          <select
+                            id="bank"
+                            name="bank"
+                            value={formData.bank}
                             onChange={handleChange}
-                            rows={3}
-                            placeholder="Bank name, account number, and branch code"
                             disabled={isSubmitting}
-                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {BANK_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="account_number">Account Number</Label>
+                          <Input
+                            id="account_number"
+                            name="account_number"
+                            value={formData.account_number}
+                            onChange={handleChange}
+                            placeholder="e.g. 1234567890"
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="branch">Branch</Label>
+                          <Input
+                            id="branch"
+                            name="branch"
+                            value={formData.branch}
+                            onChange={handleChange}
+                            placeholder="Branch name or code"
+                            disabled={isSubmitting}
                           />
                         </div>
                         <div className="space-y-2 sm:col-span-2">

@@ -12,6 +12,40 @@ import { useSuppliers } from '@/hooks/useSuppliers'
 
 const CERTIFICATE_DOC_TYPES = new Set(['HALAL', 'ISO9001', 'ISO22000', 'KOSHER', 'OTHER'])
 
+const BANK_OPTIONS = [
+  { value: '', label: 'Select a bank' },
+  { value: 'Capitec Bank', label: 'Capitec Bank' },
+  { value: 'Standard Bank', label: 'Standard Bank' },
+  { value: 'First National Bank (FNB)', label: 'First National Bank (FNB)' },
+  { value: 'Absa Bank', label: 'Absa Bank' },
+  { value: 'Nedbank', label: 'Nedbank' },
+  { value: 'Discovery Bank', label: 'Discovery Bank' },
+  { value: 'TymeBank', label: 'TymeBank' },
+  { value: 'African Bank', label: 'African Bank' },
+  { value: 'Investec Bank', label: 'Investec Bank' },
+  { value: 'Bidvest Bank', label: 'Bidvest Bank' },
+  { value: 'Sasfin Bank', label: 'Sasfin Bank' },
+  { value: 'Ubank', label: 'Ubank' },
+  { value: 'Albaraka Bank', label: 'Albaraka Bank' },
+  { value: 'HBZ Bank', label: 'HBZ Bank' },
+  { value: 'Access Bank South Africa', label: 'Access Bank South Africa' },
+]
+
+const hasHalalUploads = (documents = []) =>
+  documents.some((entry) => {
+    const normalizedType = entry.type?.toString().trim().toUpperCase()
+    return normalizedType === 'HALAL' && Array.isArray(entry.files) && entry.files.length > 0
+  })
+
+const hasHalalExistingDocuments = (existingDocuments = [], markedForRemoval = new Set()) =>
+  existingDocuments.some((group) => {
+    const normalizedType = group.type?.toString().trim().toUpperCase()
+    if (normalizedType !== 'HALAL') {
+      return false
+    }
+    return Array.isArray(group.files) && group.files.some((file) => file?.id && !markedForRemoval.has(file.id))
+  })
+
 const createUniqueId = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
 const createDocumentTypeEntry = () => ({
@@ -99,7 +133,9 @@ const SUPPLIER_FORM_STEPS = [
       'gender',
       'number_of_employees',
       'number_of_dependants',
-      'banking_details',
+      'bank',
+      'account_number',
+      'branch',
     ],
     includeProofOfResidence: true,
   },
@@ -173,7 +209,6 @@ const createFormDataFromSupplier = (supplier, groupedDocuments) => ({
   email: supplier?.email ?? '',
   country: supplier?.country ?? 'South Africa',
   address: supplier?.address ?? '',
-  is_halal_certified: supplier?.is_halal_certified ?? false,
   primary_contact_name: supplier?.primary_contact_name ?? '',
   primary_contact_email: supplier?.primary_contact_email ?? '',
   primary_contact_phone: supplier?.primary_contact_phone ?? '',
@@ -181,7 +216,9 @@ const createFormDataFromSupplier = (supplier, groupedDocuments) => ({
   gender: supplier?.gender ?? '',
   number_of_employees: supplier?.number_of_employees ?? '',
   number_of_dependants: supplier?.number_of_dependants ?? '',
-  banking_details: supplier?.banking_details ?? '',
+  bank: supplier?.bank ?? '',
+  account_number: supplier?.account_number ?? '',
+  branch: supplier?.branch ?? '',
   documents: [createDocumentTypeEntry()],
   proof_of_residence: [],
   existingDocuments: groupedDocuments?.documents ?? [],
@@ -511,6 +548,10 @@ function SupplierEdit() {
     setSaving(true)
     setFormErrors(createEmptyFormErrors())
 
+    const halalFromExisting = hasHalalExistingDocuments(formData.existingDocuments, documentsToDelete)
+    const halalFromNewUploads = hasHalalUploads(formData.documents)
+    const isHalalCertified = halalFromExisting || halalFromNewUploads
+
     const payload = {
       name: requiredText(formData.name),
       supplier_type: formData.supplier_type || null,
@@ -519,12 +560,14 @@ function SupplierEdit() {
       email: optionalText(formData.email),
       country: optionalText(formData.country),
       address: optionalText(formData.address),
-      is_halal_certified: Boolean(formData.is_halal_certified),
+      is_halal_certified: isHalalCertified,
       supplier_age: optionalInteger(formData.supplier_age),
       gender: optionalText(formData.gender),
       number_of_employees: optionalInteger(formData.number_of_employees),
       number_of_dependants: optionalInteger(formData.number_of_dependants),
-      banking_details: optionalText(formData.banking_details),
+      bank: optionalText(formData.bank),
+      account_number: optionalText(formData.account_number),
+      branch: optionalText(formData.branch),
     }
 
     try {
@@ -806,31 +849,19 @@ function SupplierEdit() {
                     )}
                   </div>
 
-                  <div className="space-y-2 lg:col-span-6">
-                    <Label htmlFor="address">Address</Label>
-                    <textarea
-                      id="address"
-                      name="address"
-                      value={formData.address}
-                      onChange={handleChange}
-                      rows={3}
-                      placeholder="Street, City, Postal Code"
-                      disabled={saving}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                    />
-                  </div>
-
-                  <label className="flex items-center gap-2 text-sm font-medium text-text-dark lg:col-span-6">
-                    <input
-                      type="checkbox"
-                      name="is_halal_certified"
-                      checked={formData.is_halal_certified}
-                      onChange={handleChange}
-                      className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                      disabled={saving}
-                    />
-                    Halal certified
-                  </label>
+                <div className="space-y-2 lg:col-span-6">
+                  <Label htmlFor="address">Address</Label>
+                  <textarea
+                    id="address"
+                    name="address"
+                    value={formData.address}
+                    onChange={handleChange}
+                    rows={3}
+                    placeholder="Street, City, Postal Code"
+                    disabled={saving}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </div>
                 </div>
               </section>
             )}
@@ -965,14 +996,42 @@ function SupplierEdit() {
                       )}
                     </div>
                     <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="banking_details">Banking details</Label>
-                      <textarea
-                        id="banking_details"
-                        name="banking_details"
-                        value={formData.banking_details}
+                      <Label htmlFor="bank">Bank</Label>
+                      <select
+                        id="bank"
+                        name="bank"
+                        value={formData.bank}
                         onChange={handleChange}
-                        rows={3}
-                        placeholder="Bank name, account number, and branch code"
+                        disabled={saving}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {BANK_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="account_number">Account number</Label>
+                      <Input
+                        id="account_number"
+                        name="account_number"
+                        value={formData.account_number}
+                        onChange={handleChange}
+                        placeholder="e.g. 1234567890"
+                        disabled={saving}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="branch">Branch</Label>
+                      <Input
+                        id="branch"
+                        name="branch"
+                        value={formData.branch}
+                        onChange={handleChange}
+                        placeholder="Branch name or code"
                         disabled={saving}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
@@ -1017,18 +1076,20 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.proof_of_residence}</p>
                       )}
                       {formData.existingProofOfResidence.length > 0 && (
-                        <div className="mt-3 space-y-2 rounded-md border border-olive-light/40 bg-white/80 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        <div className="mt-3 space-y-2 rounded-md border border-olive-light/40 bg-white/80 p-3 dark:border-olive-light/20 dark:bg-slate-900/40">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-200/70">
                             Existing proof of residence
                           </p>
-                          <ul className="space-y-1 text-sm text-text-dark">
+                          <ul className="space-y-1 text-sm text-text-dark dark:text-slate-200">
                             {formData.existingProofOfResidence.map((proof) => {
                               const marked = isMarkedForRemoval.has(proof.id)
                               return (
                                 <li
                                   key={proof.id}
                                   className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
-                                    marked ? 'bg-red-50 text-red-700' : 'bg-olive-light/10 text-text-dark'
+                                    marked
+                                      ? 'bg-red-50 text-red-700 dark:bg-red-500/20 dark:text-red-200'
+                                      : 'bg-olive-light/10 text-text-dark dark:bg-slate-800/60 dark:text-slate-100'
                                   }`}
                                 >
                                   <span className="truncate">
@@ -1040,7 +1101,11 @@ function SupplierEdit() {
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => toggleExistingDocumentRemoval(proof.id)}
-                                    className={marked ? 'text-red-700 hover:text-red-800' : 'text-text-dark'}
+                                    className={
+                                      marked
+                                        ? 'text-red-700 hover:text-red-800 dark:text-red-300 dark:hover:text-red-200'
+                                        : 'text-text-dark dark:text-slate-200 dark:hover:text-slate-100'
+                                    }
                                     disabled={saving}
                                   >
                                     {marked ? 'Undo' : 'Remove'}

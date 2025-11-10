@@ -12,7 +12,9 @@ create table if not exists public.suppliers (
   gender text null,
   number_of_employees integer null,
   number_of_dependants integer null,
-  banking_details text null,
+  bank text null,
+  account_number text null,
+  branch text null,
   is_halal_certified boolean null default false,
   created_at timestamp with time zone null default now(),
   constraint suppliers_pkey primary key (id),
@@ -51,7 +53,12 @@ alter table if exists public.suppliers
   add column if not exists gender text null,
   add column if not exists number_of_employees integer null,
   add column if not exists number_of_dependants integer null,
-  add column if not exists banking_details text null;
+  add column if not exists bank text null,
+  add column if not exists account_number text null,
+  add column if not exists branch text null;
+
+alter table if exists public.suppliers
+  drop column if exists banking_details;
 
 alter table if exists public.suppliers
   drop constraint if exists suppliers_supplier_type_check,

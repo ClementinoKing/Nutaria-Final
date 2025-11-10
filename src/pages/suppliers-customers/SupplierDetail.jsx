@@ -205,6 +205,9 @@ function createFormStateFromSupplier(supplier, documentRows = []) {
     primary_contact_name: supplier?.primary_contact_name ?? '',
     primary_contact_email: supplier?.primary_contact_email ?? '',
     primary_contact_phone: supplier?.primary_contact_phone ?? '',
+    bank: supplier?.bank ?? '',
+    account_number: supplier?.account_number ?? '',
+    branch: supplier?.branch ?? '',
     documents: groupedDocuments ?? fallbackDocuments,
     files: normalizedSupportingFiles,
     created_at: supplier?.created_at ?? null,
@@ -371,6 +374,9 @@ function SupplierDetail() {
     { label: 'Halal Certified', value: supplierData.is_halal_certified ? 'Yes' : 'No' },
     { label: 'Country', value: supplierData.country || 'Not provided' },
     { label: 'Address', value: supplierData.address || 'Not provided' },
+    { label: 'Bank', value: supplierData.bank || 'Not provided' },
+    { label: 'Account Number', value: supplierData.account_number || 'Not provided' },
+    { label: 'Branch', value: supplierData.branch || 'Not provided' },
     { label: 'Created', value: formatDate(supplierData.created_at) },
   ]
 
