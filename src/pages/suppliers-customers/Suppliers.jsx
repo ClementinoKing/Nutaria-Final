@@ -12,31 +12,26 @@ import { useSuppliers } from '@/hooks/useSuppliers'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 
+const CERTIFICATE_DOC_TYPES = new Set(['HALAL', 'ISO9001', 'ISO22000', 'KOSHER', 'OTHER'])
+
 const createUniqueId = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
 const createDocumentTypeEntry = () => ({
   clientId: createUniqueId('doc'),
   type: '',
-  files: [],
-})
-
-const createCertificateTypeEntry = () => ({
-  clientId: createUniqueId('cert'),
-  type: '',
+  expiryDate: '',
   files: [],
 })
 
 const createEmptyFormErrors = () => ({
   fields: {},
   documents: {},
-  certificates: {},
   proof_of_residence: null,
 })
 
 const hasValidationErrors = (errors) =>
   Object.keys(errors.fields).length > 0 ||
   Object.keys(errors.documents).length > 0 ||
-  Object.keys(errors.certificates).length > 0 ||
   Boolean(errors.proof_of_residence)
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -72,6 +67,21 @@ const formatPreviewFileSize = (size) => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
+const formatDateDisplay = (value) => {
+  if (!value) {
+    return null
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+  return new Intl.DateTimeFormat('en-ZA', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(date)
+}
+
 const createDefaultSupplier = () => ({
   name: '',
   supplier_type: 'NUT',
@@ -90,24 +100,18 @@ const createDefaultSupplier = () => ({
   banking_details: '',
   proof_of_residence: [],
   documents: [createDocumentTypeEntry()],
-  certificates: [createCertificateTypeEntry()],
 })
 
-const documentTypeOptions = [
+const DOCUMENT_TYPE_OPTIONS = [
   { value: '', label: 'Select a type' },
   { value: 'REGISTRATION', label: 'Registration' },
   { value: 'COMPLIANCE', label: 'Compliance' },
   { value: 'CONTRACT', label: 'Contract' },
   { value: 'OTHER', label: 'Other' },
-]
-
-const certificateTypeOptions = [
-  { value: '', label: 'Select a type' },
   { value: 'HALAL', label: 'Halal Certificate' },
   { value: 'ISO9001', label: 'ISO 9001' },
   { value: 'ISO22000', label: 'ISO 22000' },
   { value: 'KOSHER', label: 'Kosher Certificate' },
-  { value: 'OTHER', label: 'Other' },
 ]
 
 const SUPPLIER_FORM_STEPS = [
@@ -139,7 +143,6 @@ const SUPPLIER_FORM_STEPS = [
     description: 'Upload key documents and certifications.',
     fieldKeys: [],
     includeDocuments: true,
-    includeCertificates: true,
   },
 ]
 
@@ -224,10 +227,6 @@ function Suppliers() {
 
     if (step.includeDocuments) {
       filtered.documents = errors.documents
-    }
-
-    if (step.includeCertificates) {
-      filtered.certificates = errors.certificates
     }
     if (step.includeProofOfResidence) {
       filtered.proof_of_residence = errors.proof_of_residence
@@ -314,17 +313,6 @@ function Suppliers() {
     })
   }
 
-  const clearCertificateError = (clientId) => {
-    setFormErrors((prev) => {
-      if (!prev.certificates[clientId]) {
-        return prev
-      }
-      const nextCertificates = { ...prev.certificates }
-      delete nextCertificates[clientId]
-      return { ...prev, certificates: nextCertificates }
-    })
-  }
-
   const handleChange = (event) => {
     const { name, value, type, checked } = event.target
     const nextValue = type === 'checkbox' ? checked : value
@@ -348,7 +336,25 @@ function Suppliers() {
     setFormData((prev) => ({
       ...prev,
       documents: prev.documents.map((entry) =>
-        entry.clientId === clientId ? { ...entry, type: value } : entry
+        entry.clientId === clientId
+          ? {
+              ...entry,
+              type: value,
+              expiryDate: CERTIFICATE_DOC_TYPES.has(value?.toString().toUpperCase() ?? '')
+                ? entry.expiryDate
+                : '',
+            }
+          : entry
+      ),
+    }))
+    clearDocumentError(clientId)
+  }
+
+  const handleDocumentExpiryChange = (clientId, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      documents: prev.documents.map((entry) =>
+        entry.clientId === clientId ? { ...entry, expiryDate: value } : entry
       ),
     }))
     clearDocumentError(clientId)
@@ -383,27 +389,6 @@ function Suppliers() {
     clearDocumentError(clientId)
   }
 
-  const handleCertificateTypeChange = (clientId, value) => {
-    setFormData((prev) => ({
-      ...prev,
-      certificates: prev.certificates.map((entry) =>
-        entry.clientId === clientId ? { ...entry, type: value } : entry
-      ),
-    }))
-    clearCertificateError(clientId)
-  }
-
-  const handleCertificateFilesChange = (clientId, fileList) => {
-    const files = Array.from(fileList ?? [])
-    setFormData((prev) => ({
-      ...prev,
-      certificates: prev.certificates.map((entry) =>
-        entry.clientId === clientId ? { ...entry, files } : entry
-      ),
-    }))
-    clearCertificateError(clientId)
-  }
-
   const clearProofOfResidenceError = () => {
     setFormErrors((prev) => ({
       ...prev,
@@ -426,24 +411,6 @@ function Suppliers() {
       proof_of_residence: [],
     }))
     clearProofOfResidenceError()
-  }
-
-  const handleAddCertificateType = () => {
-    setFormData((prev) => ({
-      ...prev,
-      certificates: [...prev.certificates, createCertificateTypeEntry()],
-    }))
-  }
-
-  const handleRemoveCertificateType = (clientId) => {
-    setFormData((prev) => {
-      const remaining = prev.certificates.filter((entry) => entry.clientId !== clientId)
-      return {
-        ...prev,
-        certificates: remaining.length > 0 ? remaining : [createCertificateTypeEntry()],
-      }
-    })
-    clearCertificateError(clientId)
   }
 
   const validateForm = (data) => {
@@ -483,23 +450,16 @@ function Suppliers() {
 
     data.documents.forEach((entry) => {
       const trimmedType = entry.type?.trim() ?? ''
+      const normalizedType = trimmedType.toUpperCase()
       const hasFiles = entry.files.length > 0
+      const expiry = entry.expiryDate ? entry.expiryDate.toString().trim() : ''
 
       if (trimmedType && !hasFiles) {
         errors.documents[entry.clientId] = 'Upload at least one file for this type.'
       } else if (!trimmedType && hasFiles) {
         errors.documents[entry.clientId] = 'Select a document type for the uploaded files.'
-      }
-    })
-
-    data.certificates.forEach((entry) => {
-      const trimmedType = entry.type?.trim() ?? ''
-      const hasFiles = entry.files.length > 0
-
-      if (trimmedType && !hasFiles) {
-        errors.certificates[entry.clientId] = 'Upload the certificate files for this type.'
-      } else if (!trimmedType && hasFiles) {
-        errors.certificates[entry.clientId] = 'Select a certificate type for the uploaded files.'
+      } else if (hasFiles && CERTIFICATE_DOC_TYPES.has(normalizedType) && !expiry) {
+        errors.documents[entry.clientId] = 'Provide an expiry date for this certificate.'
       }
     })
 
@@ -540,29 +500,22 @@ function Suppliers() {
 
       const documentRows = formData.documents
         .filter((entry) => entry.type && entry.files.length > 0)
-        .flatMap((entry) =>
-          entry.files.map((file) => ({
+        .flatMap((entry) => {
+          const normalizedType = entry.type.toString().toUpperCase()
+          const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
+          return entry.files.map((file) => ({
             owner_type: 'supplier',
             owner_id: data.id,
             name: file.name,
             doc_type: entry.type,
-            storage_path: `suppliers/${data.id}/${file.name}`,
-            uploaded_by: profileId ?? null
+            storage_path: `suppliers/${data.id}/${isCertificate ? 'certificates/' : ''}${file.name}`,
+            expiry_date:
+              isCertificate && entry.expiryDate && entry.expiryDate.toString().trim()
+                ? entry.expiryDate
+                : null,
+            uploaded_by: profileId ?? null,
           }))
-        )
-
-      const certificateRows = formData.certificates
-        .filter((entry) => entry.type && entry.files.length > 0)
-        .flatMap((entry) =>
-          entry.files.map((file) => ({
-            owner_type: 'supplier',
-            owner_id: data.id,
-            name: file.name,
-            doc_type: entry.type,
-            storage_path: `suppliers/${data.id}/certificates/${file.name}`,
-            uploaded_by: profileId ?? null
-          }))
-        )
+        })
 
       const proofRows = formData.proof_of_residence.map((file) => ({
         owner_type: 'supplier',
@@ -573,7 +526,7 @@ function Suppliers() {
         uploaded_by: profileId ?? null
       }))
 
-      const rowsToInsert = [...documentRows, ...certificateRows, ...proofRows]
+      const rowsToInsert = [...documentRows, ...proofRows]
 
       if (rowsToInsert.length > 0) {
         const { error: docsError } = await supabase.from('documents').insert(rowsToInsert)
@@ -1173,15 +1126,18 @@ function Suppliers() {
                 {currentStep.id === 'documents' && (
                   <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
                     <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                      <h3 className="text-lg font-semibold text-text-dark">Document Types</h3>
+                      <h3 className="text-lg font-semibold text-text-dark">Documents & Certificates</h3>
                       <p className="text-sm text-text-dark/70">
-                        Upload key business documents (e.g., registration, compliance)
+                        Upload key documentation and compliance certificates for this supplier.
                       </p>
                       <div className="mt-4 space-y-4">
                         {formData.documents.map((documentType) => {
                           const documentError = formErrors.documents[documentType.clientId]
                           const documentTypeId = `document-type-${documentType.clientId}`
                           const documentFilesId = `document-files-${documentType.clientId}`
+                          const documentExpiryId = `document-expiry-${documentType.clientId}`
+                          const normalizedType = documentType.type?.toString().toUpperCase() ?? ''
+                          const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
 
                           return (
                             <div
@@ -1190,7 +1146,7 @@ function Suppliers() {
                                 documentError ? 'border-red-300 bg-red-50/50' : 'border-olive-light/40 bg-olive-light/10'
                               }`}
                             >
-                              <div className="grid gap-3 sm:grid-cols-2">
+                              <div className="grid gap-3 sm:grid-cols-3">
                                 <div className="space-y-2">
                                   <Label htmlFor={documentTypeId}>Document Type</Label>
                                   <select
@@ -1204,14 +1160,28 @@ function Suppliers() {
                                     }`}
                                     disabled={isSubmitting}
                                   >
-                                    {documentTypeOptions.map((option) => (
+                                    {DOCUMENT_TYPE_OPTIONS.map((option) => (
                                       <option key={option.value} value={option.value}>
                                         {option.label}
                                       </option>
                                     ))}
                                   </select>
                                 </div>
-                                <div className="space-y-2">
+                                {isCertificate && (
+                                  <div className="space-y-2">
+                                    <Label htmlFor={documentExpiryId}>Expiry Date</Label>
+                                    <Input
+                                      id={documentExpiryId}
+                                      type="date"
+                                      value={documentType.expiryDate ?? ''}
+                                      onChange={(event) =>
+                                        handleDocumentExpiryChange(documentType.clientId, event.target.value)
+                                      }
+                                      disabled={isSubmitting}
+                                    />
+                                  </div>
+                                )}
+                                <div className={`space-y-2 ${isCertificate ? '' : 'sm:col-span-2'}`}>
                                   <Label htmlFor={documentFilesId}>Files</Label>
                                   <Input
                                     id={documentFilesId}
@@ -1260,98 +1230,7 @@ function Suppliers() {
                           )
                         })}
                         <Button type="button" variant="outline" onClick={handleAddDocumentType} disabled={isSubmitting}>
-                          Add Another Document Type
-                        </Button>
-                      </div>
-                    </section>
-
-                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                      <h3 className="text-lg font-semibold text-text-dark">Certificates</h3>
-                      <p className="text-sm text-text-dark/70">Upload compliance certificates (e.g., Halal)</p>
-                      <div className="mt-4 space-y-4">
-                        {formData.certificates.map((certificateType) => {
-                          const certificateError = formErrors.certificates[certificateType.clientId]
-                          const certificateTypeId = `certificate-type-${certificateType.clientId}`
-                          const certificateFilesId = `certificate-files-${certificateType.clientId}`
-
-                          return (
-                            <div
-                              key={certificateType.clientId}
-                              className={`rounded-md border p-4 space-y-3 ${
-                                certificateError ? 'border-red-300 bg-red-50/50' : 'border-olive-light/40 bg-olive-light/10'
-                              }`}
-                            >
-                              <div className="grid gap-3 sm:grid-cols-2">
-                                <div className="space-y-2">
-                                  <Label htmlFor={certificateTypeId}>Certificate Type</Label>
-                                  <select
-                                    id={certificateTypeId}
-                                    value={certificateType.type}
-                                    onChange={(event) =>
-                                      handleCertificateTypeChange(certificateType.clientId, event.target.value)
-                                    }
-                                    className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
-                                      certificateError ? 'border-red-300 focus-visible:ring-red-500' : 'focus-visible:ring-olive'
-                                    }`}
-                                    disabled={isSubmitting}
-                                  >
-                                    {certificateTypeOptions.map((option) => (
-                                      <option key={option.value} value={option.value}>
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor={certificateFilesId}>Certificate Files</Label>
-                                  <Input
-                                    id={certificateFilesId}
-                                    type="file"
-                                    multiple
-                                    onChange={(event) =>
-                                      handleCertificateFilesChange(certificateType.clientId, event.target.files)
-                                    }
-                                    disabled={isSubmitting}
-                                  />
-                                </div>
-                              </div>
-                              {certificateType.files.length === 0 ? (
-                                <p className="text-sm text-text-dark/60">No files uploaded for this certificate yet.</p>
-                              ) : (
-                                <ul className="space-y-1 text-sm text-text-dark">
-                                  {certificateType.files.map((file, fileIndex) => (
-                                    <li
-                                      key={`${certificateType.clientId}-file-${fileIndex}`}
-                                      className="flex items-center justify-between gap-2"
-                                    >
-                                      <span className="truncate">{file.name}</span>
-                                      {formatPreviewFileSize(file.size) && (
-                                        <span className="text-xs text-text-dark/50">{formatPreviewFileSize(file.size)}</span>
-                                      )}
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                              {certificateError && <p className="text-xs text-red-600">{certificateError}</p>}
-                              {formData.certificates.length > 1 && (
-                                <div className="flex justify-end">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className="text-red-600 hover:text-red-700"
-                                    onClick={() => handleRemoveCertificateType(certificateType.clientId)}
-                                    disabled={isSubmitting}
-                                  >
-                                    Remove Type
-                                  </Button>
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                        <Button type="button" variant="outline" onClick={handleAddCertificateType} disabled={isSubmitting}>
-                          Add Another Certificate Type
+                          Add Document Type
                         </Button>
                       </div>
                     </section>

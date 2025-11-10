@@ -43,6 +43,21 @@ function formatDate(value) {
   }).format(date)
 }
 
+function formatDateOnly(value) {
+  if (!value) {
+    return null
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+  return new Intl.DateTimeFormat('en-ZA', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(date)
+}
+
 function formatFileSize(size) {
   if (typeof size !== 'number') {
     return null
@@ -66,16 +81,21 @@ function normalizeFileMeta(file, index) {
     return null
   }
 
-  if (typeof file === 'object' && 'name' in file) {
+  if (typeof file === 'object' && file !== null) {
+    const storagePath = 'storage_path' in file ? file.storage_path ?? null : null
     return {
       name: file.name || `File ${index + 1}`,
       size: typeof file.size === 'number' ? file.size : null,
+      expiry_date: file.expiry_date ?? null,
+      storage_path: storagePath,
     }
   }
 
   return {
     name: typeof file === 'string' ? file : `File ${index + 1}`,
     size: null,
+    expiry_date: null,
+    storage_path: null,
   }
 }
 
@@ -83,15 +103,19 @@ function normalizeFileGroup(item, index, defaultTypeLabel) {
   if (!item) {
     return {
       id: `group-${index}`,
-      type: defaultTypeLabel ?? '',
+      type: (defaultTypeLabel ?? '').toString().toUpperCase() || 'UNSPECIFIED',
+      isCertificate: CERTIFICATE_DOC_TYPES.has((defaultTypeLabel ?? '').toString().toUpperCase()),
       files: [],
     }
   }
 
   if (typeof item === 'object' && Array.isArray(item.files)) {
+    const rawType = item.type ?? defaultTypeLabel ?? ''
+    const normalizedType = rawType ? rawType.toString().toUpperCase() : 'UNSPECIFIED'
     return {
       id: item.id ?? `group-${index}`,
-      type: item.type ?? defaultTypeLabel ?? '',
+      type: normalizedType,
+      isCertificate: CERTIFICATE_DOC_TYPES.has(normalizedType),
       files: item.files
         .map((file, fileIndex) => normalizeFileMeta(file, fileIndex))
         .filter((meta) => meta !== null),
@@ -99,27 +123,32 @@ function normalizeFileGroup(item, index, defaultTypeLabel) {
   }
 
   const fileMeta = normalizeFileMeta(item, 0)
+  const normalizedType = (defaultTypeLabel ?? '').toString().toUpperCase() || 'UNSPECIFIED'
   return {
     id: `group-${index}`,
-    type: defaultTypeLabel ?? '',
+    type: normalizedType,
+    isCertificate: CERTIFICATE_DOC_TYPES.has(normalizedType),
     files: fileMeta ? [fileMeta] : [],
   }
 }
 
 function groupDocumentsByType(documentRows) {
-  const docsByType = new Map()
-  const certsByType = new Map()
+  if (!Array.isArray(documentRows)) {
+    return []
+  }
+
+  const groupsByType = new Map()
 
   documentRows.forEach((row, index) => {
     const rawType = row?.doc_type
-    const typeKey = rawType ? rawType.toString().toUpperCase() : 'UNSPECIFIED'
-    const targetMap = CERTIFICATE_DOC_TYPES.has(typeKey) ? certsByType : docsByType
-    const mapKey = typeKey || 'UNSPECIFIED'
+    const normalizedType = rawType ? rawType.toString().toUpperCase() : 'UNSPECIFIED'
+    const mapKey = normalizedType || `UNSPECIFIED-${index}`
 
-    if (!targetMap.has(mapKey)) {
-      targetMap.set(mapKey, {
-        id: `${CERTIFICATE_DOC_TYPES.has(typeKey) ? 'cert' : 'doc'}-${mapKey.toLowerCase() || index}`,
-        type: mapKey,
+    if (!groupsByType.has(mapKey)) {
+      groupsByType.set(mapKey, {
+        id: `doc-${mapKey.toLowerCase() || index}`,
+        type: normalizedType,
+        isCertificate: CERTIFICATE_DOC_TYPES.has(normalizedType),
         files: [],
       })
     }
@@ -130,20 +159,18 @@ function groupDocumentsByType(documentRows) {
       size: null,
       storage_path: row?.storage_path ?? null,
       uploaded_at: row?.uploaded_at ?? null,
+      expiry_date: row?.expiry_date ?? null,
     }
 
-    targetMap.get(mapKey).files.push(fileMeta)
+    groupsByType.get(mapKey).files.push(fileMeta)
   })
 
-  return {
-    documents: Array.from(docsByType.values()),
-    certificates: Array.from(certsByType.values()),
-  }
+  return Array.from(groupsByType.values())
 }
 
 function createFormStateFromSupplier(supplier, documentRows = []) {
-  const fallbackDocuments = Array.isArray(supplier?.documents)
-    ? supplier.documents.map((item, index) => normalizeFileGroup(item, index, 'Document'))
+  const baseFallbackDocuments = Array.isArray(supplier?.documents)
+    ? supplier.documents.map((item, index) => normalizeFileGroup(item, index, 'DOCUMENT'))
     : []
 
   const rawCertificates = Array.isArray(supplier?.certificates)
@@ -152,7 +179,11 @@ function createFormStateFromSupplier(supplier, documentRows = []) {
     ? [supplier.certificate]
     : []
 
-  const fallbackCertificates = rawCertificates.map((item, index) => normalizeFileGroup(item, index, 'Certificate'))
+  const certificateFallback = rawCertificates.map((item, index) =>
+    normalizeFileGroup(item, baseFallbackDocuments.length + index, 'CERTIFICATE')
+  )
+
+  const fallbackDocuments = [...baseFallbackDocuments, ...certificateFallback]
 
   const normalizedSupportingFiles = Array.isArray(supplier?.files)
     ? supplier.files
@@ -160,7 +191,7 @@ function createFormStateFromSupplier(supplier, documentRows = []) {
         .filter((meta) => meta !== null)
     : []
 
-  const grouped = documentRows.length > 0 ? groupDocumentsByType(documentRows) : null
+  const groupedDocuments = documentRows.length > 0 ? groupDocumentsByType(documentRows) : null
 
   return {
     id: supplier?.id ?? null,
@@ -174,8 +205,7 @@ function createFormStateFromSupplier(supplier, documentRows = []) {
     primary_contact_name: supplier?.primary_contact_name ?? '',
     primary_contact_email: supplier?.primary_contact_email ?? '',
     primary_contact_phone: supplier?.primary_contact_phone ?? '',
-    documents: grouped?.documents ?? fallbackDocuments,
-    certificates: grouped?.certificates ?? fallbackCertificates,
+    documents: groupedDocuments ?? fallbackDocuments,
     files: normalizedSupportingFiles,
     created_at: supplier?.created_at ?? null,
   }
@@ -219,7 +249,7 @@ function SupplierDetail() {
 
       const { data: documentRows, error: documentsError } = await supabase
         .from('documents')
-        .select('id, owner_type, owner_id, name, doc_type, storage_path, uploaded_at')
+        .select('id, owner_type, owner_id, name, doc_type, storage_path, uploaded_at, expiry_date')
         .eq('owner_type', 'supplier')
         .eq('owner_id', supplierId)
 
@@ -304,24 +334,27 @@ function SupplierDetail() {
     )
   }
 
-  const totalDocumentFiles = supplierData.documents.reduce((count, entry) => count + entry.files.length, 0)
-  const totalCertificateFiles = supplierData.certificates.reduce((count, entry) => count + entry.files.length, 0)
+  const documents = Array.isArray(supplierData.documents) ? supplierData.documents : []
+  const documentGroups = documents.filter((group) => !group.isCertificate)
+  const certificateGroups = documents.filter((group) => group.isCertificate)
+  const totalDocumentFiles = documentGroups.reduce((count, entry) => count + entry.files.length, 0)
+  const totalCertificateFiles = certificateGroups.reduce((count, entry) => count + entry.files.length, 0)
   const complianceStats = [
     {
       title: 'Document Types',
-      value: supplierData.documents.length,
+      value: documentGroups.length,
       description: totalDocumentFiles
         ? `${totalDocumentFiles} file${totalDocumentFiles === 1 ? '' : 's'} uploaded`
         : 'No files uploaded',
-      tone: supplierData.documents.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
+      tone: documentGroups.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
     },
     {
       title: 'Certificates',
-      value: supplierData.certificates.length,
+      value: certificateGroups.length,
       description: totalCertificateFiles
         ? `${totalCertificateFiles} file${totalCertificateFiles === 1 ? '' : 's'} uploaded`
         : 'No files uploaded',
-      tone: supplierData.certificates.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
+      tone: certificateGroups.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
     },
     {
       title: 'Supporting Files',
@@ -497,10 +530,10 @@ function SupplierDetail() {
               <CardDescription>Compliance and registration documentation grouped by type</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-text-dark">
-              {supplierData.documents.length === 0 ? (
+              {documentGroups.length === 0 ? (
                 <p className="text-text-dark/60">No document types captured.</p>
               ) : (
-                supplierData.documents.map((documentType) => (
+                documentGroups.map((documentType) => (
                   <div
                     key={documentType.id}
                     className="space-y-2 rounded-md border border-olive-light/40 bg-olive-light/10 p-3"
@@ -522,7 +555,14 @@ function SupplierDetail() {
                             key={`${documentType.id}-file-${index}`}
                             className="flex items-center justify-between gap-2 rounded bg-white/80 px-3 py-2"
                           >
-                            <span className="truncate">{file.name}</span>
+                            <div className="flex flex-col flex-1">
+                              <span className="truncate">{file.name}</span>
+                              {formatDateOnly(file.expiry_date) && (
+                                <span className="text-xs text-text-dark/60">
+                                  Expires {formatDateOnly(file.expiry_date)}
+                                </span>
+                              )}
+                            </div>
                             {formatFileSize(file.size) && (
                               <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
                             )}
@@ -542,10 +582,10 @@ function SupplierDetail() {
               <CardDescription>Certification coverage tracked for this supplier</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-text-dark">
-              {supplierData.certificates.length === 0 ? (
+              {certificateGroups.length === 0 ? (
                 <p className="text-text-dark/60">No certificate types captured.</p>
               ) : (
-                supplierData.certificates.map((certificateType) => (
+                certificateGroups.map((certificateType) => (
                   <div
                     key={certificateType.id}
                     className="space-y-2 rounded-md border border-olive-light/40 bg-olive-light/10 p-3"
@@ -567,7 +607,14 @@ function SupplierDetail() {
                             key={`${certificateType.id}-file-${index}`}
                             className="flex items-center justify-between gap-2 rounded bg-white/80 px-3 py-2"
                           >
-                            <span className="truncate">{file.name}</span>
+                            <div className="flex flex-col flex-1">
+                              <span className="truncate">{file.name}</span>
+                              {formatDateOnly(file.expiry_date) && (
+                                <span className="text-xs text-text-dark/60">
+                                  Expires {formatDateOnly(file.expiry_date)}
+                                </span>
+                              )}
+                            </div>
                             {formatFileSize(file.size) && (
                               <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
                             )}
