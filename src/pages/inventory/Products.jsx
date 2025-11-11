@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Package2, Plus, RefreshCcw, X } from 'lucide-react'
+import { Package2, Pencil, Plus, RefreshCcw, X } from 'lucide-react'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
@@ -26,6 +26,20 @@ const sortableColumns = [
   { value: 'target_stock', label: 'Target Stock' },
   { value: 'updated_at', label: 'Last Updated' },
 ]
+
+function createEmptyProductForm() {
+  return {
+    sku: '',
+    name: '',
+    category: '',
+    base_unit_id: '',
+    reorder_point: '',
+    safety_stock: '',
+    target_stock: '',
+    status: 'ACTIVE',
+    notes: '',
+  }
+}
 
 function parseDate(value) {
   if (!value) return null
@@ -74,18 +88,10 @@ function Products() {
   const [sortBy, setSortBy] = useState('name')
   const [sortDirection, setSortDirection] = useState('asc')
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [modalMode, setModalMode] = useState('create')
+  const [editingProduct, setEditingProduct] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [formData, setFormData] = useState({
-    sku: '',
-    name: '',
-    category: '',
-    base_unit_id: '',
-    reorder_point: '',
-    safety_stock: '',
-    target_stock: '',
-    status: 'ACTIVE',
-    notes: '',
-  })
+  const [formData, setFormData] = useState(() => createEmptyProductForm())
   const [formErrors, setFormErrors] = useState({})
 
   const fetchProducts = useCallback(async () => {
@@ -270,19 +276,11 @@ function Products() {
     return 'No products found.'
   }, [error, loading])
 
-  const handleOpenModal = () => {
-    setFormData({
-      sku: '',
-      name: '',
-      category: '',
-      base_unit_id: '',
-      reorder_point: '',
-      safety_stock: '',
-      target_stock: '',
-      status: 'ACTIVE',
-      notes: '',
-    })
+  const handleOpenCreateModal = () => {
+    setFormData(createEmptyProductForm())
     setFormErrors({})
+    setModalMode('create')
+    setEditingProduct(null)
     setIsModalOpen(true)
   }
 
@@ -292,7 +290,44 @@ function Products() {
     }
     setIsModalOpen(false)
     setFormErrors({})
+    setModalMode('create')
+    setEditingProduct(null)
+    setFormData(createEmptyProductForm())
   }
+
+  const handleOpenEditModal = useCallback((product) => {
+    if (!product) {
+      return
+    }
+
+    setFormData({
+      sku: product.sku ?? '',
+      name: product.name ?? '',
+      category: product.category ?? '',
+      base_unit_id:
+        product.base_unit_id !== null && product.base_unit_id !== undefined
+          ? String(product.base_unit_id)
+          : '',
+      reorder_point:
+        product.reorder_point !== null && product.reorder_point !== undefined
+          ? String(product.reorder_point)
+          : '',
+      safety_stock:
+        product.safety_stock !== null && product.safety_stock !== undefined
+          ? String(product.safety_stock)
+          : '',
+      target_stock:
+        product.target_stock !== null && product.target_stock !== undefined
+          ? String(product.target_stock)
+          : '',
+      status: (product.status ?? 'ACTIVE').toUpperCase(),
+      notes: product.notes ?? '',
+    })
+    setFormErrors({})
+    setModalMode('edit')
+    setEditingProduct(product)
+    setIsModalOpen(true)
+  }, [])
 
   const handleFormChange = (event) => {
     const { name, value } = event.target
@@ -343,6 +378,7 @@ function Products() {
     }
 
     setIsSubmitting(true)
+    const isEditing = modalMode === 'edit' && editingProduct?.id !== undefined
     try {
       const payload = {
         sku: formData.sku.trim(),
@@ -356,37 +392,54 @@ function Products() {
         notes: formData.notes.trim() || null,
       }
 
-      const { data, error: insertError } = await supabase
-        .from('products')
-        .insert(payload)
-        .select(
-          'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
-        )
-        .single()
+      if (isEditing) {
+        const { data, error: updateError } = await supabase
+          .from('products')
+          .update(payload)
+          .eq('id', editingProduct.id)
+          .select(
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
+          )
+          .single()
 
-      if (insertError) {
-        throw insertError
+        if (updateError) {
+          throw updateError
+        }
+
+        toast.success('Product updated successfully.')
+        setProducts((previous) =>
+          data ? previous.map((product) => (product.id === data.id ? data : product)) : previous
+        )
+      } else {
+        const { data, error: insertError } = await supabase
+          .from('products')
+          .insert(payload)
+          .select(
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
+          )
+          .single()
+
+        if (insertError) {
+          throw insertError
+        }
+
+        toast.success('Product added successfully.')
+        setProducts((previous) => (data ? [data, ...previous] : previous))
       }
 
-      toast.success('Product added successfully.')
-      setProducts((previous) => (data ? [data, ...previous] : previous))
       setIsModalOpen(false)
-      setIsSubmitting(false)
-      setFormData({
-        sku: '',
-        name: '',
-        category: '',
-        base_unit_id: '',
-        reorder_point: '',
-        safety_stock: '',
-        target_stock: '',
-        status: 'ACTIVE',
-        notes: '',
-      })
+      setModalMode('create')
+      setEditingProduct(null)
+      setFormData(createEmptyProductForm())
       setFormErrors({})
-    } catch (insertError) {
-      console.error('Error creating product', insertError)
-      toast.error(insertError.message ?? 'Unable to add product.')
+    } catch (submitError) {
+      const errorMessage =
+        submitError?.message ??
+        (isEditing ? 'Unable to update product.' : 'Unable to add product.')
+
+      console.error(isEditing ? 'Error updating product' : 'Error creating product', submitError)
+      toast.error(errorMessage)
+    } finally {
       setIsSubmitting(false)
     }
   }
@@ -517,16 +570,58 @@ function Products() {
         cellClassName: 'text-right text-sm text-text-dark/70',
         mobileValueClassName: 'text-right text-sm text-text-dark',
       },
+      {
+        key: 'actions',
+        header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileHeader: 'Actions',
+        mobileValueClassName: 'text-right',
+        render: (product) => (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={(event) => {
+                event.stopPropagation()
+                handleOpenEditModal(product)
+              }}
+            >
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </Button>
+          </div>
+        ),
+        mobileRender: (product) => (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="w-full justify-center"
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              handleOpenEditModal(product)
+            }}
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
+        ),
+      },
     ],
-    [unitMap]
+    [handleOpenEditModal, unitMap]
   )
+
+  const isEditMode = modalMode === 'edit'
 
   return (
     <PageLayout
       title="Products"
       activeItem="inventory"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
+        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateModal}>
           <Plus className="mr-2 h-4 w-4" />
           Add Product
         </Button>
@@ -683,9 +778,13 @@ function Products() {
           <div className="w-full max-w-2xl rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
               <div>
-                <h2 className="text-lg font-semibold text-text-dark">Add Product</h2>
+                <h2 className="text-lg font-semibold text-text-dark">
+                  {isEditMode ? 'Edit Product' : 'Add Product'}
+                </h2>
                 <p className="text-sm text-text-dark/70">
-                  Capture the key details for a new product SKU.
+                  {isEditMode
+                    ? 'Update the key details for this product SKU.'
+                    : 'Capture the key details for a new product SKU.'}
                 </p>
               </div>
               <Button
@@ -859,7 +958,11 @@ function Products() {
                   Cancel
                 </Button>
                 <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                  {isSubmitting ? 'Saving…' : 'Save Product'}
+                  {isSubmitting
+                    ? 'Saving…'
+                    : isEditMode
+                      ? 'Update Product'
+                      : 'Save Product'}
                 </Button>
               </div>
             </form>

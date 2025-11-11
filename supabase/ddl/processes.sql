@@ -4,11 +4,16 @@ create table if not exists public.processes (
   code text not null,
   name text not null,
   description text null,
+  product_ids integer[] not null default '{}'::integer[],
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
   constraint processes_pkey primary key (id),
   constraint processes_code_key unique (code)
 ) tablespace pg_default;
+
+create index if not exists processes_product_ids_idx
+  on public.processes using gin (product_ids)
+  tablespace pg_default;
 
 do $$
 begin

@@ -118,9 +118,14 @@ function ProcessDetail() {
   const [isSaving, setIsSaving] = useState(false)
   const [warehouses, setWarehouses] = useState([])
   const [warehousesLoading, setWarehousesLoading] = useState(false)
+  const [products, setProducts] = useState([])
+  const [productsLoading, setProductsLoading] = useState(false)
+  const [productsError, setProductsError] = useState(null)
+  const [productProcesses, setProductProcesses] = useState([])
   const [formState, setFormState] = useState({
     code: '',
     name: '',
+    productIds: [],
     steps: [],
   })
 
@@ -144,11 +149,36 @@ function ProcessDetail() {
     setWarehousesLoading(false)
   }, [])
 
+  const fetchProducts = useCallback(async () => {
+    setProductsLoading(true)
+    setProductsError(null)
+
+    const { data, error: fetchError } = await supabase
+      .from('products')
+      .select('id, sku, name')
+      .order('name', { ascending: true })
+
+    if (fetchError) {
+      console.error('Error fetching products for process editor', fetchError)
+      toast.error(fetchError.message ?? 'Unable to load products from Supabase.')
+      setProducts([])
+      setProductsError(fetchError)
+      setProductsLoading(false)
+      return
+    }
+
+    setProducts(Array.isArray(data) ? data : [])
+    setProductsLoading(false)
+  }, [])
+
   useEffect(() => {
     fetchWarehouses().catch((fetchError) => {
       console.error('Unexpected error fetching warehouses for process editor', fetchError)
     })
-  }, [fetchWarehouses])
+    fetchProducts().catch((fetchError) => {
+      console.error('Unexpected error fetching products for process editor', fetchError)
+    })
+  }, [fetchWarehouses, fetchProducts])
 
   const fetchProcessData = useCallback(
     async ({ signal } = {}) => {
@@ -169,10 +199,10 @@ function ProcessDetail() {
       setLoading(true)
       setError(null)
 
-      const [processResult, stepsResult] = await Promise.all([
+      const [processResult, stepsResult, productProcessesResult] = await Promise.all([
         supabase
           .from('processes')
-          .select('id, code, name, created_at, updated_at')
+          .select('id, code, name, created_at, updated_at, product_ids')
           .eq('id', numericId)
           .maybeSingle(),
         supabase
@@ -180,6 +210,12 @@ function ProcessDetail() {
           .select('id, seq, step_code, step_name, description, requires_qc, default_location_id, estimated_duration, default_location:warehouses ( id, name )')
           .eq('process_id', numericId)
           .order('seq', { ascending: true }),
+        supabase
+          .from('product_processes')
+          .select('id, product_id, is_default')
+          .eq('process_id', numericId)
+          .order('is_default', { ascending: false })
+          .order('product_id', { ascending: true }),
       ])
 
       if (signal?.aborted) {
@@ -221,6 +257,14 @@ function ProcessDetail() {
             }))
           : []
         setSteps(normalizedSteps)
+      }
+
+      if (productProcessesResult.error) {
+        console.error('Error fetching process product assignments', productProcessesResult.error)
+        toast.error(productProcessesResult.error.message ?? 'Unable to load process products.')
+        setProductProcesses([])
+      } else {
+        setProductProcesses(Array.isArray(productProcessesResult.data) ? productProcessesResult.data : [])
       }
 
       setLoading(false)
@@ -268,9 +312,18 @@ function ProcessDetail() {
       }
     })
 
+    const assignedProductIds = (
+      productProcesses.length > 0
+        ? productProcesses.map((item) => item.product_id)
+        : Array.isArray(process.product_ids)
+        ? process.product_ids
+        : []
+    ).filter((value) => Number.isInteger(value) && value > 0)
+
     setFormState({
       code: process.code ?? '',
       name: process.name ?? '',
+      productIds: assignedProductIds,
       steps: preparedSteps,
     })
     setIsEditModalOpen(true)
@@ -356,12 +409,34 @@ function ProcessDetail() {
     }))
   }
 
+  const handleToggleProductSelection = (productId) => {
+    setFormState((prev) => {
+      const productIdNumber = Number(productId)
+      if (!Number.isInteger(productIdNumber) || productIdNumber <= 0) {
+        return prev
+      }
+
+      const exists = prev.productIds.includes(productIdNumber)
+      return {
+        ...prev,
+        productIds: exists
+          ? prev.productIds.filter((id) => id !== productIdNumber)
+          : [...prev.productIds, productIdNumber],
+      }
+    })
+  }
+
   const validateFormState = () => {
     const trimmedCode = formState.code.trim()
     const trimmedName = formState.name.trim()
 
     if (!trimmedCode || !trimmedName) {
       toast.error('Please provide both process code and name.')
+      return false
+    }
+
+    if (!Array.isArray(formState.productIds) || formState.productIds.length === 0) {
+      toast.error('Please select at least one product for this process.')
       return false
     }
 
@@ -407,21 +482,11 @@ function ProcessDetail() {
     setIsSaving(true)
 
     try {
-      const processPayload = {
-        code: formState.code.trim(),
-        name: formState.name.trim(),
-      }
-
-      const { data: updatedProcess, error: updateProcessError } = await supabase
-        .from('processes')
-        .update(processPayload)
-        .eq('id', process.id)
-        .select('id, code, name, created_at, updated_at')
-        .single()
-
-      if (updateProcessError) {
-        throw updateProcessError
-      }
+      const productIdsPayload = Array.isArray(formState.productIds)
+        ? formState.productIds
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+        : []
 
       const normalizedSteps = formState.steps.map((step, index) => {
         const hoursInput = (step.duration_hours ?? '').trim()
@@ -507,6 +572,83 @@ function ProcessDetail() {
         }
       }
 
+      const existingProductProcessMap = new Map(
+        productProcesses
+          .filter((item) => Number.isInteger(item.product_id))
+          .map((item) => [item.product_id, item]),
+      )
+      const defaultProductId = productIdsPayload[0] ?? null
+
+      const productProcessIdsToDelete = productProcesses
+        .filter((item) => !productIdsPayload.includes(item.product_id))
+        .map((item) => item.id)
+        .filter((id) => Number.isInteger(id))
+
+      if (productProcessIdsToDelete.length > 0) {
+        const { error: deleteProductProcessesError } = await supabase
+          .from('product_processes')
+          .delete()
+          .in('id', productProcessIdsToDelete)
+
+        if (deleteProductProcessesError) {
+          throw deleteProductProcessesError
+        }
+      }
+
+      const productProcessUpserts = productIdsPayload
+        .filter((productId) => existingProductProcessMap.has(productId))
+        .map((productId) => ({
+          id: existingProductProcessMap.get(productId)?.id,
+          process_id: process.id,
+          product_id: productId,
+          is_default: productId === defaultProductId,
+        }))
+
+      if (productProcessUpserts.length > 0) {
+        const { error: upsertProductProcessesError } = await supabase
+          .from('product_processes')
+          .upsert(productProcessUpserts, { onConflict: 'id' })
+
+        if (upsertProductProcessesError) {
+          throw upsertProductProcessesError
+        }
+      }
+
+      const productProcessInserts = productIdsPayload
+        .filter((productId) => !existingProductProcessMap.has(productId))
+        .map((productId) => ({
+          process_id: process.id,
+          product_id: productId,
+          is_default: productId === defaultProductId,
+        }))
+
+      if (productProcessInserts.length > 0) {
+        const { error: insertProductProcessesError } = await supabase
+          .from('product_processes')
+          .insert(productProcessInserts)
+
+        if (insertProductProcessesError) {
+          throw insertProductProcessesError
+        }
+      }
+
+      const processPayload = {
+        code: formState.code.trim(),
+        name: formState.name.trim(),
+        product_ids: productIdsPayload,
+      }
+
+      const { data: updatedProcess, error: updateProcessError } = await supabase
+        .from('processes')
+        .update(processPayload)
+        .eq('id', process.id)
+        .select('id, code, name, created_at, updated_at, product_ids')
+        .single()
+
+      if (updateProcessError) {
+        throw updateProcessError
+      }
+
       toast.success('Process updated successfully.')
 
       if (updatedProcess) {
@@ -537,6 +679,45 @@ function ProcessDetail() {
       ),
     [steps],
   )
+  const productLookup = useMemo(() => {
+    const lookup = new Map()
+    products.forEach((product) => {
+      if (Number.isInteger(product.id)) {
+        lookup.set(product.id, product)
+      }
+    })
+    return lookup
+  }, [products])
+
+  const assignedProducts = useMemo(() => {
+    const baseAssignments =
+      productProcesses.length > 0
+        ? productProcesses.map((item) => ({
+            product_id: item.product_id,
+            is_default: Boolean(item.is_default),
+          }))
+        : Array.isArray(process?.product_ids)
+        ? process.product_ids.map((productId) => ({
+            product_id: productId,
+            is_default: false,
+          }))
+        : []
+
+    return baseAssignments
+      .map((assignment) => {
+        const productInfo = productLookup.get(assignment.product_id)
+        if (!productInfo) {
+          return null
+        }
+        return {
+          product_id: assignment.product_id,
+          is_default: assignment.is_default,
+          name: productInfo.name,
+          sku: productInfo.sku,
+        }
+      })
+      .filter(Boolean)
+  }, [productProcesses, process, productLookup])
 
   if (loading) {
     return (
@@ -619,6 +800,43 @@ function ProcessDetail() {
               <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-3">
                 <div className="text-sm font-medium text-text-dark/70">Quality Checks</div>
                 <div className="mt-1 text-lg font-semibold text-text-dark">{qcSteps}</div>
+              </div>
+              <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-3 sm:col-span-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-text-dark/70">Assigned Products</p>
+                    <p className="text-xs text-text-dark/60">
+                      {assignedProducts.length > 0
+                        ? `${assignedProducts.length} product${assignedProducts.length === 1 ? '' : 's'}`
+                        : 'No products assigned'}
+                    </p>
+                  </div>
+                </div>
+                {assignedProducts.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {assignedProducts.map((product) => (
+                      <div
+                        key={product.product_id}
+                        className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-text-dark shadow-sm"
+                      >
+                        <span>{product.name}</span>
+                        {product.is_default ? (
+                          <span className="rounded-full bg-olive-light/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-olive-dark">
+                            Default
+                          </span>
+                        ) : product.sku ? (
+                          <span className="text-[10px] uppercase tracking-wide text-text-dark/50">
+                            {product.sku}
+                          </span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-md border border-dashed border-olive-light/40 bg-white py-4 text-center text-xs text-text-dark/50">
+                    Assign products to this process to make it available in production workflows.
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -771,6 +989,56 @@ function ProcessDetail() {
                     className="bg-white"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-text-dark">
+                  Products <span className="text-red-500">*</span>
+                </Label>
+                {productsLoading ? (
+                  <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                    Loading products…
+                  </div>
+                ) : productsError ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {productsError.message ?? 'Unable to load products.'}
+                  </div>
+                ) : products.length === 0 ? (
+                  <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                    No products available. Add products before configuring a process.
+                  </div>
+                ) : (
+                  <div className="max-h-56 overflow-y-auto rounded-lg border border-olive-light/30 bg-olive-light/5">
+                    <ul className="divide-y divide-olive-light/20">
+                      {products.map((product) => {
+                        const isSelected = formState.productIds.includes(product.id)
+                        return (
+                          <li key={product.id}>
+                            <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
+                              <input
+                                type="checkbox"
+                                className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                                checked={isSelected}
+                                onChange={() => handleToggleProductSelection(product.id)}
+                              />
+                              <div>
+                                <p className="font-medium text-text-dark">{product.name}</p>
+                                <p className="text-xs uppercase tracking-wide text-text-dark/60">
+                                  {product.sku || 'No SKU'}
+                                </p>
+                              </div>
+                            </label>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                )}
+                {Array.isArray(formState.productIds) && formState.productIds.length > 0 && (
+                  <p className="text-xs text-text-dark/60">
+                    {formState.productIds.length} product{formState.productIds.length === 1 ? '' : 's'} selected
+                  </p>
+                )}
               </div>
 
               <div className="space-y-3 border-t border-olive-light/20 pt-4">

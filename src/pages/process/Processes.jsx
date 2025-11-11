@@ -43,11 +43,15 @@ function Processes() {
   const [error, setError] = useState(null)
   const [warehouses, setWarehouses] = useState([])
   const [warehousesLoading, setWarehousesLoading] = useState(true)
+  const [products, setProducts] = useState([])
+  const [productsLoading, setProductsLoading] = useState(true)
+  const [productsError, setProductsError] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState({
     code: '',
     name: '',
+    productIds: [],
     steps: []
   })
   const navigate = useNavigate()
@@ -58,7 +62,7 @@ function Processes() {
 
     const { data, error: fetchError } = await supabase
       .from('processes')
-      .select('id, code, name, created_at, steps:process_steps(count)')
+      .select('id, code, name, product_ids, created_at, steps:process_steps(count)')
       .order('created_at', { ascending: false, nullsFirst: false })
 
     if (fetchError) {
@@ -76,6 +80,9 @@ function Processes() {
           code: process.code,
           name: process.name,
           created_at: process.created_at,
+          product_ids: Array.isArray(process.product_ids)
+            ? process.product_ids.filter((value) => Number.isInteger(value) && value > 0)
+            : [],
           step_count: Array.isArray(process.steps) && process.steps.length > 0
             ? Number(process.steps[0]?.count ?? 0)
             : 0,
@@ -106,6 +113,28 @@ function Processes() {
     setWarehousesLoading(false)
   }, [])
 
+  const fetchProducts = useCallback(async () => {
+    setProductsLoading(true)
+    setProductsError(null)
+
+    const { data, error: fetchError } = await supabase
+      .from('products')
+      .select('id, sku, name')
+      .order('name', { ascending: true })
+
+    if (fetchError) {
+      console.error('Error fetching products for processes form', fetchError)
+      toast.error(fetchError.message ?? 'Unable to load products from Supabase.')
+      setProducts([])
+      setProductsError(fetchError)
+      setProductsLoading(false)
+      return
+    }
+
+    setProducts(Array.isArray(data) ? data : [])
+    setProductsLoading(false)
+  }, [])
+
   useEffect(() => {
     fetchProcesses()
   }, [fetchProcesses])
@@ -113,6 +142,20 @@ function Processes() {
   useEffect(() => {
     fetchWarehouses()
   }, [fetchWarehouses])
+
+  useEffect(() => {
+    fetchProducts()
+  }, [fetchProducts])
+
+  const productLookup = useMemo(() => {
+    const lookup = new Map()
+    products.forEach((product) => {
+      if (Number.isInteger(product.id)) {
+        lookup.set(product.id, product)
+      }
+    })
+    return lookup
+  }, [products])
 
   const handleOpenModal = () => {
     setIsModalOpen(true)
@@ -124,6 +167,7 @@ function Processes() {
     setFormData({
       code: '',
       name: '',
+      productIds: [],
       steps: []
     })
   }
@@ -166,6 +210,23 @@ function Processes() {
   }
 
   const handleStepChange = (stepId, field, value) => {
+  const handleToggleProductSelection = (productId) => {
+    setFormData((prev) => {
+      const productIdNumber = Number(productId)
+      if (!Number.isInteger(productIdNumber) || productIdNumber <= 0) {
+        return prev
+      }
+
+      const exists = prev.productIds.includes(productIdNumber)
+      return {
+        ...prev,
+        productIds: exists
+          ? prev.productIds.filter((id) => id !== productIdNumber)
+          : [...prev.productIds, productIdNumber],
+      }
+    })
+  }
+
     if (field === 'step_code') {
       return
     }
@@ -183,6 +244,11 @@ function Processes() {
 
     if (!trimmedCode || !trimmedName) {
       toast.error('Please fill in all required fields (Code and Name).')
+      return false
+    }
+
+    if (!Array.isArray(formData.productIds) || formData.productIds.length === 0) {
+      toast.error('Please select at least one product for this process.')
       return false
     }
 
@@ -209,9 +275,16 @@ function Processes() {
 
     setIsSubmitting(true)
     try {
+      const productIdsPayload = Array.isArray(formData.productIds)
+        ? formData.productIds
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+        : []
+
       const processPayload = {
         code: formData.code.trim(),
         name: formData.name.trim(),
+        product_ids: productIdsPayload
       }
 
       const { data: insertedProcess, error: insertProcessError } = await supabase
@@ -222,6 +295,23 @@ function Processes() {
 
       if (insertProcessError) {
         throw insertProcessError
+      }
+
+      if (productIdsPayload.length > 0) {
+        const productProcessesPayload = productIdsPayload.map((productId, index) => ({
+          product_id: productId,
+          process_id: insertedProcess.id,
+          is_default: index === 0,
+        }))
+
+        const { error: productProcessError } = await supabase
+          .from('product_processes')
+          .insert(productProcessesPayload)
+
+        if (productProcessError) {
+          await supabase.from('processes').delete().eq('id', insertedProcess.id)
+          throw productProcessError
+        }
       }
 
       if (Array.isArray(formData.steps) && formData.steps.length > 0) {
@@ -241,7 +331,8 @@ function Processes() {
           .insert(stepsPayload)
 
         if (insertStepsError) {
-          // Attempt to roll back the created process for consistency
+          // Attempt to roll back the created process and product mappings for consistency
+          await supabase.from('product_processes').delete().eq('process_id', insertedProcess.id)
           await supabase.from('processes').delete().eq('id', insertedProcess.id)
           throw insertStepsError
         }
@@ -253,6 +344,7 @@ function Processes() {
           ? [
               {
                 ...insertedProcess,
+                product_ids: productIdsPayload,
                 step_count: formData.steps.length,
               },
               ...previous,
@@ -338,46 +430,78 @@ function Processes() {
             </div>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {processes.map((process) => (
-                <div
-                  key={process.id}
-                  className="group flex h-full flex-col justify-between rounded-xl border border-olive-light/40 bg-white p-6 shadow-sm transition-all duration-200 hover:border-olive hover:shadow-lg"
-                >
-                  <div className="flex flex-col gap-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="inline-flex items-center rounded-full border border-olive/40 bg-olive/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
-                        {process.code}
-                      </span>
-                      <span className="rounded-full bg-olive-light/30 px-3 py-1 text-xs font-semibold text-olive-dark">
-                        {process.step_count} {process.step_count === 1 ? 'step' : 'steps'}
-                      </span>
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-semibold text-text-dark group-hover:text-olive-dark">
-                        {process.name}
-                      </h3>
-                      <p className="mt-2 text-sm text-text-dark/60">
-                        Created {formatDate(process.created_at)}
-                      </p>
-                    </div>
-                  </div>
+              {processes.map((process) => {
+                const assignedProducts = Array.isArray(process.product_ids)
+                  ? process.product_ids
+                      .map((productId) => productLookup.get(productId))
+                      .filter(Boolean)
+                  : []
 
-                  <div className="mt-6 flex items-center justify-between gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-olive hover:bg-olive-light/20 hover:text-olive-dark"
-                      onClick={() => handleViewProcess(process.id)}
-                    >
-                      <Eye className="mr-2 h-4 w-4" />
-                      View
-                    </Button>
-                    <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                return (
+                  <div
+                    key={process.id}
+                    className="group flex h-full flex-col justify-between rounded-xl border border-olive-light/40 bg-white p-6 shadow-sm transition-all duration-200 hover:border-olive hover:shadow-lg"
+                  >
+                    <div className="flex flex-col gap-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="inline-flex items-center rounded-full border border-olive/40 bg-olive/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
+                          {process.code}
+                        </span>
+                        <span className="rounded-full bg-olive-light/30 px-3 py-1 text-xs font-semibold text-olive-dark">
+                          {process.step_count} {process.step_count === 1 ? 'step' : 'steps'}
+                        </span>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark group-hover:text-olive-dark">
+                          {process.name}
+                        </h3>
+                        <p className="mt-2 text-sm text-text-dark/60">
+                          Created {formatDate(process.created_at)}
+                        </p>
+                      </div>
+                      <div className="mt-2 rounded-lg border border-olive-light/30 bg-olive-light/10 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                          Products
+                        </p>
+                        {assignedProducts.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {assignedProducts.slice(0, 3).map((product) => (
+                              <span
+                                key={product.id}
+                                className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-text-dark shadow-sm"
+                              >
+                                {product.name}
+                              </span>
+                            ))}
+                            {assignedProducts.length > 3 && (
+                              <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-medium text-olive-dark shadow-sm">
+                                +{assignedProducts.length - 3} more
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-text-dark/50">No products assigned.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-6 flex items-center justify-between gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-olive hover:bg-olive-light/20 hover:text-olive-dark"
+                        onClick={() => handleViewProcess(process.id)}
+                      >
+                        <Eye className="mr-2 h-4 w-4" />
+                        View
+                      </Button>
+                      <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </CardContent>
@@ -433,6 +557,56 @@ function Processes() {
                     className="bg-white"
                     required
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-text-dark">
+                    Products <span className="text-red-500">*</span>
+                  </Label>
+                  {productsLoading ? (
+                    <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                      Loading products…
+                    </div>
+                  ) : productsError ? (
+                    <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {productsError.message ?? 'Unable to load products.'}
+                    </div>
+                  ) : products.length === 0 ? (
+                    <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                      No products available. Add products before creating processes.
+                    </div>
+                  ) : (
+                    <div className="max-h-56 overflow-y-auto rounded-lg border border-olive-light/30 bg-olive-light/5">
+                      <ul className="divide-y divide-olive-light/20">
+                        {products.map((product) => {
+                          const isSelected = formData.productIds.includes(product.id)
+                          return (
+                            <li key={product.id}>
+                              <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
+                                <input
+                                  type="checkbox"
+                                  className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                                  checked={isSelected}
+                                  onChange={() => handleToggleProductSelection(product.id)}
+                                />
+                                <div>
+                                  <p className="font-medium text-text-dark">{product.name}</p>
+                                  <p className="text-xs uppercase tracking-wide text-text-dark/60">
+                                    {product.sku || 'No SKU'}
+                                  </p>
+                                </div>
+                              </label>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    </div>
+                  )}
+                  {Array.isArray(formData.productIds) && formData.productIds.length > 0 && (
+                    <p className="text-xs text-text-dark/60">
+                      {formData.productIds.length} product{formData.productIds.length === 1 ? '' : 's'} selected
+                    </p>
+                  )}
                 </div>
 
                 {/* Process Steps Section */}

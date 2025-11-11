@@ -31,16 +31,38 @@ function formatDateTime(value) {
   }).format(date)
 }
 
+function toLocalDateTimeInput(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  const tzOffsetMinutes = date.getTimezoneOffset()
+  const localMillis = date.getTime() - tzOffsetMinutes * 60 * 1000
+  return new Date(localMillis).toISOString().slice(0, 16)
+}
+
 const STATUS_BADGES = {
   ACCEPTED: 'bg-green-100 text-green-800',
   REJECTED: 'bg-red-100 text-red-800',
 }
 
-const STATUS_OPTIONS = ['RECEIVED', 'INSPECTING', 'ACCEPTED', 'REJECTED']
+const STATUS_OPTIONS = ['ACCEPTED', 'REJECTED']
 
 function toDate(value) {
   if (!value) {
     return null
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+    if (match) {
+      const [, year, month, day] = match.map(Number)
+      const localDate = new Date(year, month - 1, day)
+      if (!Number.isNaN(localDate.getTime())) {
+        localDate.setHours(0, 0, 0, 0)
+        return localDate
+      }
+    }
   }
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
@@ -69,6 +91,26 @@ function isBetween(date, start, end) {
   return date >= start && date <= end
 }
 
+function toLocalDateKey(date) {
+  if (!(date instanceof Date)) {
+    return ''
+  }
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function toDateEndOfDay(value) {
+  const date = toDate(value)
+  if (!date) {
+    return null
+  }
+  const copy = new Date(date)
+  copy.setHours(23, 59, 59, 999)
+  return copy
+}
+
 function getMonthGrid(monthDate) {
   const startMonth = startOfMonth(monthDate)
   const startDay = startMonth.getDay()
@@ -86,7 +128,7 @@ function getMonthGrid(monthDate) {
 
 const WEEK_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
-const STEPS = ['Basic information', 'Supply batches', 'Quality evaluation', 'Review & submit']
+const STEPS = ['Basic information', 'Quality evaluation', 'Supply batches & submit']
 
 function createInitialQualityEntries() {
   return SUPPLY_QUALITY_PARAMETERS.reduce((accumulator, parameter) => {
@@ -111,6 +153,24 @@ function calculateAverageScore(entries) {
   return Math.round((total / scores.length) * 100) / 100
 }
 
+function sanitiseAcceptedQuantityInput(value) {
+  if (value === undefined || value === null) {
+    return ''
+  }
+
+  const stringValue = String(value).trim()
+  if (stringValue === '') {
+    return ''
+  }
+
+  if (stringValue === '0' || stringValue.startsWith('0.')) {
+    return stringValue
+  }
+
+  const normalised = stringValue.replace(/^0+(?=\d)/, '')
+  return normalised === '' ? '0' : normalised
+}
+
 function Supplies() {
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -123,6 +183,7 @@ function Supplies() {
   const [warehouses, setWarehouses] = useState([])
   const [products, setProducts] = useState([])
   const [units, setUnits] = useState([])
+  const [userProfiles, setUserProfiles] = useState([])
   const [qualityParameters, setQualityParameters] = useState(SUPPLY_QUALITY_PARAMETERS)
   const [qualityEntries, setQualityEntries] = useState(() => createInitialQualityEntries())
   const [loadingData, setLoadingData] = useState(true)
@@ -176,10 +237,12 @@ function Supplies() {
       doc_no: computeNextDocNumber(),
       warehouse_id: '',
       supplier_id: '',
-      received_at: new Date().toISOString().slice(0, 16),
+      received_at: toLocalDateTimeInput(),
       received_by: currentUserName,
-      doc_status: 'ACCEPTED',
-      supply_batches: [{ product_id: '', unit_id: '', qty: '' }],
+      doc_status: STATUS_OPTIONS[0],
+      supply_batches: [
+        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0' },
+      ],
     }),
     [computeNextDocNumber, currentUserName],
   )
@@ -229,7 +292,7 @@ function Supplies() {
   const filteredSupplies = useMemo(() => {
     const normalised = searchTerm.trim().toLowerCase()
     const fromDate = toDate(receivedFrom)
-    const toDateValue = toDate(receivedTo)
+    const toDateValue = toDateEndOfDay(receivedTo)
 
     return displaySupplies.filter((supply) => {
       const supplierNameLower = (supply.supplier_name ?? '').toLowerCase()
@@ -381,6 +444,54 @@ function Supplies() {
     }))
   }, [currentUserName])
 
+  useEffect(() => {
+    if (currentStep !== 2) {
+      return
+    }
+
+    setFormData((previous) => {
+      let changed = false
+      const nextBatches = previous.supply_batches.map((batch) => {
+        const quantity = Number.parseFloat(batch.qty)
+        const accepted = Number.parseFloat(batch.accepted_qty)
+        const rejected = Number.parseFloat(batch.rejected_qty)
+
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          return batch
+        }
+
+        if (!Number.isFinite(accepted) && !Number.isFinite(rejected)) {
+          changed = true
+          return {
+            ...batch,
+            accepted_qty: '0',
+            rejected_qty: quantity.toString(),
+          }
+        }
+
+        if (!Number.isFinite(accepted) && Number.isFinite(rejected)) {
+          changed = true
+          return {
+            ...batch,
+            accepted_qty: Math.max(quantity - rejected, 0).toString(),
+          }
+        }
+
+        if (Number.isFinite(accepted) && !Number.isFinite(rejected)) {
+          changed = true
+          return {
+            ...batch,
+            rejected_qty: Math.max(quantity - accepted, 0).toString(),
+          }
+        }
+
+        return batch
+      })
+
+      return changed ? { ...previous, supply_batches: nextBatches } : previous
+    })
+  }, [currentStep])
+
   const handleApplyDateRange = () => {
     setReceivedFrom(draftFrom)
     setReceivedTo(draftTo || draftFrom)
@@ -441,21 +552,21 @@ function Supplies() {
       return
     }
 
-    const dayISO = day.toISOString().slice(0, 10)
+    const dayKey = toLocalDateKey(day)
 
     if (!draftFromDate || (draftFromDate && draftToDate)) {
-      setDraftFrom(dayISO)
+      setDraftFrom(dayKey)
       setDraftTo('')
       return
     }
 
     if (day < draftFromDate) {
-      setDraftFrom(dayISO)
+      setDraftFrom(dayKey)
       setDraftTo('')
       return
     }
 
-    setDraftTo(dayISO)
+    setDraftTo(dayKey)
   }
 
   const handleInputChange = (field, value) => {
@@ -467,7 +578,55 @@ function Supplies() {
 
   const handleSupplyBatchChange = (index, field, value) => {
     const next = [...formData.supply_batches]
-    next[index][field] = value
+    const incomingValue = field === 'accepted_qty' ? sanitiseAcceptedQuantityInput(value) : value
+    next[index][field] = incomingValue
+
+    if (field === 'qty') {
+      const quantityNumber = Number.parseFloat(incomingValue)
+      const acceptedNumber = Number.parseFloat(next[index].accepted_qty)
+
+      if (Number.isFinite(quantityNumber)) {
+        if (Number.isFinite(acceptedNumber) && acceptedNumber > quantityNumber) {
+          next[index].accepted_qty = quantityNumber.toString()
+        }
+      } else {
+        next[index].accepted_qty = ''
+      }
+    }
+
+    if (field === 'accepted_qty' || field === 'qty') {
+      const quantityNumber = Number.parseFloat(next[index].qty)
+      const acceptedNumber = Number.parseFloat(next[index].accepted_qty)
+      const hasQuantity = Number.isFinite(quantityNumber) && quantityNumber > 0
+      const hasAccepted = Number.isFinite(acceptedNumber) && acceptedNumber >= 0
+
+      if (hasQuantity && hasAccepted && acceptedNumber > quantityNumber) {
+        toast.error('Accepted quantity cannot exceed received quantity.')
+        next[index].accepted_qty = quantityNumber.toString()
+        next[index].rejected_qty = '0'
+      } else if (hasQuantity && hasAccepted) {
+        const remainder = Math.max(quantityNumber - acceptedNumber, 0)
+        next[index].rejected_qty = remainder === 0 ? '0' : remainder.toString()
+      } else {
+        next[index].rejected_qty = ''
+        if (!hasAccepted && field === 'accepted_qty' && incomingValue === '') {
+          next[index].accepted_qty = ''
+        }
+      }
+    }
+
+    if (field !== 'accepted_qty' && field !== 'qty') {
+      const quantityNumber = Number.parseFloat(next[index].qty)
+      const acceptedNumber = Number.parseFloat(next[index].accepted_qty)
+
+      if (Number.isFinite(quantityNumber) && quantityNumber > 0 && Number.isFinite(acceptedNumber) && acceptedNumber >= 0) {
+        const remainder = Math.max(quantityNumber - acceptedNumber, 0)
+        next[index].rejected_qty = remainder === 0 ? '0' : remainder.toString()
+      } else {
+        next[index].rejected_qty = ''
+      }
+    }
+
     setFormData((prev) => ({
       ...prev,
       supply_batches: next,
@@ -477,7 +636,10 @@ function Supplies() {
   const addSupplyBatch = () => {
     setFormData((prev) => ({
       ...prev,
-      supply_batches: [...prev.supply_batches, { product_id: '', unit_id: '', qty: '' }],
+      supply_batches: [
+        ...prev.supply_batches,
+        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0' },
+      ],
     }))
   }
 
@@ -513,8 +675,7 @@ function Supplies() {
         if (
           !formData.warehouse_id ||
           !formData.supplier_id ||
-          !formData.received_at ||
-          !formData.doc_status
+          !formData.received_at
         ) {
           toast.error('Complete all required fields before continuing.')
           return false
@@ -522,22 +683,6 @@ function Supplies() {
       }
 
       if (step === 1) {
-        if (formData.supply_batches.length === 0) {
-          toast.error('Add at least one batch to continue.')
-          return false
-        }
-
-        const hasIncompleteBatch = formData.supply_batches.some(
-          (batch) => !batch.product_id || !batch.unit_id || !batch.qty,
-        )
-
-        if (hasIncompleteBatch) {
-          toast.error('Complete all batch details before continuing.')
-          return false
-        }
-      }
-
-      if (step === 2) {
         const missingScore = qualityParameters.find((parameter) => {
           const entry = qualityEntries[parameter.code]
           const score = Number(entry?.score)
@@ -548,6 +693,52 @@ function Supplies() {
           toast.error(`Provide a score for ${missingScore.name} before continuing.`)
           return false
         }
+      }
+
+      if (step === 2) {
+        if (formData.supply_batches.length === 0) {
+          toast.error('Add at least one batch to continue.')
+          return false
+        }
+
+        let errorMessage = ''
+        const invalidBatch = formData.supply_batches.find((batch) => {
+          const quantity = Number.parseFloat(batch.qty)
+          const accepted = Number.parseFloat(batch.accepted_qty)
+
+          if (!batch.product_id || !batch.unit_id || !batch.qty) {
+            errorMessage = 'Complete all batch details before submitting.'
+            return true
+          }
+
+          if (!Number.isFinite(quantity) || quantity <= 0) {
+            errorMessage = 'Received quantity must be greater than zero.'
+            return true
+          }
+
+          if (!Number.isFinite(accepted) || accepted < 0) {
+            errorMessage = 'Accepted quantity cannot be negative.'
+            return true
+          }
+
+          if (accepted > quantity) {
+            errorMessage = 'Accepted quantity cannot exceed received quantity.'
+            return true
+          }
+
+          return false
+        })
+
+        if (invalidBatch) {
+          toast.error(errorMessage || 'Resolve issues with batch quantities before submitting.')
+          return false
+        }
+
+        if (!formData.doc_status) {
+          toast.error('Select a supply status before submitting.')
+          return false
+        }
+
       }
 
       return true
@@ -595,17 +786,35 @@ function Supplies() {
     }
 
     const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
-    const receivedAtISO = formData.received_at
-      ? new Date(formData.received_at).toISOString()
-      : new Date().toISOString()
-    const hasPendingQuality = Object.values(qualityEntries).some(
-      (entry) => Number(entry.score) < 3,
-    )
+    const nowISO = new Date().toISOString()
+    const receivedAtISO = formData.received_at ? new Date(formData.received_at).toISOString() : nowISO
+    const hasQualityIssues = Object.values(qualityEntries).some((entry) => Number(entry.score) < 3)
     const overallScore = calculateAverageScore(qualityEntries)
-    const qualityStatus = hasPendingQuality ? 'PENDING' : 'PASSED'
-    const qualityCheckStatus = hasPendingQuality ? 'PENDING' : 'PASS'
+    const hasRejectedBatches = formData.supply_batches.some(
+      (batch) => Number.parseFloat(batch.rejected_qty) > 0,
+    )
+    const qualityStatus = hasQualityIssues || hasRejectedBatches ? 'FAILED' : 'PASSED'
+    const qualityCheckStatus = hasQualityIssues || hasRejectedBatches ? 'FAIL' : 'PASS'
 
-    const validLines = formData.supply_batches.filter((batch) => batch.product_id && batch.unit_id && batch.qty)
+    const validLines = formData.supply_batches
+      .map((batch) => {
+        const trimmedQty = batch.qty?.trim() ?? ''
+        const trimmedAccepted = batch.accepted_qty?.trim() ?? ''
+        const quantityNumber = Number.parseFloat(trimmedQty)
+        const acceptedNumber = Number.parseFloat(trimmedAccepted)
+        const computedRejected =
+          Number.isFinite(quantityNumber) && Number.isFinite(acceptedNumber)
+            ? Math.max(quantityNumber - acceptedNumber, 0)
+            : ''
+
+        return {
+          ...batch,
+          qty: trimmedQty,
+          accepted_qty: trimmedAccepted,
+          rejected_qty: computedRejected === '' ? '' : computedRejected.toString(),
+        }
+      })
+      .filter((batch) => batch.product_id && batch.unit_id && batch.qty)
 
     if (validLines.length === 0) {
       toast.error('Add at least one supply batch before saving.')
@@ -629,6 +838,8 @@ function Supplies() {
           transport_reference: null,
           pallets_received: null,
           notes: null,
+          created_at: nowISO,
+          updated_at: nowISO,
         })
         .select('*')
         .single()
@@ -642,9 +853,10 @@ function Supplies() {
       let insertedLines = []
       if (validLines.length > 0) {
         const supplyLineRows = validLines.map((line) => {
-          const quantity = Number(line.qty) || 0
-          const acceptedQty = formData.doc_status === 'ACCEPTED' ? quantity : 0
-          const rejectedQty = quantity - acceptedQty
+          const quantity = Number.parseFloat(line.qty) || 0
+          const acceptedRaw = Number.parseFloat(line.accepted_qty)
+          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
+          const rejectedQty = Math.max(quantity - acceptedQty, 0)
 
           return {
             supply_id: newSupplyId,
@@ -654,7 +866,7 @@ function Supplies() {
             received_qty: quantity,
             accepted_qty: acceptedQty,
             rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
-            variance_reason: rejectedQty > 0 ? 'Pending review' : null,
+            variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
           }
         })
 
@@ -672,9 +884,17 @@ function Supplies() {
 
       if (validLines.length > 0) {
         const supplyBatchRows = validLines.map((line, index) => {
-          const quantity = Number(line.qty) || 0
-          const acceptedQty = formData.doc_status === 'ACCEPTED' ? quantity : 0
+          const quantity = Number.parseFloat(line.qty) || 0
+          const acceptedRaw = Number.parseFloat(line.accepted_qty)
+          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
+          const rejectedQty = Math.max(quantity - acceptedQty, 0)
           const lotNumber = `LOT-${newSupplyId}-${String(index + 1).padStart(3, '0')}`
+          const batchQualityStatus =
+            rejectedQty === 0
+              ? 'PASSED'
+              : acceptedQty === 0
+              ? 'FAILED'
+              : 'HOLD'
 
           return {
             supply_id: newSupplyId,
@@ -684,10 +904,11 @@ function Supplies() {
             lot_no: lotNumber,
             received_qty: quantity,
             accepted_qty: acceptedQty,
-            rejected_qty: quantity - acceptedQty,
+            rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
             current_qty: acceptedQty,
-            quality_status: acceptedQty === quantity ? 'PASSED' : 'PENDING',
+            quality_status: batchQualityStatus,
             expiry_date: null,
+            created_at: nowISO,
           }
         })
 
@@ -822,6 +1043,32 @@ function Supplies() {
           parameter_specification: parameter?.specification ?? null,
         }
       })
+    const supplierLookup = Object.fromEntries(supplierLabelMap.entries())
+    const warehouseLookup = Object.fromEntries(warehouseLabelMap.entries())
+    const productLookup = Object.fromEntries(
+      (products ?? [])
+        .filter((product) => product?.id !== undefined && product?.id !== null)
+        .map((product) => [
+          String(product.id),
+          { name: product.name ?? '', sku: product.sku ?? '' },
+        ]),
+    )
+    const unitLookup = Object.fromEntries(
+      (units ?? [])
+        .filter((unit) => unit?.id !== undefined && unit?.id !== null)
+        .map((unit) => [
+          String(unit.id),
+          { name: unit.name ?? '', symbol: unit.symbol ?? '' },
+        ]),
+    )
+    const profileLookup = Object.fromEntries(
+      (userProfiles ?? [])
+        .filter((profile) => profile?.id)
+        .map((profile) => [
+          String(profile.id),
+          { full_name: profile.full_name ?? '', email: profile.email ?? '' },
+        ]),
+    )
     navigate(`/supplies/${supply.id}`, {
       state: {
         supply,
@@ -830,6 +1077,11 @@ function Supplies() {
         supplyQualityChecks: qualityChecksForSupply,
         supplyQualityItems: qualityItemsForSupply,
         qualityParameters,
+        supplierLookup,
+        warehouseLookup,
+        productLookup,
+        unitLookup,
+        profileLookup,
       },
     })
   }
@@ -842,10 +1094,10 @@ function Supplies() {
   }, [getInitialFormData])
 
   const baseFieldClass =
-    'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40'
+    'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
 
   const sectionCardClass =
-    'rounded-xl border border-olive-light/40 bg-olive-light/10 p-5 sm:p-6'
+    'rounded-xl border border-olive-light/40 bg-olive-light/10 p-5 sm:p-6 dark:border-slate-700 dark:bg-slate-900/40'
 
   useEffect(() => {
     if (suppliersError) {
@@ -935,6 +1187,7 @@ function Supplies() {
         batchesResponse,
         qualityChecksResponse,
         qualityItemsResponse,
+        profilesResponse,
       ] = await Promise.all([
         supabase
           .from('supplies')
@@ -944,6 +1197,7 @@ function Supplies() {
         supabase.from('supply_batches').select('*'),
         supabase.from('supply_quality_checks').select('*'),
         supabase.from('supply_quality_check_items').select('*'),
+        supabase.from('user_profiles').select('id, full_name, email'),
       ])
 
       if (suppliesResponse.error) throw suppliesResponse.error
@@ -951,12 +1205,14 @@ function Supplies() {
       if (batchesResponse.error) throw batchesResponse.error
       if (qualityChecksResponse.error) throw qualityChecksResponse.error
       if (qualityItemsResponse.error) throw qualityItemsResponse.error
+      if (profilesResponse.error) throw profilesResponse.error
 
       setSupplies(suppliesResponse.data ?? [])
       setSupplyLines(linesResponse.data ?? [])
       setSupplyBatches(batchesResponse.data ?? [])
       setSupplyQualityChecks(qualityChecksResponse.data ?? [])
       setSupplyQualityItems(qualityItemsResponse.data ?? [])
+      setUserProfiles(profilesResponse.data ?? [])
     } catch (error) {
       console.error('Error loading supplies data', error)
       toast.error('Unable to load supplies from Supabase.')
@@ -997,6 +1253,14 @@ function Supplies() {
 
     loadProfileId()
   }, [user?.id])
+
+  const formScrollRef = useRef(null)
+
+  useEffect(() => {
+    if (formScrollRef.current) {
+      formScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  }, [currentStep])
 
   return (
     <>
@@ -1238,7 +1502,7 @@ function Supplies() {
               </ol>
             </div>
 
-            <form onSubmit={handleFormSubmit} className="flex-1 overflow-y-auto">
+            <form ref={formScrollRef} onSubmit={handleFormSubmit} className="flex-1 overflow-y-auto">
               <div className="space-y-6 p-5 sm:p-6 lg:p-8">
                 {currentStep === 0 && (
                   <section className={sectionCardClass}>
@@ -1327,146 +1591,11 @@ function Supplies() {
                         </p>
                       </div>
 
-                      <div className="space-y-2 lg:col-span-6">
-                        <Label htmlFor="doc_status">Status *</Label>
-                        <select
-                          id="doc_status"
-                          required
-                          className={baseFieldClass}
-                          value={formData.doc_status}
-                          onChange={(event) => handleInputChange('doc_status', event.target.value)}
-                        >
-                          {STATUS_OPTIONS.map((status) => (
-                            <option key={status} value={status}>
-                              {status}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
                     </div>
                   </section>
                 )}
 
                 {currentStep === 1 && (
-                  <section className={sectionCardClass}>
-                    <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <h3 className="text-lg font-semibold text-text-dark">Supply batches</h3>
-                        <p className="text-sm text-text-dark/70">
-                          Add each batch received in this supply. Quantities should reflect actual intake.
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={addSupplyBatch}
-                        className="border-olive-light/60"
-                        disabled={isSubmitting}
-                      >
-                        Add batch
-                      </Button>
-                    </div>
-
-                    <div className="space-y-6">
-                      {formData.supply_batches.map((batch, index) => (
-                        <div
-                          key={index}
-                          className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md"
-                        >
-                          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
-                              <p className="text-xs font-semibold uppercase tracking-widest text-text-dark/50">
-                                Batch {index + 1}
-                              </p>
-                              <p className="mt-1 text-sm text-text-dark/70">
-                                Suggested lot
-                                <span className="ml-1 inline-flex items-center rounded-full bg-olive-light/30 px-2 py-0.5 text-xs font-medium text-text-dark">
-                                  {generateLotNumberPreview(index)}
-                                </span>
-                              </p>
-                            </div>
-                            {formData.supply_batches.length > 1 && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="text-red-600 hover:text-red-700"
-                                onClick={() => removeSupplyBatch(index)}
-                                disabled={isSubmitting}
-                              >
-                                Remove
-                              </Button>
-                            )}
-                          </div>
-
-                          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-                            <div className="space-y-2 lg:col-span-5">
-                              <Label htmlFor={`product_${index}`}>Product *</Label>
-                              <select
-                                id={`product_${index}`}
-                                required
-                                className={baseFieldClass}
-                                value={batch.product_id}
-                                onChange={(event) =>
-                                  handleSupplyBatchChange(index, 'product_id', event.target.value)
-                                }
-                                disabled={isSubmitting || products.length === 0}
-                              >
-                                <option value="">Select product</option>
-                                {products.map((product) => (
-                                  <option key={product.id} value={product.id}>
-                                    {product.name}
-                                    {product.sku ? ` (${product.sku})` : ''}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="space-y-2 lg:col-span-4">
-                              <Label htmlFor={`unit_${index}`}>Unit *</Label>
-                              <select
-                                id={`unit_${index}`}
-                                required
-                                className={baseFieldClass}
-                                value={batch.unit_id}
-                                onChange={(event) =>
-                                  handleSupplyBatchChange(index, 'unit_id', event.target.value)
-                                }
-                                disabled={isSubmitting || units.length === 0}
-                              >
-                                <option value="">Select unit</option>
-                                {units.map((unit) => (
-                                  <option key={unit.id} value={unit.id}>
-                                    {unit.name}
-                                    {unit.symbol ? ` (${unit.symbol})` : ''}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="space-y-2 lg:col-span-3">
-                              <Label htmlFor={`qty_${index}`}>Quantity *</Label>
-                              <Input
-                                id={`qty_${index}`}
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                required
-                                value={batch.qty}
-                                onChange={(event) =>
-                                  handleSupplyBatchChange(index, 'qty', event.target.value)
-                                }
-                                placeholder="e.g. 120"
-                                className={baseFieldClass}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {currentStep === 2 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -1486,157 +1615,280 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 3 && (
+                {currentStep === 2 && (
                   <section className="space-y-6">
                     <div className={sectionCardClass}>
                       <div className="mb-4">
-                        <h3 className="text-lg font-semibold text-text-dark">Review basic details</h3>
-                        <p className="text-sm text-text-dark/70">
-                          Confirm the core information before submission.
+                        <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">Finalize supply</h3>
+                        <p className="text-sm text-text-dark/70 dark:text-slate-300">
+                          Confirm the outcome and key details before submission.
                         </p>
                       </div>
-                      <dl className="grid gap-4 sm:grid-cols-2">
+                      <div className="grid gap-6 lg:grid-cols-12">
+                        <div className="space-y-2 lg:col-span-4">
+                          <Label htmlFor="doc_status_review">Supply status *</Label>
+                          <select
+                            id="doc_status_review"
+                            required
+                            className={baseFieldClass}
+                            value={formData.doc_status}
+                            onChange={(event) => handleInputChange('doc_status', event.target.value)}
+                          >
+                            <option value="">Select status</option>
+                            {STATUS_OPTIONS.map((status) => (
+                              <option key={status} value={status}>
+                                {status}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                            Set the final state after completing quality evaluation.
+                          </p>
+                        </div>
+                        <div className="space-y-2 lg:col-span-4">
+                          <Label htmlFor="review_received_at">Received at</Label>
+                          <Input
+                            id="review_received_at"
+                            readOnly
+                            value={formatDateTime(formData.received_at)}
+                            className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
+                          />
+                        </div>
+                        <div className="space-y-2 lg:col-span-4">
+                          <Label htmlFor="review_received_by">Received by</Label>
+                          <Input
+                            id="review_received_by"
+                            readOnly
+                            value={formData.received_by}
+                            className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
+                          />
+                        </div>
+                      </div>
+                      <dl className="mt-6 grid gap-4 sm:grid-cols-2">
                         <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
                             Document number
                           </dt>
-                          <dd className="text-sm font-medium text-text-dark">{formData.doc_no}</dd>
+                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
+                            {formData.doc_no}
+                          </dd>
                         </div>
                         <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
                             Warehouse
                           </dt>
-                          <dd className="text-sm font-medium text-text-dark">
+                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
                             {warehouseLabelMap.get(parseInt(formData.warehouse_id, 10)) || 'Not set'}
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
                             Supplier
                           </dt>
-                          <dd className="text-sm font-medium text-text-dark">
+                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
                             {supplierLabelMap.get(parseInt(formData.supplier_id, 10)) || 'Not set'}
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                            Received at
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
+                            Quality score
                           </dt>
-                          <dd className="text-sm font-medium text-text-dark">
-                            {formatDateTime(formData.received_at)}
+                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
+                            {qualityAverageScore ?? 'Pending'}
                           </dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                            Status
-                          </dt>
-                          <dd className="text-sm font-medium text-text-dark">{formData.doc_status}</dd>
                         </div>
                       </dl>
                     </div>
 
                     <div className={sectionCardClass}>
-                      <div className="mb-4">
-                        <h3 className="text-lg font-semibold text-text-dark">Review batches</h3>
-                        <p className="text-sm text-text-dark/70">
-                          Ensure quantities and products are captured correctly.
-                        </p>
+                      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
+                            Supply batches
+                          </h3>
+                          <p className="text-sm text-text-dark/70 dark:text-slate-300">
+                            Enter each batch after completing quality evaluation, then allocate accepted and rejected
+                            quantities.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={addSupplyBatch}
+                          className="border-olive-light/60 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-900/60"
+                          disabled={isSubmitting}
+                        >
+                          Add batch
+                        </Button>
                       </div>
-                      <div className="overflow-hidden rounded-xl border border-olive-light/40 bg-white">
-                        <table className="min-w-full divide-y divide-olive-light/30">
-                          <thead className="bg-olive-light/20">
-                            <tr>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Batch
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Product
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Unit
-                              </th>
-                              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Quantity
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-olive-light/30">
-                            {formData.supply_batches.map((batch, index) => {
-                              const product = products.find(
-                                (item) => String(item.id) === String(batch.product_id),
-                              )
-                              const unit = units.find((item) => String(item.id) === String(batch.unit_id))
-                              return (
-                                <tr key={`review-batch-${index}`} className="bg-white">
-                                  <td className="px-4 py-3 text-sm font-medium text-text-dark">
-                                    Batch {index + 1}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-text-dark/80">
-                                    {product ? product.name : 'Not set'}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-text-dark/80">
-                                    {unit ? unit.name : 'Not set'}
-                                  </td>
-                                  <td className="px-4 py-3 text-right text-sm font-medium text-text-dark">
-                                    {batch.qty || '0'}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
+
+                      <div className="space-y-6">
+                        {formData.supply_batches.map((batch, index) => (
+                          <div
+                            key={index}
+                            className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-slate-500"
+                          >
+                            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <p className="text-xs font-semibold uppercase tracking-widest text-text-dark/50 dark:text-slate-400">
+                                  Batch {index + 1}
+                                </p>
+                                <p className="mt-1 text-sm text-text-dark/70 dark:text-slate-300">
+                                  Suggested lot
+                                  <span className="ml-1 inline-flex items-center rounded-full bg-olive-light/30 px-2 py-0.5 text-xs font-medium text-text-dark">
+                                    {generateLotNumberPreview(index)}
+                                  </span>
+                                </p>
+                              </div>
+                              {formData.supply_batches.length > 1 && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                                  onClick={() => removeSupplyBatch(index)}
+                                  disabled={isSubmitting}
+                                >
+                                  Remove
+                                </Button>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+                              <div className="space-y-2 lg:col-span-5">
+                                <Label htmlFor={`product_${index}`}>Product *</Label>
+                                <select
+                                  id={`product_${index}`}
+                                  required
+                                  className={baseFieldClass}
+                                  value={batch.product_id}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'product_id', event.target.value)
+                                  }
+                                  disabled={isSubmitting || products.length === 0}
+                                >
+                                  <option value="">Select product</option>
+                                  {products.map((product) => (
+                                    <option key={product.id} value={product.id}>
+                                      {product.name}
+                                      {product.sku ? ` (${product.sku})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-2 lg:col-span-3">
+                                <Label htmlFor={`unit_${index}`}>Unit *</Label>
+                                <select
+                                  id={`unit_${index}`}
+                                  required
+                                  className={baseFieldClass}
+                                  value={batch.unit_id}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'unit_id', event.target.value)
+                                  }
+                                  disabled={isSubmitting || units.length === 0}
+                                >
+                                  <option value="">Select unit</option>
+                                  {units.map((unit) => (
+                                    <option key={unit.id} value={unit.id}>
+                                      {unit.name}
+                                      {unit.symbol ? ` (${unit.symbol})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="space-y-2 lg:col-span-4">
+                                <Label htmlFor={`qty_${index}`}>Received quantity *</Label>
+                                <Input
+                                  id={`qty_${index}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  required
+                                  value={batch.qty}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'qty', event.target.value)
+                                  }
+                                  placeholder="e.g. 120"
+                                  className={baseFieldClass}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`accepted_${index}`}>Accepted quantity *</Label>
+                                <Input
+                                  id={`accepted_${index}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={batch.accepted_qty}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'accepted_qty', event.target.value)
+                                  }
+                                  placeholder="e.g. 110"
+                                  className={baseFieldClass}
+                                />
+                              </div>
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`rejected_${index}`}>Rejected quantity</Label>
+                                <Input
+                                  id={`rejected_${index}`}
+                                  type="number"
+                                  readOnly
+                                  value={batch.rejected_qty}
+                                  className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
+                                />
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  Calculated automatically from received minus accepted.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
 
                     <div className={sectionCardClass}>
                       <div className="mb-4">
-                        <h3 className="text-lg font-semibold text-text-dark">Review quality evaluation</h3>
-                        <p className="text-sm text-text-dark/70">
+                        <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
+                          Review quality evaluation
+                        </h3>
+                        <p className="text-sm text-text-dark/70 dark:text-slate-300">
                           Confirm recorded scores before submitting the supply.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
-                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70 dark:bg-slate-900/50 dark:text-slate-200">
                           Average score: {qualityAverageScore ?? '—'}
                         </span>
-                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                        <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70 dark:bg-slate-900/50 dark:text-slate-200">
                           Entries: {qualityParameters.length}
                         </span>
                       </div>
-                      <div className="mt-4 overflow-hidden rounded-xl border border-olive-light/40 bg-white">
-                        <table className="min-w-full divide-y divide-olive-light/30">
-                          <thead className="bg-olive-light/20">
-                            <tr>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Parameter
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Score
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                                Remarks
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-olive-light/30">
-                            {qualityParameters.map((parameter) => {
-                              const entry = qualityEntries[parameter.code]
-                              return (
-                                <tr key={`review-quality-${parameter.code}`} className="bg-white">
-                                  <td className="px-4 py-3 text-sm font-medium text-text-dark">
-                                    {parameter.name}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-text-dark/80">
-                                    {entry?.score ?? '—'}
-                                  </td>
-                                  <td className="px-4 py-3 text-sm text-text-dark/80">
-                                    {entry?.remarks?.trim() ? entry.remarks.trim() : 'No remarks'}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        {qualityParameters.map((parameter) => {
+                          const entry = qualityEntries[parameter.code]
+                          const remarks = entry?.remarks?.trim() ? entry.remarks.trim() : 'No remarks'
+                          return (
+                            <div
+                              key={`review-quality-${parameter.code}`}
+                              className="flex min-h-[5.5rem] flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-3 py-2.5 shadow-sm transition hover:border-olive-light/70 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:border-slate-500"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <p className="text-sm font-semibold text-text-dark dark:text-slate-100">
+                                  {parameter.name}
+                                </p>
+                                <span className="inline-flex items-center rounded-full bg-olive-light/40 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-dark/80 dark:bg-slate-900/50 dark:text-slate-100">
+                                  {entry?.score ?? '—'}
+                                </span>
+                              </div>
+                              <p className="mt-3 text-sm text-text-dark/70 dark:text-slate-200">{remarks}</p>
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   </section>
@@ -1648,7 +1900,7 @@ function Supplies() {
                   type="button"
                   variant="outline"
                   onClick={closeModal}
-                  className="border-olive-light/60"
+                  className="border-olive-light/60 dark:border-slate-600 dark:text-slate-100"
                   disabled={isSubmitting}
                 >
                   Cancel
@@ -1659,7 +1911,7 @@ function Supplies() {
                       type="button"
                       variant="outline"
                       onClick={handleStepBack}
-                      className="border-olive-light/60"
+                      className="border-olive-light/60 dark:border-slate-600 dark:text-slate-100"
                       disabled={isSubmitting}
                     >
                       Back
