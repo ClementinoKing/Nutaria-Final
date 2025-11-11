@@ -16,6 +16,7 @@ const ProcessView = lazy(() => import('./pages/process/ProcessView'))
 const Processes = lazy(() => import('./pages/process/Processes'))
 const ProcessDetail = lazy(() => import('./pages/process/ProcessDetail'))
 const ProcessSteps = lazy(() => import('./pages/process/ProcessSteps'))
+const ProcessStepsProgress = lazy(() => import('./pages/process/ProcessStepsProgress'))
 const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
 const Suppliers = lazy(() => import('./pages/suppliers-customers/Suppliers'))
 const SupplierDetail = lazy(() => import('./pages/suppliers-customers/SupplierDetail'))
@@ -153,6 +154,14 @@ function App() {
           element={
             <ProtectedRoute>
               <ProcessSteps />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/process-steps/:lotId"
+          element={
+            <ProtectedRoute>
+              <ProcessStepsProgress />
             </ProtectedRoute>
           }
         />
