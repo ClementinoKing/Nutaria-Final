@@ -29,6 +29,34 @@ function toISOString(value) {
   return date.toISOString()
 }
 
+function normalizeQuantityValue(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : ''
+  }
+  return String(value)
+}
+
+function getLotInitialQuantity(lot) {
+  if (!lot) return ''
+  return normalizeQuantityValue(lot.current_qty ?? lot.received_qty ?? '')
+}
+
+function applySequentialQuantities(progress, lotQuantity) {
+  if (!Array.isArray(progress) || progress.length === 0) return progress
+  const initialQuantity = normalizeQuantityValue(lotQuantity)
+
+  return progress.map((step, index, array) => {
+    if (index === 0) {
+      return { ...step, quantity_in: initialQuantity }
+    }
+
+    const previousOut = normalizeQuantityValue(array[index - 1]?.quantity_out ?? '')
+    return { ...step, quantity_in: previousOut }
+  })
+}
+
 function buildDefaultStepProgress(step, operatorName = '') {
   return {
     step_id: step.id,
@@ -89,6 +117,8 @@ function ProcessStepsProgress() {
     [lotId, lots],
   )
 
+  const lotQuantity = useMemo(() => getLotInitialQuantity(selectedLot), [selectedLot])
+
   const availableProcesses = useMemo(() => {
     if (!selectedLot) return []
     return processesByProductId.get(selectedLot.product_id) ?? []
@@ -142,6 +172,8 @@ function ProcessStepsProgress() {
 
         if (runError) throw runError
 
+        const lotInitialQuantity = getLotInitialQuantity(lot)
+
         const progress = steps.map((step) => {
           const existing = (existingRun?.step_progress ?? []).find((item) => item.step_id === step.id)
           const defaultProgress = buildDefaultStepProgress(step, operatorName)
@@ -157,12 +189,16 @@ function ProcessStepsProgress() {
           return merged
         })
 
+        const sequentialProgress = applySequentialQuantities(progress, lotInitialQuantity)
+
         setSelectedProcessId(processId)
         setLotRun(existingRun ?? null)
-        setStepProgress(progress)
+        setStepProgress(sequentialProgress)
 
-        const firstIncompleteIndex = progress.findIndex((step) => step.status !== 'COMPLETED')
-        setCurrentStepIndex(firstIncompleteIndex === -1 ? Math.max(progress.length - 1, 0) : firstIncompleteIndex)
+        const firstIncompleteIndex = sequentialProgress.findIndex((step) => step.status !== 'COMPLETED')
+        setCurrentStepIndex(
+          firstIncompleteIndex === -1 ? Math.max(sequentialProgress.length - 1, 0) : firstIncompleteIndex,
+        )
       } catch (error) {
         console.error(error)
         toast.error('Failed to load process data for the selected lot.')
@@ -194,9 +230,10 @@ function ProcessStepsProgress() {
   }
 
   const updateCurrentStep = (changes) => {
-    setStepProgress((previous) =>
-      previous.map((step, index) => (index === currentStepIndex ? { ...step, ...changes } : step)),
-    )
+    setStepProgress((previous) => {
+      const updated = previous.map((step, index) => (index === currentStepIndex ? { ...step, ...changes } : step))
+      return applySequentialQuantities(updated, lotQuantity)
+    })
   }
 
   const goToStep = (index) => {
@@ -259,7 +296,7 @@ function ProcessStepsProgress() {
           runRecord = data
         }
 
-        setStepProgress(normalizedProgress)
+        setStepProgress(applySequentialQuantities(normalizedProgress, lotQuantity))
 
         if (complete) {
           const { error: batchError } = await supabase
@@ -291,21 +328,22 @@ function ProcessStepsProgress() {
         setSaving(false)
       }
     },
-    [lotRun, navigate, operatorName, refresh, selectedLot, selectedProcessId, stepProgress],
+    [lotQuantity, lotRun, navigate, operatorName, refresh, selectedLot, selectedProcessId, stepProgress],
   )
 
   useEffect(() => {
     if (!operatorName) return
 
-    setStepProgress((previous) =>
-      previous.map((step) => {
+    setStepProgress((previous) => {
+      const updated = previous.map((step) => {
         if (step.operator && step.operator.trim().length > 0) {
           return step
         }
         return { ...step, operator: operatorName }
-      }),
-    )
-  }, [operatorName])
+      })
+      return applySequentialQuantities(updated, lotQuantity)
+    })
+  }, [operatorName, lotQuantity])
 
   const handleBack = () => {
     navigate('/process/process-steps')
@@ -316,9 +354,9 @@ function ProcessStepsProgress() {
       title="Process Steps Progress"
       activeItem="process"
       stickyHeader={false}
-      contentClassName="py-8 space-y-6"
+      contentClassName="py-4 space-y-3"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="outline" onClick={handleBack} className="flex items-center gap-2">
           <CornerUpLeft className="h-4 w-4" />
           Back to Available Lots
@@ -344,11 +382,11 @@ function ProcessStepsProgress() {
 
       {loadingDefinitions ? (
         <Card className="bg-white border-olive-light/30">
-          <CardContent className="py-8 text-center text-sm text-text-dark/60">Loading lot details…</CardContent>
+          <CardContent className="py-5 text-center text-sm text-text-dark/60">Loading lot details…</CardContent>
         </Card>
       ) : !Number.isFinite(lotId) || !selectedLot ? (
         <Card className="border-red-200 bg-red-50 text-red-700">
-          <CardContent className="space-y-3 py-6">
+          <CardContent className="space-y-2 py-3">
             <CardTitle className="text-base">Lot not found</CardTitle>
             <p className="text-sm text-red-700/80">
               We could not locate the requested lot. It may have been processed already or the link is invalid.
@@ -368,7 +406,7 @@ function ProcessStepsProgress() {
                 {selectedLot.products?.name ?? 'Unknown product'} ({selectedLot.products?.sku ?? 'N/A'})
               </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <CardContent className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
               <div>
                 <p className="text-xs uppercase tracking-wide text-text-dark/50">Available Qty</p>
                 <p className="text-base font-semibold text-text-dark">
@@ -403,7 +441,7 @@ function ProcessStepsProgress() {
                   : 'Select a lot to capture process execution data'}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-3">
               {selectedLot && availableProcesses.length > 1 && (
                 <div className="grid gap-2 md:grid-cols-2">
                   <div className="space-y-2">
@@ -476,7 +514,7 @@ function ProcessStepsProgress() {
                         </button>
                         {index < selectedSteps.length - 1 && (
                           <div
-                            className={`mx-2 mb-6 flex-1 h-0.5 ${
+                            className={`mx-2 mb-3 flex-1 h-0.5 ${
                               currentStepIndex > index ? 'bg-green-600' : 'bg-text-dark/20'
                             }`}
                           />
@@ -485,9 +523,9 @@ function ProcessStepsProgress() {
                     ))}
                   </div>
 
-                  <div className="border-t border-olive-light/20 pt-6">
-                    <div className="space-y-6">
-                      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="border-t border-olive-light/20 pt-4">
+                    <div className="space-y-3">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div>
                           <h3 className="text-lg font-semibold text-text-dark">
                             {activeStep?.step_name ?? 'Select a step'}
@@ -515,7 +553,7 @@ function ProcessStepsProgress() {
                         </span>
                       </div>
 
-                      <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-2 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="step_status">Status</Label>
                           <select
@@ -573,9 +611,9 @@ function ProcessStepsProgress() {
                             type="number"
                             step="0.01"
                             value={activeProgress?.quantity_in ?? ''}
-                            onChange={(event) => updateCurrentStep({ quantity_in: event.target.value })}
                             placeholder="0.00"
                             disabled={loadingLot}
+                            readOnly
                           />
                         </div>
 
@@ -597,7 +635,7 @@ function ProcessStepsProgress() {
                         <Label htmlFor="step_notes">Notes</Label>
                         <textarea
                           id="step_notes"
-                          className="min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          className="min-h-[70px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={activeProgress?.notes ?? ''}
                           onChange={(event) => updateCurrentStep({ notes: event.target.value })}
                           placeholder="Add context, QC remarks or deviations…"
@@ -607,7 +645,7 @@ function ProcessStepsProgress() {
                     </div>
                   </div>
 
-                  <div className="mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-olive-light/20 pt-6">
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-olive-light/20 pt-4">
                     <Button
                       type="button"
                       variant="outline"

@@ -229,7 +229,7 @@ const baseFieldClass =
   'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40'
 
 const sectionCardClass =
-  'rounded-xl border border-olive-light/40 bg-olive-light/10 p-5 sm:p-6'
+  'rounded-xl border border-olive-light/40 bg-olive-light/10 p-3.5 sm:p-4'
 
 function SupplierEdit() {
   const { supplierId } = useParams()
@@ -734,13 +734,13 @@ function SupplierEdit() {
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
-      <form id="supplier-edit-form" onSubmit={handleStepSubmit} className="flex flex-col gap-6">
+      <form id="supplier-edit-form" onSubmit={handleStepSubmit} className="flex flex-col gap-4">
         <Card className="border-olive-light/40 bg-white">
-          <CardHeader className="border-b border-olive-light/30 bg-olive-light/20">
-            <CardTitle className="text-lg font-semibold text-text-dark">
+          <CardHeader className="border-b border-olive-light/30 bg-olive-light/20 px-3.5 py-3.5 space-y-1.5 sm:flex-row sm:items-center sm:justify-between sm:space-y-0 sm:gap-3">
+            <CardTitle className="text-lg font-semibold text-text-dark sm:flex-1">
               Step {currentStepIndex + 1} of {totalSteps}
             </CardTitle>
-            <CardDescription className="flex flex-wrap items-center gap-2 text-sm text-text-dark/70">
+            <CardDescription className="flex flex-wrap items-center gap-1 text-sm text-text-dark/70 sm:justify-end">
               {SUPPLIER_FORM_STEPS.map((step, index) => {
                 const isActive = index === currentStepIndex
                 const isCompleted = index < currentStepIndex
@@ -752,7 +752,7 @@ function SupplierEdit() {
                 return (
                   <span
                     key={step.id}
-                    className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${badgeClass}`}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}
                   >
                     <span>{index + 1}</span>
                     <span className="hidden sm:inline">{step.title}</span>
@@ -761,10 +761,10 @@ function SupplierEdit() {
               })}
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-8 pt-6">
+          <CardContent className="space-y-5 px-4 py-4 sm:px-5 sm:py-4">
             {currentStep.id === 'basic' && (
               <section className={sectionCardClass}>
-                <div className="mb-6 flex items-center justify-between gap-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-lg font-semibold text-text-dark">Supplier Profile</h3>
                     <p className="text-sm text-text-dark/70">
@@ -773,8 +773,8 @@ function SupplierEdit() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-12">
-                  <div className="space-y-2 lg:col-span-6">
+                <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2 lg:grid-cols-12">
+                  <div className="space-y-1.5 lg:col-span-6">
                     <Label htmlFor="name">Supplier name *</Label>
                     <Input
                       id="name"
@@ -790,7 +790,7 @@ function SupplierEdit() {
                     )}
                   </div>
 
-                  <div className="space-y-2 lg:col-span-6">
+                  <div className="space-y-1.5 lg:col-span-6">
                     <Label htmlFor="supplier_type">Supplier type</Label>
                     <select
                       id="supplier_type"
@@ -808,7 +808,7 @@ function SupplierEdit() {
                     </select>
                   </div>
 
-                  <div className="space-y-2 lg:col-span-6">
+                  <div className="space-y-1.5 lg:col-span-6">
                     <Label htmlFor="country">Country</Label>
                     <Input
                       id="country"
@@ -820,7 +820,7 @@ function SupplierEdit() {
                     />
                   </div>
 
-                  <div className="space-y-2 lg:col-span-6">
+                  <div className="space-y-1.5 lg:col-span-6">
                     <Label htmlFor="phone">Main phone</Label>
                     <Input
                       id="phone"
@@ -832,7 +832,7 @@ function SupplierEdit() {
                     />
                   </div>
 
-                  <div className="space-y-2 lg:col-span-6">
+                  <div className="space-y-1.5 lg:col-span-6">
                     <Label htmlFor="email">Main email</Label>
                     <Input
                       id="email"
@@ -849,7 +849,7 @@ function SupplierEdit() {
                     )}
                   </div>
 
-                <div className="space-y-2 lg:col-span-6">
+                <div className="space-y-1.5 lg:col-span-6">
                   <Label htmlFor="address">Address</Label>
                   <textarea
                     id="address"
@@ -867,7 +867,7 @@ function SupplierEdit() {
             )}
 
             {currentStep.id === 'additional' && (
-              <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+              <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1">
                 <section className={sectionCardClass}>
                   <div>
                     <h3 className="text-lg font-semibold text-text-dark">Primary contact</h3>
@@ -875,8 +875,8 @@ function SupplierEdit() {
                       Keep the liaison details up to date for quick reach outs.
                     </p>
                   </div>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2 sm:col-span-2">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="primary_contact_name">Contact name</Label>
                       <Input
                         id="primary_contact_name"
@@ -887,7 +887,7 @@ function SupplierEdit() {
                         disabled={saving}
                       />
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="primary_contact_phone">Contact phone</Label>
                       <Input
                         id="primary_contact_phone"
@@ -898,7 +898,7 @@ function SupplierEdit() {
                         disabled={saving}
                       />
                     </div>
-                    <div className="space-y-2 sm:col-span-2">
+                    <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="primary_contact_email">Contact email</Label>
                       <Input
                         id="primary_contact_email"
@@ -928,8 +928,8 @@ function SupplierEdit() {
                       Workforce numbers and verification information.
                     </p>
                   </div>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="supplier_age">Supplier age</Label>
                       <Input
                         id="supplier_age"
@@ -946,7 +946,7 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.fields.supplier_age}</p>
                       )}
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="gender">Gender</Label>
                       <Input
                         id="gender"
@@ -957,7 +957,7 @@ function SupplierEdit() {
                         disabled={saving}
                       />
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="number_of_employees">Number of employees</Label>
                       <Input
                         id="number_of_employees"
@@ -976,7 +976,7 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.fields.number_of_employees}</p>
                       )}
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="number_of_dependants">Number of dependants</Label>
                       <Input
                         id="number_of_dependants"
@@ -995,7 +995,7 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.fields.number_of_dependants}</p>
                       )}
                     </div>
-                    <div className="space-y-2 sm:col-span-2">
+                    <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="bank">Bank</Label>
                       <select
                         id="bank"
@@ -1012,7 +1012,7 @@ function SupplierEdit() {
                         ))}
                       </select>
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="account_number">Account number</Label>
                       <Input
                         id="account_number"
@@ -1024,7 +1024,7 @@ function SupplierEdit() {
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="branch">Branch</Label>
                       <Input
                         id="branch"
@@ -1036,7 +1036,7 @@ function SupplierEdit() {
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </div>
-                    <div className="space-y-2 sm:col-span-2">
+                    <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="proof_of_residence">Proof of residence (upload new)</Label>
                       <Input
                         id="proof_of_residence"
@@ -1047,7 +1047,7 @@ function SupplierEdit() {
                       {formData.proof_of_residence.length === 0 ? (
                         <p className="text-sm text-text-dark/60">Upload a recent utility bill or official proof.</p>
                       ) : (
-                        <ul className="space-y-1 rounded-md border border-olive-light/40 bg-olive-light/10 p-3 text-sm text-text-dark">
+                        <ul className="space-y-1 rounded-md border border-olive-light/40 bg-olive-light/10 p-2.5 text-sm text-text-dark">
                           {formData.proof_of_residence.map((file, index) => (
                             <li key={`proof-file-new-${index}`} className="flex items-center justify-between gap-2">
                               <span className="truncate">{file.name}</span>
@@ -1076,7 +1076,7 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.proof_of_residence}</p>
                       )}
                       {formData.existingProofOfResidence.length > 0 && (
-                        <div className="mt-3 space-y-2 rounded-md border border-olive-light/40 bg-white/80 p-3 dark:border-olive-light/20 dark:bg-slate-900/40">
+                        <div className="mt-2.5 space-y-1.5 rounded-md border border-olive-light/40 bg-white/80 p-2.5 dark:border-olive-light/20 dark:bg-slate-900/40">
                           <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-200/70">
                             Existing proof of residence
                           </p>
@@ -1123,7 +1123,7 @@ function SupplierEdit() {
             )}
 
             {currentStep.id === 'documents' && (
-              <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+              <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1">
                 <section className={sectionCardClass}>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -1133,16 +1133,16 @@ function SupplierEdit() {
                       </p>
                     </div>
                   </div>
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-3 space-y-3">
                     {formData.existingDocuments.length === 0 ? (
                       <p className="text-sm text-text-dark/60">No document types captured.</p>
                     ) : (
                       formData.existingDocuments.map((group) => (
                         <div
                           key={group.id}
-                          className="space-y-2 rounded-md border border-olive-light/40 bg-white/80 p-4"
+                          className="space-y-1.5 rounded-md border border-olive-light/40 bg-white/80 p-3.5"
                         >
-                          <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-start justify-between gap-3">
                             <div>
                               <p className="flex items-center gap-2 text-sm font-semibold text-text-dark">
                                 {group.type}
@@ -1221,7 +1221,7 @@ function SupplierEdit() {
                       Add document type
                     </Button>
                   </div>
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-3 space-y-3">
                     {formData.documents.map((documentType) => {
                       const documentError = formErrors.documents[documentType.clientId]
                       const documentTypeId = `document-type-${documentType.clientId}`
@@ -1233,12 +1233,12 @@ function SupplierEdit() {
                       return (
                         <div
                           key={documentType.clientId}
-                          className={`space-y-3 rounded-md border p-4 ${
+                          className={`space-y-2.5 rounded-md border p-3.5 ${
                             documentError ? 'border-red-300 bg-red-50/50' : 'border-olive-light/40 bg-olive-light/10'
                           }`}
                         >
-                          <div className="grid gap-3 sm:grid-cols-3">
-                            <div className="space-y-2">
+                          <div className="grid gap-2.5 sm:grid-cols-3">
+                            <div className="space-y-1.5">
                               <Label htmlFor={documentTypeId}>Document type</Label>
                               <select
                                 id={documentTypeId}
@@ -1259,7 +1259,7 @@ function SupplierEdit() {
                               </select>
                             </div>
                             {isCertificate && (
-                              <div className="space-y-2">
+                              <div className="space-y-1.5">
                                 <Label htmlFor={documentExpiryId}>Expiry date</Label>
                                 <Input
                                   id={documentExpiryId}
@@ -1272,7 +1272,7 @@ function SupplierEdit() {
                                 />
                               </div>
                             )}
-                            <div className={`space-y-2 ${isCertificate ? '' : 'sm:col-span-2'}`}>
+                            <div className={`space-y-1.5 ${isCertificate ? '' : 'sm:col-span-2'}`}>
                               <Label htmlFor={documentFilesId}>Files</Label>
                               <Input
                                 id={documentFilesId}
@@ -1327,11 +1327,11 @@ function SupplierEdit() {
           </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-3 rounded-xl border border-olive-light/30 bg-white px-6 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2.5 rounded-xl border border-olive-light/30 bg-white px-5 py-3.5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-text-dark/60">
             Make sure to review each step before saving. Removing files will delete the associated Supabase records.
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <Button
               type="button"
               variant="outline"
