@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { useSuppliers } from '@/hooks/useSuppliers'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Supplier {
   id: string
@@ -403,6 +404,7 @@ function Suppliers() {
       ...prev,
       supplier_type: value
     }))
+    clearFieldError('supplier_type')
   }
 
   const handleDocumentTypeChange = (clientId: string, value: string) => {
@@ -493,6 +495,14 @@ function Suppliers() {
       errors.fields.name = 'Supplier name is required.'
     }
 
+    if (!data.supplier_type || !data.supplier_type.trim()) {
+      errors.fields.supplier_type = 'Supplier type is required.'
+    }
+
+    if (!data.phone || !data.phone.trim()) {
+      errors.fields.phone = 'Phone is required.'
+    }
+
     const trimmedEmail = data.email?.trim()
     if (trimmedEmail && !isValidEmail(trimmedEmail)) {
       errors.fields.email = 'Enter a valid email address.'
@@ -552,9 +562,9 @@ function Suppliers() {
 
     const payload = {
       name: requiredText(formData.name),
-      supplier_type: formData.supplier_type || null,
+      supplier_type: requiredText(formData.supplier_type),
       primary_contact_name: optionalText(formData.primary_contact_name),
-      phone: optionalText(formData.phone),
+      phone: requiredText(formData.phone),
       email: optionalText(formData.email),
       country: optionalText(formData.country),
       address: optionalText(formData.address),
@@ -815,6 +825,18 @@ function Suppliers() {
     },
   ]
 
+  if (loadingSuppliers) {
+    return (
+      <PageLayout
+        title="Suppliers"
+        activeItem="suppliersCustomers"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading suppliers..." />
+      </PageLayout>
+    )
+  }
+
   return (
     <PageLayout
       title="Suppliers"
@@ -935,14 +957,18 @@ function Suppliers() {
                           )}
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="supplier_type">Supplier Type</Label>
+                          <Label htmlFor="supplier_type">Supplier Type*</Label>
                           <select
                             id="supplier_type"
                             name="supplier_type"
                             value={formData.supplier_type}
                             onChange={handleSupplierTypeChange}
                             disabled={isSubmitting}
-                            className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                              formErrors.fields.supplier_type
+                                ? 'border-red-300 focus-visible:ring-red-500'
+                                : 'focus-visible:ring-olive'
+                            }`}
                           >
                             {supplierTypeOptions.map((option) => (
                               <option key={option.value} value={option.value}>
@@ -950,6 +976,9 @@ function Suppliers() {
                               </option>
                             ))}
                           </select>
+                          {formErrors.fields.supplier_type && (
+                            <p className="text-xs text-red-600">{formErrors.fields.supplier_type}</p>
+                          )}
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="country">Country</Label>
@@ -963,7 +992,7 @@ function Suppliers() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="phone">Main Phone</Label>
+                          <Label htmlFor="phone">Main Phone*</Label>
                           <Input
                             id="phone"
                             name="phone"
@@ -971,7 +1000,11 @@ function Suppliers() {
                             onChange={handleChange}
                             placeholder="+27 21 555 1234"
                             disabled={isSubmitting}
+                            className={formErrors.fields.phone ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                           />
+                          {formErrors.fields.phone && (
+                            <p className="text-xs text-red-600">{formErrors.fields.phone}</p>
+                          )}
                         </div>
                         <div className="space-y-2 sm:col-span-2">
                           <Label htmlFor="email">Main Email</Label>

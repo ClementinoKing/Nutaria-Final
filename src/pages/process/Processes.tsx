@@ -4,11 +4,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, X, Minus, Eye, Layers } from 'lucide-react'
+import { Plus, Trash2, X, Minus, Eye, Layers, Edit } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Process {
   id: number
@@ -417,6 +418,28 @@ function Processes() {
     [navigate],
   )
 
+  const handleEditProcess = useCallback(
+    (processId: number) => {
+      if (!processId) {
+        return
+      }
+      navigate(`/process/processes/${processId}?edit=true`)
+    },
+    [navigate],
+  )
+
+  if (loading || warehousesLoading || productsLoading) {
+    return (
+      <PageLayout
+        title="Factory Processes"
+        activeItem="settings"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading processes..." />
+      </PageLayout>
+    )
+  }
+
   return (
     <PageLayout
       title="Factory Processes"
@@ -530,6 +553,15 @@ function Processes() {
                       >
                         <Eye className="mr-2 h-4 w-4" />
                         View
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-blue-600 hover:bg-blue-50"
+                        onClick={() => handleEditProcess(process.id)}
+                        title="Edit Process"
+                      >
+                        <Edit className="h-4 w-4" />
                       </Button>
                       <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
                         <Trash2 className="h-4 w-4" />

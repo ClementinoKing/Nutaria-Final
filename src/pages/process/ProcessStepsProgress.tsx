@@ -4,12 +4,30 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, Save } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, Save, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
 import { useProcessDefinitions } from '@/hooks/useProcessDefinitions'
+import { useProcessLotRun } from '@/hooks/useProcessLotRun'
+import { useProcessStepRuns } from '@/hooks/useProcessStepRuns'
+import { useProcessMeasurements } from '@/hooks/useProcessMeasurements'
+import { useNonConformances } from '@/hooks/useNonConformances'
 import { supabase } from '@/lib/supabaseClient'
+import {
+  updateProcessStepRun,
+  createNonConformance,
+  completeProcessLotRun,
+  createProcessSignoff,
+  createProcessLotRun,
+  createProcessStepRuns,
+} from '@/lib/processExecution'
+import { MeasurementsCapture } from '@/components/process/MeasurementsCapture'
+import { NonConformanceList } from '@/components/process/NonConformanceList'
+import { NonConformanceForm } from '@/components/process/NonConformanceForm'
+import { StepQCCheck } from '@/components/process/StepQCCheck'
+import { ProcessSignoffs } from '@/components/process/ProcessSignoffs'
+import type { ProcessStepRun } from '@/types/processExecution'
 
 interface Lot {
   id: number
@@ -41,42 +59,7 @@ interface Lot {
   } | null
 }
 
-interface ProcessStep {
-  id: number
-  process_id: number
-  seq: number
-  step_code?: string
-  step_name?: string
-  default_location_id?: number | null
-  [key: string]: unknown
-}
-
-interface StepProgress {
-  step_id: number
-  seq: number
-  step_code: string
-  step_name: string
-  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED'
-  started_at: string | null
-  completed_at: string | null
-  operator: string
-  quantity_in: string
-  quantity_out: string
-  notes: string
-}
-
-interface LotRun {
-  id: number
-  supply_batch_id: number
-  process_id: number
-  step_progress: StepProgress[]
-  status: string
-  started_at: string | null
-  completed_at: string | null
-  [key: string]: unknown
-}
-
-const PROCESS_STATUSES = ['PENDING', 'IN_PROGRESS', 'COMPLETED'] as const
+const PROCESS_STATUSES: Array<ProcessStepRun['status']> = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED']
 
 function toLocalDateTimeInput(value: string | null | undefined): string {
   if (!value) return ''
@@ -92,50 +75,6 @@ function toISOString(value: string | null | undefined): string | null {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
   return date.toISOString()
-}
-
-function normalizeQuantityValue(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? String(value) : ''
-  }
-  return String(value)
-}
-
-function getLotInitialQuantity(lot: Lot | null): string {
-  if (!lot) return ''
-  return normalizeQuantityValue(lot.current_qty ?? lot.received_qty ?? '')
-}
-
-function applySequentialQuantities(progress: StepProgress[], lotQuantity: string | number | null | undefined): StepProgress[] {
-  if (!Array.isArray(progress) || progress.length === 0) return progress
-  const initialQuantity = normalizeQuantityValue(lotQuantity)
-
-  return progress.map((step: StepProgress, index: number, array: StepProgress[]) => {
-    if (index === 0) {
-      return { ...step, quantity_in: initialQuantity }
-    }
-
-    const previousOut = normalizeQuantityValue(array[index - 1]?.quantity_out ?? '')
-    return { ...step, quantity_in: previousOut }
-  })
-}
-
-function buildDefaultStepProgress(step: ProcessStep, operatorName: string = ''): StepProgress {
-  return {
-    step_id: step.id,
-    seq: step.seq,
-    step_code: step.step_code ?? '',
-    step_name: step.step_name ?? '',
-    status: 'PENDING',
-    started_at: null,
-    completed_at: null,
-    operator: operatorName,
-    quantity_in: '',
-    quantity_out: '',
-    notes: '',
-  }
 }
 
 function getLotStatusStyles(status: string | null | undefined): string {
@@ -160,18 +99,15 @@ function ProcessStepsProgress() {
   const lotId = Number.parseInt(lotIdParam ?? '', 10)
   const navigate = useNavigate()
 
-  const { user, profile } = useAuth()
-  const [selectedProcessId, setSelectedProcessId] = useState<number | null>(null)
+  const { user } = useAuth()
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
-  const [stepProgress, setStepProgress] = useState<StepProgress[]>([])
-  const [lotRun, setLotRun] = useState<LotRun | null>(null)
   const [saving, setSaving] = useState(false)
-  const [loadingLot, setLoadingLot] = useState(false)
+  const [showNCForm, setShowNCForm] = useState(false)
+  const [showSignoffs, setShowSignoffs] = useState(false)
+  const [creatingLotRun, setCreatingLotRun] = useState(false)
 
   const {
     lots,
-    processesByProductId,
-    processSteps,
     loading: loadingDefinitions,
     error: definitionsError,
     refresh,
@@ -182,237 +118,299 @@ function ProcessStepsProgress() {
     [lotId, lots],
   )
 
-  const lotQuantity = useMemo(() => getLotInitialQuantity(selectedLot), [selectedLot])
-
-  const availableProcesses = useMemo(() => {
-    if (!selectedLot) return []
-    return processesByProductId.get(selectedLot.product_id) ?? []
-  }, [processesByProductId, selectedLot])
-
-  const selectedSteps = useMemo(() => (selectedProcessId ? processSteps.get(selectedProcessId) ?? [] : []), [processSteps, selectedProcessId])
-  const activeStep = selectedSteps[currentStepIndex] ?? null
-  const activeProgress = stepProgress[currentStepIndex] ?? null
-  const allStepsCompleted = stepProgress.length > 0 && stepProgress.every((step: StepProgress) => step.status === 'COMPLETED')
-
-  const operatorName = useMemo(() => {
-    return (
-      profile?.full_name?.trim() ||
-      user?.user_metadata?.full_name ||
-      user?.user_metadata?.name ||
-      user?.user_metadata?.fullName ||
-      user?.email ||
-      user?.phone ||
-      ''
-    )
-  }, [profile?.full_name, user])
-
-  const resetState = useCallback(() => {
-    setSelectedProcessId(null)
-    setStepProgress([])
-    setLotRun(null)
-    setCurrentStepIndex(0)
-  }, [])
-
-  const loadLotProcess = useCallback(
-    async (lot: Lot, processId: number) => {
-      if (!lot || !processId) return
-
-      const steps = processSteps.get(processId) ?? []
-      if (!steps.length) {
-        toast.warning('No process steps are defined for the selected process yet.')
-        setSelectedProcessId(processId)
-        setStepProgress([])
-        setLotRun(null)
-        setCurrentStepIndex(0)
-        return
-      }
-
-      setLoadingLot(true)
-      try {
-        const { data: existingRun, error: runError } = await supabase
-          .from('process_lot_runs')
-          .select('*')
-          .eq('supply_batch_id', lot.id)
-          .maybeSingle()
-
-        if (runError) throw runError
-
-        const lotInitialQuantity = getLotInitialQuantity(lot)
-
-        const progress: StepProgress[] = steps.map((step: ProcessStep) => {
-          const existing = (existingRun?.step_progress as StepProgress[] | undefined ?? []).find((item: StepProgress) => item.step_id === step.id)
-          const defaultProgress = buildDefaultStepProgress(step, operatorName)
-
-          if (!existing) {
-            return defaultProgress
-          }
-
-          const merged: StepProgress = { ...defaultProgress, ...existing }
-          if (!existing.operator || existing.operator.trim().length === 0) {
-            merged.operator = operatorName
-          }
-          return merged
-        })
-
-        const sequentialProgress = applySequentialQuantities(progress, lotInitialQuantity)
-
-        setSelectedProcessId(processId)
-        setLotRun((existingRun as LotRun | null) ?? null)
-        setStepProgress(sequentialProgress)
-
-        const firstIncompleteIndex = sequentialProgress.findIndex((step: StepProgress) => step.status !== 'COMPLETED')
-        setCurrentStepIndex(
-          firstIncompleteIndex === -1 ? Math.max(sequentialProgress.length - 1, 0) : firstIncompleteIndex,
-        )
-      } catch (error) {
-        console.error(error)
-        toast.error('Failed to load process data for the selected lot.')
-        resetState()
-      } finally {
-        setLoadingLot(false)
-      }
-    },
-    [operatorName, processSteps, resetState],
-  )
+  const [lotRunId, setLotRunId] = useState<number | null>(null)
 
   useEffect(() => {
-    resetState()
-    if (!selectedLot) return
-
-    const relatedProcesses = availableProcesses
-    if (relatedProcesses.length === 1 && relatedProcesses[0]) {
-      loadLotProcess(selectedLot, relatedProcesses[0].id)
-    }
-  }, [availableProcesses, loadLotProcess, resetState, selectedLot])
-
-  const handleProcessChange = async (event: ChangeEvent<HTMLSelectElement>) => {
-    const processId = Number.parseInt(event.target.value ?? '', 10) || null
-    if (!processId || !selectedLot) {
-      resetState()
+    if (!selectedLot) {
+      setLotRunId(null)
       return
     }
-    await loadLotProcess(selectedLot, processId)
-  }
 
-  const updateCurrentStep = (changes: Partial<StepProgress>) => {
-    setStepProgress((previous: StepProgress[]) => {
-      const updated = previous.map((step: StepProgress, index: number) => (index === currentStepIndex ? { ...step, ...changes } : step))
-      return applySequentialQuantities(updated, lotQuantity)
-    })
-  }
-
-  const goToStep = (index: number) => {
-    if (index < 0 || index >= selectedSteps.length) return
-    setCurrentStepIndex(index)
-  }
-
-  const nextStep = () => {
-    setCurrentStepIndex((index) => Math.min(index + 1, selectedSteps.length - 1))
-  }
-
-  const prevStep = () => {
-    setCurrentStepIndex((index) => Math.max(index - 1, 0))
-  }
-
-  const handleSave = useCallback(
-    async ({ complete = false } = {}) => {
-      if (!selectedLot?.id || !selectedProcessId) {
-        toast.error('Select a process before saving progress.')
-        return
-      }
-
-      setSaving(true)
-      try {
-        const normalizedProgress = stepProgress.map((step: StepProgress) =>
-          step.operator ? step : { ...step, operator: operatorName },
-        )
-        const timestamp = new Date().toISOString()
-        let runRecord: LotRun | null = lotRun
-
-        if (lotRun) {
-          const { data, error } = await supabase
-            .from('process_lot_runs')
-            .update({
-              step_progress: normalizedProgress,
-              status: complete ? 'COMPLETED' : lotRun.status ?? 'IN_PROGRESS',
-              completed_at: complete ? timestamp : lotRun.completed_at,
-            })
-            .eq('id', lotRun.id)
-            .select()
-            .maybeSingle()
-
-          if (error) throw error
-          runRecord = (data as LotRun | null) ?? lotRun
+    // Check if process lot run exists
+    supabase
+      .from('process_lot_runs')
+      .select('id')
+      .eq('supply_batch_id', selectedLot.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!error && data) {
+          setLotRunId(data.id)
         } else {
-          const { data, error } = await supabase
-            .from('process_lot_runs')
-            .insert({
-              supply_batch_id: selectedLot.id,
-              process_id: selectedProcessId,
-              step_progress: normalizedProgress,
-              status: complete ? 'COMPLETED' : 'IN_PROGRESS',
-              started_at: timestamp,
-              completed_at: complete ? timestamp : null,
-            })
-            .select()
-            .single()
-
-          if (error) throw error
-          runRecord = data as LotRun
+          setLotRunId(null)
         }
-
-        setStepProgress(applySequentialQuantities(normalizedProgress, lotQuantity))
-
-        if (complete) {
-          const { error: batchError } = await supabase
-            .from('supply_batches')
-            .update({ process_status: 'PROCESSED' })
-            .eq('id', selectedLot.id)
-
-          if (batchError) throw batchError
-
-          toast.success('Process completed and lot marked as processed.')
-          await refresh()
-          navigate('/process/process-steps', { replace: true })
-        } else {
-          const { error: batchError } = await supabase
-            .from('supply_batches')
-            .update({ process_status: 'PROCESSING' })
-            .eq('id', selectedLot.id)
-
-          if (batchError) throw batchError
-
-          toast.success('Process progress saved.')
-          setLotRun(runRecord)
-          await refresh()
-        }
-      } catch (error) {
-        console.error(error)
-        toast.error('Failed to save process progress.')
-      } finally {
-        setSaving(false)
-      }
-    },
-    [lotQuantity, lotRun, navigate, operatorName, refresh, selectedLot, selectedProcessId, stepProgress],
-  )
-
-  useEffect(() => {
-    if (!operatorName) return
-
-    setStepProgress((previous: StepProgress[]) => {
-      const updated = previous.map((step: StepProgress) => {
-        if (step.operator && step.operator.trim().length > 0) {
-          return step
-        }
-        return { ...step, operator: operatorName }
       })
-      return applySequentialQuantities(updated, lotQuantity)
-    })
-  }, [operatorName, lotQuantity])
+  }, [selectedLot])
+
+  const { lotRun, loading: loadingLotRun, refresh: refreshLotRun } = useProcessLotRun({
+    lotRunId,
+    enabled: lotRunId !== null,
+  })
+
+  const { stepRuns, loading: loadingStepRuns, refresh: refreshStepRuns, updateStepRun } = useProcessStepRuns({
+    lotRunId,
+    enabled: lotRunId !== null,
+  })
+
+  const activeStepRun = stepRuns[currentStepIndex] ?? null
+  const activeStep = activeStepRun?.process_step
+
+  const { measurements, addMeasurement, deleteMeasurement } = useProcessMeasurements({
+    stepRunId: activeStepRun?.id ?? null,
+    enabled: activeStepRun !== null,
+  })
+
+  const { nonConformances, addNonConformance, resolveNonConformance } = useNonConformances({
+    stepRunId: activeStepRun?.id ?? null,
+    enabled: activeStepRun !== null,
+  })
+
+  const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED')
+  const canStartNextStep = useMemo(() => {
+    if (currentStepIndex === 0) return true
+    const previousStep = stepRuns[currentStepIndex - 1]
+    return previousStep?.status === 'COMPLETED'
+  }, [currentStepIndex, stepRuns])
+
+  const unresolvedNCs = useMemo(
+    () => nonConformances.filter((nc) => !nc.resolved),
+    [nonConformances]
+  )
 
   const handleBack = () => {
     navigate('/process/process-steps')
   }
+
+  const handleCreateLotRun = async () => {
+    if (!selectedLot) {
+      toast.error('No lot selected')
+      return
+    }
+
+    setCreatingLotRun(true)
+    try {
+      const lotRun = await createProcessLotRun(selectedLot.id)
+      if (lotRun) {
+        setLotRunId(lotRun.id)
+        toast.success('Process lot run created successfully')
+        await refresh() // Refresh the lots list
+      } else {
+        toast.info('Process lot run already exists for this batch')
+        // Refresh to get the existing lot run ID
+        const { data } = await supabase
+          .from('process_lot_runs')
+          .select('id')
+          .eq('supply_batch_id', selectedLot.id)
+          .maybeSingle()
+        if (data) {
+          setLotRunId(data.id)
+        }
+      }
+    } catch (error) {
+      console.error('Error creating process lot run:', error)
+      let errorMessage = 'Failed to create process lot run'
+      if (error instanceof Error) {
+        errorMessage = error.message
+      } else if (typeof error === 'object' && error !== null && 'message' in error) {
+        errorMessage = String(error.message)
+      }
+      // Log full error details for debugging
+      console.error('Full error details:', JSON.stringify(error, null, 2))
+      toast.error(errorMessage)
+    } finally {
+      setCreatingLotRun(false)
+    }
+  }
+
+  const goToStep = (index: number) => {
+    if (index < 0 || index >= stepRuns.length) return
+    // Check if previous step is completed
+    if (index > 0) {
+      const previousStep = stepRuns[index - 1]
+      if (previousStep?.status !== 'COMPLETED') {
+        toast.warning('Please complete the previous step before proceeding')
+        return
+      }
+    }
+    setCurrentStepIndex(index)
+  }
+
+  const nextStep = () => {
+    if (currentStepIndex < stepRuns.length - 1) {
+      goToStep(currentStepIndex + 1)
+    }
+  }
+
+  const prevStep = () => {
+    if (currentStepIndex > 0) {
+      setCurrentStepIndex(currentStepIndex - 1)
+    }
+  }
+
+  const handleStepStatusChange = async (status: ProcessStepRun['status']) => {
+    if (!activeStepRun) return
+
+    const updates: Partial<ProcessStepRun> = { status }
+
+    if (status === 'IN_PROGRESS' && !activeStepRun.started_at) {
+      updates.started_at = new Date().toISOString()
+    }
+
+    if (status === 'COMPLETED' && !activeStepRun.completed_at) {
+      updates.completed_at = new Date().toISOString()
+    }
+
+    if (status === 'COMPLETED' && !activeStepRun.performed_by && user?.id) {
+      updates.performed_by = user.id
+    }
+
+    setSaving(true)
+    try {
+      await updateProcessStepRun(activeStepRun.id, updates)
+      await refreshStepRuns()
+      toast.success('Step status updated')
+    } catch (error) {
+      console.error('Error updating step status:', error)
+      toast.error('Failed to update step status')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const [stepFormData, setStepFormData] = useState<{
+    started_at: string
+    completed_at: string
+    location_id: string
+    notes: string
+  }>({
+    started_at: '',
+    completed_at: '',
+    location_id: '',
+    notes: '',
+  })
+
+  useEffect(() => {
+    if (activeStepRun) {
+      setStepFormData({
+        started_at: toLocalDateTimeInput(activeStepRun.started_at),
+        completed_at: toLocalDateTimeInput(activeStepRun.completed_at),
+        location_id: String(activeStepRun.location_id ?? activeStep?.default_location_id ?? ''),
+        notes: activeStepRun.notes ?? '',
+      })
+    }
+  }, [activeStepRun, activeStep])
+
+  const handleSaveStep = async () => {
+    if (!activeStepRun) return
+
+    const updates: Partial<ProcessStepRun> = {
+      started_at: stepFormData.started_at ? toISOString(stepFormData.started_at) : activeStepRun.started_at,
+      completed_at: stepFormData.completed_at ? toISOString(stepFormData.completed_at) : activeStepRun.completed_at,
+      location_id: stepFormData.location_id ? parseInt(stepFormData.location_id, 10) : null,
+      notes: stepFormData.notes,
+    }
+
+    if (!activeStepRun.performed_by && user?.id) {
+      updates.performed_by = user.id
+    }
+
+    setSaving(true)
+    try {
+      await updateProcessStepRun(activeStepRun.id, updates)
+      await refreshStepRuns()
+      toast.success('Step details saved')
+    } catch (error) {
+      console.error('Error saving step:', error)
+      toast.error('Failed to save step details')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleQCPass = async () => {
+    toast.success('QC check passed')
+  }
+
+  const handleQCFail = async (failedParameters: Array<{ code: string; name: string; remarks: string }>) => {
+    if (!activeStepRun) return
+
+    try {
+      for (const param of failedParameters) {
+        await createNonConformance(activeStepRun.id, {
+          nc_type: `QC Failure: ${param.name}`,
+          description: param.remarks || `Quality parameter ${param.name} failed QC check`,
+          severity: 'MEDIUM',
+          corrective_action: null,
+        })
+      }
+      await refreshStepRuns()
+      toast.warning(`${failedParameters.length} non-conformance(s) created from QC failures`)
+    } catch (error) {
+      console.error('Error creating non-conformances:', error)
+      toast.error('Failed to create non-conformances')
+    }
+  }
+
+  const handleCompleteProcess = async () => {
+    if (!lotRunId || !allStepsCompleted) {
+      toast.error('All steps must be completed before finishing the process')
+      return
+    }
+
+    // Check for unresolved NCs
+    if (unresolvedNCs.length > 0) {
+      const proceed = confirm(
+        `There are ${unresolvedNCs.length} unresolved non-conformances. Do you want to proceed anyway?`
+      )
+      if (!proceed) return
+    }
+
+    setSaving(true)
+    try {
+      const result = await completeProcessLotRun(lotRunId)
+      toast.success('Process completed successfully. Production batch created.')
+      await refresh()
+      navigate('/process/process-steps', { replace: true })
+    } catch (error) {
+      console.error('Error completing process:', error)
+      toast.error('Failed to complete process')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSignoff = async (role: 'operator' | 'supervisor' | 'qa') => {
+    if (!lotRunId || !user?.id) {
+      toast.error('You must be logged in to sign off')
+      return
+    }
+
+    try {
+      await createProcessSignoff(lotRunId, {
+        role,
+        signed_by: user.id,
+      })
+      await refreshLotRun()
+      toast.success(`${role} signoff recorded`)
+    } catch (error) {
+      console.error('Error recording signoff:', error)
+      toast.error('Failed to record signoff')
+    }
+  }
+
+  // Get warehouses for location selection
+  const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
+
+  useEffect(() => {
+    supabase
+      .from('warehouses')
+      .select('id, name')
+      .order('name', { ascending: true })
+      .then(({ data, error }) => {
+        if (!error && data) {
+          setWarehouses(data as Array<{ id: number; name: string }>)
+        }
+      })
+  }, [])
 
   return (
     <PageLayout
@@ -445,7 +443,7 @@ function ProcessStepsProgress() {
         </Card>
       )}
 
-      {loadingDefinitions ? (
+      {loadingDefinitions || loadingLotRun ? (
         <Card className="bg-white border-olive-light/30">
           <CardContent className="py-5 text-center text-sm text-text-dark/60">Loading lot details…</CardContent>
         </Card>
@@ -458,6 +456,25 @@ function ProcessStepsProgress() {
             </p>
             <Button variant="outline" onClick={handleBack}>
               Return to Available Lots
+            </Button>
+          </CardContent>
+        </Card>
+      ) : !lotRunId ? (
+        <Card className="border-yellow-200 bg-yellow-50 text-yellow-800">
+          <CardContent className="space-y-4 py-4">
+            <div className="space-y-2">
+              <CardTitle className="text-base">No Process Lot Run</CardTitle>
+              <p className="text-sm text-yellow-800/80">
+                No process lot run exists for this batch. Process lot runs are automatically created when supply batches
+                are created with quality status PASSED. You can create one manually if the batch is ready for processing.
+              </p>
+            </div>
+            <Button
+              onClick={handleCreateLotRun}
+              disabled={creatingLotRun || !selectedLot}
+              className="bg-yellow-600 hover:bg-yellow-700 text-white"
+            >
+              {creatingLotRun ? 'Creating...' : 'Create Process Lot Run'}
             </Button>
           </CardContent>
         </Card>
@@ -481,7 +498,9 @@ function ProcessStepsProgress() {
               <div>
                 <p className="text-xs uppercase tracking-wide text-text-dark/50">Received On</p>
                 <p className="text-base font-semibold text-text-dark">
-                  {selectedLot.supplies?.received_at ? new Date(selectedLot.supplies.received_at).toLocaleString() : '—'}
+                  {selectedLot.supplies?.received_at
+                    ? new Date(selectedLot.supplies.received_at).toLocaleString()
+                    : '—'}
                 </p>
               </div>
               <div>
@@ -507,114 +526,127 @@ function ProcessStepsProgress() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {selectedLot && availableProcesses.length > 1 && (
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="process_selector">Select process</Label>
-                    <select
-                      id="process_selector"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      value={selectedProcessId ?? ''}
-                      onChange={handleProcessChange}
-                      disabled={loadingLot}
-                    >
-                      <option value="">Choose a process</option>
-                      {availableProcesses.map((process: { id: number; name: string; code?: string }) => (
-                        <option key={process.id} value={process.id}>
-                          {process.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Linked products</Label>
-                    <div className="rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
-                      {availableProcesses
-                        .map((process: { id: number; name: string; code?: string }) => `${process.code ?? '—'} · ${process.name}`)
-                        .join(' • ')}
-                    </div>
-                  </div>
+              {loadingStepRuns ? (
+                <div className="py-5 text-center text-sm text-text-dark/60">Loading step runs…</div>
+              ) : stepRuns.length === 0 && lotRunId ? (
+                <div className="text-sm text-text-dark/60 py-4 text-center space-y-3">
+                  <p>No process steps defined yet. Steps are automatically created when the process lot run is created.</p>
+                  <Button
+                    onClick={async () => {
+                      if (!lotRunId) return
+                      setSaving(true)
+                      try {
+                        await createProcessStepRuns(lotRunId)
+                        await refreshStepRuns()
+                        toast.success('Process step runs created successfully')
+                      } catch (error) {
+                        console.error('Error creating step runs:', error)
+                        const errorMessage = error instanceof Error ? error.message : 'Failed to create step runs'
+                        toast.error(errorMessage)
+                      } finally {
+                        setSaving(false)
+                      }
+                    }}
+                    disabled={saving || !lotRunId}
+                    className="bg-olive hover:bg-olive-dark"
+                  >
+                    {saving ? 'Creating...' : 'Create Process Step Runs'}
+                  </Button>
                 </div>
-              )}
-
-              {selectedLot && availableProcesses.length === 0 && (
-                <div className="text-sm text-red-600">
-                  This product does not have any process definition yet. Please configure one in the process settings.
+              ) : stepRuns.length === 0 ? (
+                <div className="text-sm text-text-dark/60 py-4 text-center">
+                  No process lot run exists yet. Please create one first.
                 </div>
-              )}
-
-              {selectedLot && selectedProcessId && (
+              ) : (
                 <>
                   <div className="flex items-center justify-between">
-                    {selectedSteps.map((step: ProcessStep, index: number) => (
-                      <div key={step.id} className="flex flex-1 items-center">
-                        <button
-                          type="button"
-                          onClick={() => goToStep(index)}
-                          className={`flex flex-1 flex-col items-center ${
-                            currentStepIndex === index
-                              ? 'text-olive'
-                              : currentStepIndex > index
-                              ? 'text-green-600'
-                              : 'text-text-dark/40'
-                          }`}
-                          disabled={loadingLot}
-                        >
-                          <div
-                            className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full border-2 ${
-                              currentStepIndex === index
-                                ? 'border-olive bg-olive-light/20'
-                                : currentStepIndex > index
-                                ? 'border-green-600 bg-green-100'
-                                : 'border-text-dark/20 bg-white'
+                    {stepRuns.map((stepRun, index: number) => {
+                      const step = stepRun.process_step
+                      const isCompleted = stepRun.status === 'COMPLETED'
+                      const isInProgress = stepRun.status === 'IN_PROGRESS'
+                      const isCurrent = index === currentStepIndex
+                      const canAccess = index === 0 || stepRuns[index - 1]?.status === 'COMPLETED'
+
+                      return (
+                        <div key={stepRun.id} className="flex flex-1 items-center">
+                          <button
+                            type="button"
+                            onClick={() => canAccess && goToStep(index)}
+                            disabled={!canAccess || loadingStepRuns}
+                            className={`flex flex-1 flex-col items-center ${
+                              isCurrent
+                                ? 'text-olive'
+                                : isCompleted
+                                ? 'text-green-600'
+                                : canAccess
+                                ? 'text-text-dark/60'
+                                : 'text-text-dark/30 cursor-not-allowed'
                             }`}
                           >
-                            {currentStepIndex > index || stepProgress[index]?.status === 'COMPLETED' ? (
-                              <CheckCircle2 className="h-6 w-6 text-green-600" />
-                            ) : (
-                              <span className="text-sm font-semibold">{index + 1}</span>
-                            )}
-                          </div>
-                          <span className="text-xs font-medium text-center">{step.step_name ?? 'Unnamed step'}</span>
-                        </button>
-                        {index < selectedSteps.length - 1 && (
-                          <div
-                            className={`mx-2 mb-3 flex-1 h-0.5 ${
-                              currentStepIndex > index ? 'bg-green-600' : 'bg-text-dark/20'
-                            }`}
-                          />
-                        )}
-                      </div>
-                    ))}
+                            <div
+                              className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full border-2 ${
+                                isCurrent
+                                  ? 'border-olive bg-olive-light/20'
+                                  : isCompleted
+                                  ? 'border-green-600 bg-green-100'
+                                  : isInProgress
+                                  ? 'border-orange-400 bg-orange-100'
+                                  : 'border-text-dark/20 bg-white'
+                              }`}
+                            >
+                              {isCompleted ? (
+                                <CheckCircle2 className="h-6 w-6 text-green-600" />
+                              ) : (
+                                <span className="text-sm font-semibold">{index + 1}</span>
+                              )}
+                            </div>
+                            <span className="text-xs font-medium text-center">
+                              {step?.step_name ?? 'Unnamed step'}
+                            </span>
+                          </button>
+                          {index < stepRuns.length - 1 && (
+                            <div
+                              className={`mx-2 mb-3 flex-1 h-0.5 ${
+                                isCompleted ? 'bg-green-600' : 'bg-text-dark/20'
+                              }`}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
 
-                  <div className="border-t border-olive-light/20 pt-4">
-                    <div className="space-y-3">
+                  {activeStepRun && activeStep && (
+                    <div className="border-t border-olive-light/20 pt-4 space-y-4">
                       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                         <div>
-                          <h3 className="text-lg font-semibold text-text-dark">
-                            {activeStep ? (String(activeStep.step_name ?? 'Select a step')) : 'Select a step'}
-                          </h3>
+                          <h3 className="text-lg font-semibold text-text-dark">{activeStep.step_name}</h3>
                           <p className="text-sm text-text-dark/60">
-                            Step {activeStep ? activeStep.seq : currentStepIndex + 1} · {activeStep ? (String(activeStep.step_code ?? '—')) : '—'}
+                            Step {activeStep.seq} · {activeStep.step_code}
                           </p>
                         </div>
-                        {activeStep && (activeStep.default_location_id !== null && activeStep.default_location_id !== undefined) && (
+                        {activeStep.default_location_id && (
                           <div className="flex items-center gap-2 rounded-md bg-olive-light/20 px-3 py-2 text-sm text-text-dark">
                             <MapPin className="h-4 w-4 text-olive" />
-                            <span>Default location #{String(activeStep.default_location_id)}</span>
+                            <span>
+                              Default location:{' '}
+                              {warehouses.find((w) => w.id === activeStep.default_location_id)?.name ??
+                                `#${activeStep.default_location_id}`}
+                            </span>
                           </div>
                         )}
                         <span
                           className={`inline-flex h-8 items-center rounded-full px-3 text-xs font-semibold ${
-                            (activeProgress?.status ?? 'PENDING') === 'COMPLETED'
+                            activeStepRun.status === 'COMPLETED'
                               ? 'bg-green-100 text-green-800'
-                              : (activeProgress?.status ?? 'PENDING') === 'IN_PROGRESS'
-                              ? 'bg-brown/10 text-brown'
+                              : activeStepRun.status === 'IN_PROGRESS'
+                              ? 'bg-orange-100 text-orange-800'
+                              : activeStepRun.status === 'FAILED'
+                              ? 'bg-red-100 text-red-800'
                               : 'bg-olive-light/40 text-olive-dark'
                           }`}
                         >
-                          {activeProgress?.status ?? 'PENDING'}
+                          {activeStepRun.status}
                         </span>
                       </div>
 
@@ -624,9 +656,11 @@ function ProcessStepsProgress() {
                           <select
                             id="step_status"
                             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            value={activeProgress?.status ?? 'PENDING'}
-                            onChange={(event: ChangeEvent<HTMLSelectElement>) => updateCurrentStep({ status: event.target.value as 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' })}
-                            disabled={loadingLot}
+                            value={activeStepRun.status}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                              handleStepStatusChange(e.target.value as ProcessStepRun['status'])
+                            }
+                            disabled={saving || loadingStepRuns}
                           >
                             {PROCESS_STATUSES.map((status) => (
                               <option key={status} value={status}>
@@ -637,14 +671,23 @@ function ProcessStepsProgress() {
                         </div>
 
                         <div className="space-y-2">
-                          <Label htmlFor="step_operator">Operator</Label>
-                          <Input
-                            id="step_operator"
-                            value={activeProgress?.operator ?? operatorName}
-                            placeholder={operatorName ? `Signed in as ${operatorName}` : 'Signed in user'}
-                            disabled
-                            readOnly
-                          />
+                          <Label htmlFor="step_location">Location</Label>
+                          <select
+                            id="step_location"
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            value={stepFormData.location_id}
+                            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                              setStepFormData({ ...stepFormData, location_id: e.target.value })
+                            }
+                            disabled={saving || loadingStepRuns}
+                          >
+                            <option value="">Select location</option>
+                            {warehouses.map((warehouse) => (
+                              <option key={warehouse.id} value={warehouse.id}>
+                                {warehouse.name}
+                              </option>
+                            ))}
+                          </select>
                         </div>
 
                         <div className="space-y-2">
@@ -652,9 +695,12 @@ function ProcessStepsProgress() {
                           <Input
                             id="step_started_at"
                             type="datetime-local"
-                            value={toLocalDateTimeInput(activeProgress?.started_at ?? null)}
-                            onChange={(event: ChangeEvent<HTMLInputElement>) => updateCurrentStep({ started_at: toISOString(event.target.value) })}
-                            disabled={loadingLot}
+                            value={stepFormData.started_at}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                              setStepFormData({ ...stepFormData, started_at: e.target.value })
+                            }
+                            disabled={saving || loadingStepRuns}
+                            className="bg-white"
                           />
                         </div>
 
@@ -663,35 +709,12 @@ function ProcessStepsProgress() {
                           <Input
                             id="step_completed_at"
                             type="datetime-local"
-                            value={toLocalDateTimeInput(activeProgress?.completed_at ?? null)}
-                            onChange={(event: ChangeEvent<HTMLInputElement>) => updateCurrentStep({ completed_at: toISOString(event.target.value) })}
-                            disabled={loadingLot}
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label htmlFor="step_quantity_in">Quantity in</Label>
-                          <Input
-                            id="step_quantity_in"
-                            type="number"
-                            step="0.01"
-                            value={activeProgress?.quantity_in ?? ''}
-                            placeholder="0.00"
-                            disabled={loadingLot}
-                            readOnly
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label htmlFor="step_quantity_out">Quantity out</Label>
-                          <Input
-                            id="step_quantity_out"
-                            type="number"
-                            step="0.01"
-                            value={activeProgress?.quantity_out ?? ''}
-                            onChange={(event: ChangeEvent<HTMLInputElement>) => updateCurrentStep({ quantity_out: event.target.value })}
-                            placeholder="0.00"
-                            disabled={loadingLot}
+                            value={stepFormData.completed_at}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                              setStepFormData({ ...stepFormData, completed_at: e.target.value })
+                            }
+                            disabled={saving || loadingStepRuns}
+                            className="bg-white"
                           />
                         </div>
                       </div>
@@ -701,62 +724,158 @@ function ProcessStepsProgress() {
                         <textarea
                           id="step_notes"
                           className="min-h-[70px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          value={activeProgress?.notes ?? ''}
-                          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => updateCurrentStep({ notes: event.target.value })}
+                          value={stepFormData.notes}
+                          onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
+                            setStepFormData({ ...stepFormData, notes: e.target.value })
+                          }
                           placeholder="Add context, QC remarks or deviations…"
-                          disabled={loadingLot}
+                          disabled={saving || loadingStepRuns}
                         />
                       </div>
+
+                      {/* Measurements */}
+                      <div className="border-t border-olive-light/20 pt-4">
+                        <MeasurementsCapture
+                          stepRunId={activeStepRun.id}
+                          measurements={measurements}
+                          onAdd={addMeasurement}
+                          onDelete={deleteMeasurement}
+                          loading={saving}
+                        />
+                      </div>
+
+                      {/* QC Check */}
+                      {activeStep.requires_qc && (
+                        <div className="border-t border-olive-light/20 pt-4">
+                          <StepQCCheck
+                            stepRunId={activeStepRun.id}
+                            onPass={handleQCPass}
+                            onFail={handleQCFail}
+                            loading={saving}
+                          />
+                        </div>
+                      )}
+
+                      {/* Non-Conformances */}
+                      <div className="border-t border-olive-light/20 pt-4">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-sm font-semibold text-text-dark">Non-Conformances</h4>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowNCForm(!showNCForm)}
+                            disabled={saving}
+                            className="border-olive-light/30"
+                          >
+                            <Plus className="mr-2 h-4 w-4" />
+                            Add NC
+                          </Button>
+                        </div>
+                        {showNCForm && (
+                          <div className="mb-4">
+                            <NonConformanceForm
+                              stepRunId={activeStepRun.id}
+                              onSubmit={async (nc) => {
+                                await addNonConformance(nc)
+                                setShowNCForm(false)
+                              }}
+                              onCancel={() => setShowNCForm(false)}
+                              loading={saving}
+                            />
+                          </div>
+                        )}
+                        <NonConformanceList
+                          stepRunId={activeStepRun.id}
+                          nonConformances={nonConformances}
+                          onResolve={resolveNonConformance}
+                          loading={saving}
+                        />
+                      </div>
+
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleSaveStep}
+                          disabled={saving || loadingStepRuns}
+                          className="border-olive-light/30"
+                        >
+                          <Save className="mr-2 h-4 w-4" />
+                          Save Step Details
+                        </Button>
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  {/* Signoffs and Completion */}
+                  {allStepsCompleted && (
+                    <div className="border-t border-olive-light/20 pt-4 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-text-dark">Process Completion</h4>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowSignoffs(!showSignoffs)}
+                          className="border-olive-light/30"
+                        >
+                          {showSignoffs ? 'Hide' : 'Show'} Signoffs
+                        </Button>
+                      </div>
+
+                      {showSignoffs && lotRunId && (
+                        <ProcessSignoffs
+                          lotRunId={lotRunId}
+                          signoffs={lotRun?.signoffs ?? []}
+                          onSign={handleSignoff}
+                          loading={saving}
+                        />
+                      )}
+
+                      {unresolvedNCs.length > 0 && (
+                        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3">
+                          <p className="text-sm text-yellow-800">
+                            Warning: There are {unresolvedNCs.length} unresolved non-conformance(s). You can still
+                            complete the process, but it is recommended to resolve them first.
+                          </p>
+                        </div>
+                      )}
+
+                      <Button
+                        type="button"
+                        onClick={handleCompleteProcess}
+                        disabled={!allStepsCompleted || saving}
+                        className="w-full bg-olive-dark text-white hover:bg-olive"
+                      >
+                        <Activity className="mr-2 h-4 w-4" />
+                        Complete Process & Create Production Batch
+                      </Button>
+                    </div>
+                  )}
 
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-olive-light/20 pt-4">
                     <Button
                       type="button"
                       variant="outline"
                       onClick={prevStep}
-                      disabled={currentStepIndex === 0 || loadingLot}
+                      disabled={currentStepIndex === 0 || loadingStepRuns}
                       className="flex items-center"
                     >
                       <ChevronLeft className="mr-2 h-4 w-4" />
                       Previous
                     </Button>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => handleSave({ complete: false })}
-                        disabled={saving || loadingLot}
-                        className="flex items-center"
-                      >
-                        <Save className="mr-2 h-4 w-4" />
-                        Save Progress
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={nextStep}
-                        disabled={currentStepIndex === selectedSteps.length - 1 || loadingLot}
-                        className="flex items-center bg-olive hover:bg-olive-dark"
-                      >
-                        Next
-                        <ChevronRight className="ml-2 h-4 w-4" />
-                      </Button>
-                      <Button
-                        type="button"
-                        onClick={() => handleSave({ complete: true })}
-                        disabled={!allStepsCompleted || saving || loadingLot}
-                        className="flex items-center bg-olive-dark text-white hover:bg-olive"
-                      >
-                        <Activity className="mr-2 h-4 w-4" />
-                        Complete Process
-                      </Button>
-                    </div>
+                    <Button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={currentStepIndex >= stepRuns.length - 1 || loadingStepRuns || !canStartNextStep}
+                      className="flex items-center bg-olive hover:bg-olive-dark"
+                    >
+                      Next
+                      <ChevronRight className="ml-2 h-4 w-4" />
+                    </Button>
                   </div>
                 </>
-              )}
-
-              {selectedLot && !selectedProcessId && availableProcesses.length > 0 && (
-                <div className="text-sm text-text-dark/60">Choose a process to begin tracking progress.</div>
               )}
             </CardContent>
           </Card>
@@ -767,5 +886,3 @@ function ProcessStepsProgress() {
 }
 
 export default ProcessStepsProgress
-
-

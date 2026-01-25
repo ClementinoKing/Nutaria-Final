@@ -9,6 +9,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
+import { Spinner } from '@/components/ui/spinner'
 
 const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
   year: 'numeric',
@@ -310,6 +311,18 @@ function Warehouses() {
       toast.error(errorMessage)
       setIsSubmitting(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="Warehouses"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading warehouses..." />
+      </PageLayout>
+    )
   }
 
   return (

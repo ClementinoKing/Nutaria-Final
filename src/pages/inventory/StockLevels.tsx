@@ -6,6 +6,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { supabase } from '@/lib/supabaseClient'
+import { Spinner } from '@/components/ui/spinner'
 
 const QUALITY_HOLD_STATUSES = new Set(['PENDING', 'HOLD'])
 
@@ -639,6 +640,18 @@ function StockLevels() {
     [coverageThreshold]
   )
 
+  if (loading) {
+    return (
+      <PageLayout
+        title="Stock Levels"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading stock levels..." />
+      </PageLayout>
+    )
+  }
+
   return (
     <PageLayout
       title="Stock Levels"
@@ -759,12 +772,7 @@ function StockLevels() {
             </div>
           </div>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-10 text-sm text-text-dark/70">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin text-olive" />
-              Loading stock levels…
-            </div>
-          ) : filteredStockLevels.length === 0 ? (
+          {filteredStockLevels.length === 0 ? (
             <div className="rounded-md border border-dashed border-olive-light/60 bg-olive-light/10 p-8 text-center text-sm text-text-dark/70">
               No stock batches recorded yet. Add supplies to see stock levels here.
             </div>

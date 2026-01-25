@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useUserProfiles } from '@/hooks/useUserProfiles'
 import { ROLE_OPTIONS } from '@/constants/roles'
+import { Spinner } from '@/components/ui/spinner'
 
 const HIGHLIGHT_ROLES = ['admin', 'planner', 'qa']
 
@@ -285,6 +286,18 @@ function UserManagement() {
     )
     setProfiles((previous) => previous.filter((item) => item.id !== profile.id))
     setDeletingUserId(null)
+  }
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="User Management"
+        activeItem="users"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading users..." />
+      </PageLayout>
+    )
   }
 
   return (

@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
+import { Spinner } from '@/components/ui/spinner'
 
 function formatEnumLabel(value: string | number | null | undefined): string {
   const label = value ?? ''
@@ -328,22 +329,9 @@ function SupplierDetail() {
       <PageLayout
         title="Supplier Detail"
         activeItem="suppliersCustomers"
-        actions={
-          <Button variant="outline" onClick={handleBack}>
-            Back to Suppliers
-          </Button>
-        }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
       >
-        <Card className="border-olive-light/30">
-          <CardHeader>
-            <CardTitle className="text-text-dark">Loading supplier</CardTitle>
-            <CardDescription>Fetching the latest supplier information from Supabase…</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-text-dark/70">Please wait a moment.</p>
-          </CardContent>
-        </Card>
+        <Spinner text="Loading supplier details..." />
       </PageLayout>
     )
   }

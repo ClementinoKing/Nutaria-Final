@@ -9,6 +9,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
+import { Spinner } from '@/components/ui/spinner'
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -261,6 +262,18 @@ function Units() {
       toast.error(errorMessage)
       setIsSubmitting(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="Units"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading units..." />
+      </PageLayout>
+    )
   }
 
   return (

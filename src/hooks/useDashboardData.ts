@@ -346,20 +346,61 @@ export function useDashboardData(): UseDashboardDataReturn {
     }) => {
       const inventoryFetchErrors: string[] = []
 
+      // Fetch supplies data for supply_batches warehouse lookup
+      let suppliesMap = new Map<number, { warehouse_id: number | null }>()
+      const suppliesResult = await runQuerySafely(
+        supabase.from('supplies').select('id, warehouse_id'),
+        'supplies for warehouse lookup'
+      )
+      if (suppliesResult.data && !(suppliesResult as { error?: string }).error) {
+        const suppliesData = (suppliesResult.data as { data?: Array<{ id: number; warehouse_id: number | null }> })?.data ?? []
+        suppliesMap = new Map(suppliesData.map((s) => [s.id, { warehouse_id: s.warehouse_id }]))
+      }
+
       for (const table of inventorySources) {
+        // Build column list based on table structure
+        let columns = 'id, product_id'
+        
+        if (table === 'supply_batches') {
+          // supply_batches doesn't have warehouse_id (it's linked through supply_id)
+          // It also uses current_qty instead of on_hand/available
+          columns = 'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'
+        } else if (table === 'stock_levels') {
+          // stock_levels doesn't have unit_id column - remove it from query
+          columns = 'id, product_id, warehouse_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
+        } else {
+          // Default columns for other tables
+          columns = 'id, product_id, warehouse_id, unit_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
+        }
+
         const { data: queryResult, error } = await runQuerySafely(
-          supabase.from(table).select('*').limit(200),
+          supabase.from(table).select(columns).limit(200),
           `${table} inventory`
         )
 
         if (error) {
+          // Skip tables that don't exist or have column mismatches
+          if (error.includes('does not exist') || error.includes('column')) {
+            // Silently skip tables with schema mismatches
+            continue
+          }
           inventoryFetchErrors.push(error)
           continue
         }
 
-        const rows = Array.isArray((queryResult as { data?: unknown })?.data)
+        let rows = Array.isArray((queryResult as { data?: unknown })?.data)
           ? (queryResult as { data: InventoryRow[] }).data
           : (queryResult as { data?: InventoryRow[] })?.data ?? []
+
+        // For supply_batches, enrich rows with warehouse_id from supplies
+        if (table === 'supply_batches' && rows.length > 0) {
+          rows = rows.map((row: InventoryRow & { supply_id?: number }) => {
+            if (row.supply_id && suppliesMap.has(row.supply_id)) {
+              return { ...row, warehouse_id: suppliesMap.get(row.supply_id)?.warehouse_id ?? null }
+            }
+            return row
+          })
+        }
 
         if (rows.length > 0) {
           const normalised = normaliseInventoryRows(rows, { productMap, warehouseMap, unitMap })

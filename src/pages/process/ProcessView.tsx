@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Eye, Clock, X, CheckCircle, Activity } from 'lucide-react'
+import { Eye, Clock, X, CheckCircle, Activity, AlertCircle, Thermometer, Scale, Droplets, MapPin, Shield } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { useProcessDefinitions } from '@/hooks/useProcessDefinitions'
 import { PostgrestError } from '@supabase/supabase-js'
+import type { ProcessMeasurement, ProcessNonConformance } from '@/types/processExecution'
 
 interface StepProgress {
   step_id: number
@@ -20,6 +21,34 @@ interface StepProgress {
   quantity_out?: string | number
   notes?: string
   [key: string]: unknown
+}
+
+interface ProcessStepRun {
+  id: number
+  process_step_id: number
+  status: string
+  started_at: string | null
+  completed_at: string | null
+  performed_by: string | null
+  location_id: number | null
+  notes: string | null
+  process_steps?: {
+    id: number
+    seq: number
+    step_code: string
+    step_name: string
+  }
+  warehouses?: {
+    id: number
+    name: string
+  } | null
+  performed_by_user?: {
+    id: string
+    full_name?: string
+    email?: string
+  } | null
+  process_measurements?: ProcessMeasurement[]
+  process_non_conformances?: ProcessNonConformance[]
 }
 
 interface SupplyBatch {
@@ -52,15 +81,30 @@ interface Process {
   description?: string | null
 }
 
+interface ProcessSignoff {
+  id: number
+  process_lot_run_id: number
+  role: 'operator' | 'supervisor' | 'qa'
+  signed_by: string
+  signed_at: string
+  signed_by_user?: {
+    id: string
+    full_name?: string
+    email?: string
+  } | null
+}
+
 interface ProcessRun {
   id: number
   status: string
-  step_progress: StepProgress[]
+  step_progress?: StepProgress[] // Legacy JSONB - kept for backward compatibility
+  step_runs?: ProcessStepRun[] // New relational data
   started_at: string | null
   completed_at: string | null
   created_at: string
   supply_batches: SupplyBatch | SupplyBatch[] | null
   processes: Process | Process[] | null
+  process_signoffs?: ProcessSignoff[]
 }
 
 interface TimelineItem {
@@ -71,9 +115,13 @@ interface TimelineItem {
   started_at: string | null | undefined
   completed_at: string | null | undefined
   operator: string | undefined
+  operatorName?: string | undefined
+  location?: string | undefined
   quantity_in: string | number | undefined
   quantity_out: string | number | undefined
   notes: string | undefined
+  measurements?: ProcessMeasurement[]
+  nonConformances?: ProcessNonConformance[]
 }
 
 function ProcessView() {
@@ -89,7 +137,8 @@ function ProcessView() {
     setLoading(true)
     setError(null)
 
-    const { data, error: fetchError } = await supabase
+    // First, fetch process_lot_runs with basic joins that work
+    const { data: lotRunsData, error: lotRunsError } = await supabase
       .from('process_lot_runs')
       .select(`
         id,
@@ -98,6 +147,8 @@ function ProcessView() {
         started_at,
         completed_at,
         created_at,
+        supply_batch_id,
+        process_id,
         supply_batches: supply_batch_id (
           id,
           lot_no,
@@ -125,17 +176,184 @@ function ProcessView() {
           code,
           name,
           description
+        ),
+        process_signoffs (
+          id,
+          process_lot_run_id,
+          role,
+          signed_by,
+          signed_at
         )
       `)
       .order('created_at', { ascending: false })
 
-    if (fetchError) {
-      setError(fetchError)
+    if (lotRunsError) {
+      setError(lotRunsError)
       setLoading(false)
       return
     }
 
-    setRuns((data as unknown as ProcessRun[]) ?? [])
+    const runsData = (lotRunsData as unknown as ProcessRun[]) ?? []
+    
+    if (runsData.length === 0) {
+      setRuns([])
+      setLoading(false)
+      return
+    }
+
+    // Fetch process_step_runs separately
+    const lotRunIds = runsData.map((run) => run.id)
+    const { data: stepRunsData, error: stepRunsError } = await supabase
+      .from('process_step_runs')
+      .select('id, process_lot_run_id, process_step_id, status, started_at, completed_at, performed_by, location_id, notes')
+      .in('process_lot_run_id', lotRunIds)
+
+    if (stepRunsError) {
+      console.error('Error fetching step runs:', stepRunsError)
+      // Continue without step runs rather than failing completely
+    }
+
+    // Fetch related data separately
+    const stepIds = (stepRunsData || []).map((sr: any) => sr.process_step_id).filter(Boolean)
+    const locationIds = (stepRunsData || []).map((sr: any) => sr.location_id).filter(Boolean)
+    const stepRunIds = (stepRunsData || []).map((sr: any) => sr.id).filter(Boolean)
+
+    const [processStepsResult, warehousesResult, measurementsResult, nonConformancesResult] = await Promise.all([
+      stepIds.length > 0
+        ? supabase
+            .from('process_steps')
+            .select('id, seq, step_code, step_name')
+            .in('id', stepIds)
+        : Promise.resolve({ data: [], error: null }),
+      locationIds.length > 0
+        ? supabase
+            .from('warehouses')
+            .select('id, name')
+            .in('id', locationIds)
+        : Promise.resolve({ data: [], error: null }),
+      stepRunIds.length > 0
+        ? supabase
+            .from('process_measurements')
+            .select('id, process_step_run_id, metric, value, unit, recorded_at')
+            .in('process_step_run_id', stepRunIds)
+        : Promise.resolve({ data: [], error: null }),
+      stepRunIds.length > 0
+        ? supabase
+            .from('process_non_conformances')
+            .select('id, process_step_run_id, nc_type, description, severity, corrective_action, resolved, resolved_at')
+            .in('process_step_run_id', stepRunIds)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+
+    // Create maps for efficient lookup
+    const processStepsMap = new Map((processStepsResult.data || []).map((ps: any) => [ps.id, ps]))
+    const warehousesMap = new Map((warehousesResult.data || []).map((wh: any) => [wh.id, wh]))
+    const measurementsMap = new Map<number, any[]>()
+    const nonConformancesMap = new Map<number, any[]>()
+
+    ;(measurementsResult.data || []).forEach((m: any) => {
+      const stepRunId = m.process_step_run_id
+      if (!measurementsMap.has(stepRunId)) {
+        measurementsMap.set(stepRunId, [])
+      }
+      measurementsMap.get(stepRunId)!.push(m)
+    })
+
+    ;(nonConformancesResult.data || []).forEach((nc: any) => {
+      const stepRunId = nc.process_step_run_id
+      if (!nonConformancesMap.has(stepRunId)) {
+        nonConformancesMap.set(stepRunId, [])
+      }
+      nonConformancesMap.get(stepRunId)!.push(nc)
+    })
+
+    // Combine step runs with related data
+    const stepRunsByLotRunId = new Map<number, any[]>()
+    ;(stepRunsData || []).forEach((sr: any) => {
+      const lotRunId = sr.process_lot_run_id
+      if (!stepRunsByLotRunId.has(lotRunId)) {
+        stepRunsByLotRunId.set(lotRunId, [])
+      }
+      stepRunsByLotRunId.get(lotRunId)!.push({
+        ...sr,
+        process_steps: processStepsMap.get(sr.process_step_id) || null,
+        warehouses: sr.location_id ? warehousesMap.get(sr.location_id) || null : null,
+        process_measurements: measurementsMap.get(sr.id) || [],
+        process_non_conformances: nonConformancesMap.get(sr.id) || [],
+      })
+    })
+
+    // Attach step runs to lot runs
+    runsData.forEach((run) => {
+      run.step_runs = stepRunsByLotRunId.get(run.id) || []
+    })
+
+    // Collect all user UUIDs from step runs and signoffs
+    const userIds = new Set<string>()
+    runsData.forEach((run) => {
+      if (run.step_runs) {
+        run.step_runs.forEach((stepRun) => {
+          if (stepRun.performed_by) {
+            userIds.add(stepRun.performed_by)
+          }
+        })
+      }
+      if (run.process_signoffs) {
+        run.process_signoffs.forEach((signoff) => {
+          userIds.add(signoff.signed_by)
+        })
+      }
+    })
+
+    // Fetch user profiles for all UUIDs
+    const userProfilesMap = new Map<string, { full_name?: string; email?: string }>()
+    if (userIds.size > 0) {
+      const { data: profilesData } = await supabase
+        .from('user_profiles')
+        .select('auth_user_id, full_name, email')
+        .in('auth_user_id', Array.from(userIds))
+
+      if (profilesData) {
+        profilesData.forEach((profile) => {
+          if (profile.auth_user_id) {
+            userProfilesMap.set(profile.auth_user_id, {
+              full_name: profile.full_name ?? undefined,
+              email: profile.email ?? undefined,
+            })
+          }
+        })
+      }
+    }
+
+    // Map user profiles back to runs
+    runsData.forEach((run) => {
+      if (run.step_runs) {
+        run.step_runs.forEach((stepRun) => {
+          if (stepRun.performed_by) {
+            const profile = userProfilesMap.get(stepRun.performed_by)
+            if (profile) {
+              stepRun.performed_by_user = {
+                id: stepRun.performed_by,
+                ...profile,
+              }
+            }
+          }
+        })
+      }
+      if (run.process_signoffs) {
+        run.process_signoffs.forEach((signoff) => {
+          const profile = userProfilesMap.get(signoff.signed_by)
+          if (profile) {
+            signoff.signed_by_user = {
+              id: signoff.signed_by,
+              ...profile,
+            }
+          }
+        })
+      }
+    })
+
+    setRuns(runsData)
     setLoading(false)
   }, [])
 
@@ -159,28 +377,65 @@ function ProcessView() {
     const mapping = new Map<number, TimelineItem[]>()
 
     runs.forEach((run: ProcessRun) => {
-      const steps = Array.isArray(run.step_progress) ? run.step_progress : []
-      const orderedSteps = [...steps].sort((a: StepProgress, b: StepProgress) => (a.seq ?? 0) - (b.seq ?? 0))
-      const process = getProcess(run)
+      // Prefer new relational step_runs over legacy JSONB step_progress
+      let timelineItems: TimelineItem[] = []
 
-      const timelineItems: TimelineItem[] = orderedSteps.map((step: StepProgress, index: number) => {
-        const processStep = processSteps.get(process?.id ?? -1)?.find((s: { id: number; [key: string]: unknown }) => s.id === step.step_id)
-        const stepName = (processStep as { step_name?: string } | undefined)?.step_name
-        const label = stepName ?? step.step_name ?? `Step ${step.seq ?? index + 1}`
+      if (run.step_runs && Array.isArray(run.step_runs) && run.step_runs.length > 0) {
+        // Use new relational data
+        const orderedStepRuns = [...run.step_runs].sort(
+          (a: ProcessStepRun, b: ProcessStepRun) => (a.process_steps?.seq ?? 0) - (b.process_steps?.seq ?? 0)
+        )
 
-        return {
-          id: `${run.id}-${step.step_id ?? index}`,
-          seq: step.seq ?? index + 1,
-          name: label,
-          status: (step.status ?? 'PENDING').toUpperCase(),
-          started_at: step.started_at,
-          completed_at: step.completed_at,
-          operator: step.operator,
-          quantity_in: step.quantity_in,
-          quantity_out: step.quantity_out,
-          notes: step.notes,
-        }
-      })
+        timelineItems = orderedStepRuns.map((stepRun: ProcessStepRun, index: number) => {
+          const step = stepRun.process_steps
+          const operatorName = stepRun.performed_by_user?.full_name || stepRun.performed_by_user?.email || undefined
+          const locationName = stepRun.warehouses?.name || undefined
+          
+          return {
+            id: `${run.id}-${stepRun.id}`,
+            seq: step?.seq ?? index + 1,
+            name: step?.step_name ?? `Step ${index + 1}`,
+            status: (stepRun.status ?? 'PENDING').toUpperCase(),
+            started_at: stepRun.started_at ?? undefined,
+            completed_at: stepRun.completed_at ?? undefined,
+            operator: stepRun.performed_by ?? undefined,
+            operatorName,
+            location: locationName,
+            quantity_in: undefined,
+            quantity_out: undefined,
+            notes: stepRun.notes ?? undefined,
+            measurements: stepRun.process_measurements || [],
+            nonConformances: stepRun.process_non_conformances || [],
+          }
+        })
+      } else if (Array.isArray(run.step_progress) && run.step_progress.length > 0) {
+        // Fall back to legacy JSONB data
+        const orderedSteps = [...run.step_progress].sort(
+          (a: StepProgress, b: StepProgress) => (a.seq ?? 0) - (b.seq ?? 0)
+        )
+        const process = getProcess(run)
+
+        timelineItems = orderedSteps.map((step: StepProgress, index: number) => {
+          const processStep = processSteps
+            .get(process?.id ?? -1)
+            ?.find((s: { id: number; [key: string]: unknown }) => s.id === step.step_id)
+          const stepName = (processStep as { step_name?: string } | undefined)?.step_name
+          const label = stepName ?? step.step_name ?? `Step ${step.seq ?? index + 1}`
+
+          return {
+            id: `${run.id}-${step.step_id ?? index}`,
+            seq: step.seq ?? index + 1,
+            name: label,
+            status: (step.status ?? 'PENDING').toUpperCase(),
+            started_at: step.started_at,
+            completed_at: step.completed_at,
+            operator: step.operator,
+            quantity_in: step.quantity_in,
+            quantity_out: step.quantity_out,
+            notes: step.notes,
+          }
+        })
+      }
 
       mapping.set(run.id, timelineItems)
     })
@@ -347,6 +602,7 @@ function ProcessView() {
   ]
 
   const timelineItems = selectedRun ? timelineByRunId.get(selectedRun.id) ?? [] : []
+  const signoffs = selectedRun?.process_signoffs || []
 
   const getTimelineAccent = (status: string | null | undefined) => {
     switch ((status ?? '').toUpperCase()) {
@@ -393,6 +649,63 @@ function ProcessView() {
         return <Activity className="h-4 w-4" />
       default:
         return <Clock className="h-4 w-4" />
+    }
+  }
+
+  const getMeasurementIcon = (metric: ProcessMeasurement['metric']) => {
+    switch (metric) {
+      case 'moisture_in':
+      case 'moisture_out':
+        return <Droplets className="h-4 w-4" />
+      case 'weight':
+        return <Scale className="h-4 w-4" />
+      case 'temp':
+        return <Thermometer className="h-4 w-4" />
+      default:
+        return null
+    }
+  }
+
+  const getMeasurementLabel = (metric: ProcessMeasurement['metric']): string => {
+    switch (metric) {
+      case 'moisture_in':
+        return 'Moisture In'
+      case 'moisture_out':
+        return 'Moisture Out'
+      case 'weight':
+        return 'Weight'
+      case 'temp':
+        return 'Temperature'
+      default:
+        return metric
+    }
+  }
+
+  const getSeverityColor = (severity: ProcessNonConformance['severity']): string => {
+    switch (severity) {
+      case 'LOW':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200'
+      case 'MEDIUM':
+        return 'bg-orange-100 text-orange-800 border-orange-200'
+      case 'HIGH':
+        return 'bg-red-100 text-red-800 border-red-200'
+      case 'CRITICAL':
+        return 'bg-red-200 text-red-900 border-red-300'
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200'
+    }
+  }
+
+  const getRoleLabel = (role: ProcessSignoff['role']): string => {
+    switch (role) {
+      case 'operator':
+        return 'Operator'
+      case 'supervisor':
+        return 'Supervisor'
+      case 'qa':
+        return 'QA'
+      default:
+        return role
     }
   }
 
@@ -511,8 +824,17 @@ function ProcessView() {
                               <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="text-sm text-text-dark/70">
                                   <span className="font-medium text-text-dark">Operator:</span>{' '}
-                                  {item.operator || '—'}
+                                  {item.operatorName || item.operator || '—'}
                                 </div>
+                                {item.location && (
+                                  <div className="text-sm text-text-dark/70">
+                                    <span className="font-medium text-text-dark">Location:</span>{' '}
+                                    <span className="inline-flex items-center gap-1">
+                                      <MapPin className="h-3 w-3" />
+                                      {item.location}
+                                    </span>
+                                  </div>
+                                )}
                                 <div className="text-sm text-text-dark/70">
                                   <span className="font-medium text-text-dark">Quantity in:</span>{' '}
                                   {item.quantity_in ?? '—'}
@@ -532,6 +854,71 @@ function ProcessView() {
                                 </div>
                               </div>
 
+                              {item.measurements && item.measurements.length > 0 && (
+                                <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-4 py-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Scale className="h-4 w-4 text-olive" />
+                                    <span className="text-sm font-semibold text-text-dark">Measurements</span>
+                                  </div>
+                                  <div className="grid gap-2 sm:grid-cols-2">
+                                    {item.measurements.map((measurement) => (
+                                      <div key={measurement.id} className="flex items-center gap-2 text-sm text-text-dark/80">
+                                        {getMeasurementIcon(measurement.metric)}
+                                        <span className="font-medium">{getMeasurementLabel(measurement.metric)}:</span>
+                                        <span>
+                                          {measurement.value} {measurement.unit}
+                                        </span>
+                                        <span className="text-xs text-text-dark/50">
+                                          ({new Date(measurement.recorded_at).toLocaleString()})
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {item.nonConformances && item.nonConformances.length > 0 && (
+                                <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <AlertCircle className="h-4 w-4 text-red-600" />
+                                    <span className="text-sm font-semibold text-red-800">Non-Conformances</span>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {item.nonConformances.map((nc) => (
+                                      <div
+                                        key={nc.id}
+                                        className={`rounded border px-3 py-2 ${getSeverityColor(nc.severity)}`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2 mb-1">
+                                          <span className="font-semibold text-sm">{nc.nc_type}</span>
+                                          <span className={`text-xs px-2 py-0.5 rounded ${getSeverityColor(nc.severity)}`}>
+                                            {nc.severity}
+                                          </span>
+                                        </div>
+                                        <p className="text-xs mb-1">{nc.description}</p>
+                                        {nc.corrective_action && (
+                                          <p className="text-xs italic">
+                                            <span className="font-medium">Corrective action:</span> {nc.corrective_action}
+                                          </p>
+                                        )}
+                                        <div className="flex items-center justify-between mt-1">
+                                          <span className={`text-xs ${nc.resolved ? 'text-green-700' : 'text-red-700'}`}>
+                                            {nc.resolved ? (
+                                              <span className="flex items-center gap-1">
+                                                <CheckCircle className="h-3 w-3" />
+                                                Resolved {nc.resolved_at ? new Date(nc.resolved_at).toLocaleString() : ''}
+                                              </span>
+                                            ) : (
+                                              'Unresolved'
+                                            )}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
                               {item.notes && (
                                 <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-4 py-3 text-sm text-text-dark/80">
                                   <span className="font-medium text-text-dark">Notes:</span> {item.notes}
@@ -546,6 +933,43 @@ function ProcessView() {
                 </div>
               </div>
             </div>
+
+            {signoffs.length > 0 && (
+              <div className="border-t border-olive-light/20 px-4 sm:px-6 py-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Shield className="h-4 w-4 text-olive" />
+                  <h3 className="text-sm font-semibold text-text-dark">Process Signoffs</h3>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {(['operator', 'supervisor', 'qa'] as const).map((role) => {
+                    const roleSignoffs = signoffs.filter((s) => s.role === role)
+                    return (
+                      <div key={role} className="rounded-lg border border-olive-light/30 bg-white p-3">
+                        <div className="text-xs font-semibold text-text-dark/70 mb-2 uppercase tracking-wide">
+                          {getRoleLabel(role)}
+                        </div>
+                        {roleSignoffs.length > 0 ? (
+                          <div className="space-y-1">
+                            {roleSignoffs.map((signoff) => (
+                              <div key={signoff.id} className="text-xs text-text-dark/70">
+                                <div className="font-medium">
+                                  {signoff.signed_by_user?.full_name || signoff.signed_by_user?.email || signoff.signed_by}
+                                </div>
+                                <div className="text-text-dark/50">
+                                  {new Date(signoff.signed_at).toLocaleString()}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-text-dark/50">No signoffs</p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-end border-t border-olive-light/20 p-4 sm:p-6">
               <Button

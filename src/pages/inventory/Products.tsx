@@ -9,6 +9,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Product {
   id: number
@@ -661,6 +662,18 @@ function Products() {
   )
 
   const isEditMode = modalMode === 'edit'
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="Products"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading products..." />
+      </PageLayout>
+    )
+  }
 
   return (
     <PageLayout

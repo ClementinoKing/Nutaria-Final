@@ -25,6 +25,8 @@ const Shipments = lazy(() => import('./pages/shipments/Shipments'))
 const ShipmentDetail = lazy(() => import('./pages/shipments/ShipmentDetail'))
 const UserManagement = lazy(() => import('./pages/users/UserManagement'))
 const RoleManagement = lazy(() => import('./pages/users/RoleManagement'))
+const AuditLogs = lazy(() => import('./pages/audit/AuditLogs'))
+const Help = lazy(() => import('./pages/help/Help'))
 
 function LoadingScreen() {
   return (
@@ -295,6 +297,22 @@ function App() {
           element={
             <ProtectedRoute>
               <RoleManagement />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/audit"
+          element={
+            <ProtectedRoute>
+              <AuditLogs />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/help"
+          element={
+            <ProtectedRoute>
+              <Help />
             </ProtectedRoute>
           }
         />

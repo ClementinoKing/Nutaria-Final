@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { CalendarRange, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
@@ -13,6 +14,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { useSuppliers } from '@/hooks/useSuppliers'
 import QualityEvaluationTable from '@/components/supplies/QualityEvaluationTable'
 import { SUPPLY_QUALITY_PARAMETERS, SUPPLY_QUALITY_SCORE_LEGEND, SupplyQualityParameter } from '@/constants/supplyQuality'
+import { Spinner } from '@/components/ui/spinner'
 
 interface QualityEntry {
   score: number | string
@@ -295,8 +297,14 @@ function Supplies() {
     return date
   }, [])
   const monthGrid = useMemo(() => getMonthGrid(displayedMonth), [displayedMonth])
-  const currentUserName = useMemo(() => user?.user_metadata?.full_name || user?.email || '', [user])
-  const [profileId, setProfileId] = useState(null)
+  const [profileId, setProfileId] = useState<number | null>(null)
+  const [userProfileName, setUserProfileName] = useState<string>('')
+  const currentUserName = useMemo(() => {
+    if (userProfileName) {
+      return userProfileName
+    }
+    return user?.user_metadata?.full_name || user?.email || ''
+  }, [userProfileName, user])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
   const isLastStep = currentStep === STEPS.length - 1
@@ -342,6 +350,13 @@ function Supplies() {
   const [formData, setFormData] = useState<FormData>(() => getInitialFormData())
 
   const supplierList = useMemo(() => (Array.isArray(supplierOptions) ? supplierOptions : []), [supplierOptions])
+
+  const supplierSelectOptions = useMemo(() => {
+    return supplierList.map((supplier) => ({
+      value: String(supplier.id),
+      label: String(supplier.name ?? ''),
+    }))
+  }, [supplierList])
 
   const supplierLabelMap = useMemo(() => {
     const map = new Map<number, string>()
@@ -1010,9 +1025,31 @@ function Supplies() {
           }
         })
 
-        const { error: batchesError } = await supabase.from('supply_batches').insert(supplyBatchRows)
+        const { error: batchesError, data: insertedBatches } = await supabase
+          .from('supply_batches')
+          .insert(supplyBatchRows)
+          .select('id, product_id, quality_status, process_status')
         if (batchesError) {
           throw batchesError
+        }
+
+        // Auto-create process lot runs for batches that are ready for production
+        if (insertedBatches && Array.isArray(insertedBatches)) {
+          const { createProcessLotRun } = await import('@/lib/processExecution')
+          for (const batch of insertedBatches) {
+            // Check if batch is ready: quality_status is 'PASSED' and process_status is 'UNPROCESSED'
+            if (
+              batch.quality_status === 'PASSED' &&
+              (batch.process_status === 'UNPROCESSED' || !batch.process_status)
+            ) {
+              try {
+                await createProcessLotRun(batch.id)
+              } catch (error) {
+                // Log error but don't fail the supply creation
+                console.warn(`Failed to auto-create process lot run for batch ${batch.id}:`, error)
+              }
+            }
+          }
         }
       }
 
@@ -1187,11 +1224,16 @@ function Supplies() {
   }
 
   const handleOpenModal = useCallback(() => {
-    setFormData(getInitialFormData())
+    const initialData = getInitialFormData()
+    // Set first warehouse as default if available
+    if (warehouses.length > 0 && !initialData.warehouse_id) {
+      initialData.warehouse_id = String(warehouses[0]!.id)
+    }
+    setFormData(initialData)
     setQualityEntries(createInitialQualityEntries())
     setCurrentStep(0)
     setIsModalOpen(true)
-  }, [getInitialFormData])
+  }, [getInitialFormData, warehouses])
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
@@ -1291,12 +1333,13 @@ function Supplies() {
       ] = await Promise.all([
         supabase
           .from('supplies')
-          .select('*')
-          .order('received_at', { ascending: false, nullsFirst: false }),
-        supabase.from('supply_lines').select('*'),
-        supabase.from('supply_batches').select('*'),
-        supabase.from('supply_quality_checks').select('*'),
-        supabase.from('supply_quality_check_items').select('*'),
+          .select('id, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
+          .order('received_at', { ascending: false, nullsFirst: false })
+          .limit(500),
+        supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty'),
+        supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, quality_status'),
+        supabase.from('supply_quality_checks').select('id, supply_id'),
+        supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id'),
         supabase.from('user_profiles').select('id, full_name, email'),
       ])
 
@@ -1333,22 +1376,25 @@ function Supplies() {
     const loadProfileId = async () => {
       if (!user?.id) {
         setProfileId(null)
+        setUserProfileName('')
         return
       }
 
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('id')
+        .select('id, full_name')
         .eq('auth_user_id', user.id)
         .maybeSingle()
 
       if (error) {
         console.warn('Unable to load user profile id', error)
         setProfileId(null)
+        setUserProfileName('')
         return
       }
 
       setProfileId(data?.id ?? null)
+      setUserProfileName(data?.full_name ?? '')
     }
 
     loadProfileId()
@@ -1361,6 +1407,28 @@ function Supplies() {
       formScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' })
     }
   }, [currentStep])
+
+  // Set first warehouse as default when modal opens and warehouses are available
+  useEffect(() => {
+    if (isModalOpen && warehouses.length > 0 && !formData.warehouse_id) {
+      setFormData((prev) => ({
+        ...prev,
+        warehouse_id: String(warehouses[0]!.id),
+      }))
+    }
+  }, [isModalOpen, warehouses, formData.warehouse_id])
+
+  if (loadingData) {
+    return (
+      <PageLayout
+        title="Supplies"
+        activeItem="supplies"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading supplies data..." />
+      </PageLayout>
+    )
+  }
 
   return (
     <>
@@ -1536,21 +1604,15 @@ function Supplies() {
                 </div>
               </div>
 
-              {loadingData ? (
-                <div className="flex items-center justify-center py-16 text-sm text-text-dark/60">
-                  Loading supplies…
-                </div>
-              ) : (
-                <ResponsiveTable
-                  columns={columns}
-                  data={filteredSupplies}
-                  rowKey="id"
-                  onRowClick={handleRowClick}
-                  tableClassName=""
-                  mobileCardClassName=""
-                  getRowClassName={() => ''}
-                />
-              )}
+              <ResponsiveTable
+                columns={columns}
+                data={filteredSupplies}
+                rowKey="id"
+                onRowClick={handleRowClick}
+                tableClassName=""
+                mobileCardClassName=""
+                getRowClassName={() => ''}
+              />
             </CardContent>
           </Card>
         </div>
@@ -1651,21 +1713,16 @@ function Supplies() {
 
                       <div className="space-y-2 lg:col-span-6">
                         <Label htmlFor="supplier_id">Supplier *</Label>
-                        <select
+                        <SearchableSelect
                           id="supplier_id"
-                          required
-                          className={baseFieldClass}
+                          options={supplierSelectOptions}
                           value={formData.supplier_id}
-                          onChange={(event) => handleInputChange('supplier_id', event.target.value)}
+                          onChange={(value) => handleInputChange('supplier_id', value)}
+                          placeholder="Select supplier"
                           disabled={isSubmitting || suppliersLoading || supplierList.length === 0}
-                        >
-                          <option value="">Select supplier</option>
-                          {supplierList.map((supplier) => (
-                            <option key={String(supplier.id)} value={String(supplier.id)}>
-                              {String(supplier.name ?? '')}
-                            </option>
-                          ))}
-                        </select>
+                          required
+                          emptyMessage="No suppliers found"
+                        />
                       </div>
 
                       <div className="space-y-2 lg:col-span-6">

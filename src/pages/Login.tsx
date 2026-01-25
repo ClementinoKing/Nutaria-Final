@@ -6,7 +6,14 @@ import { supabase } from '@/lib/supabaseClient'
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
+import { cn } from '@/lib/utils'
 
 function Login() {
   const [email, setEmail] = useState('')
@@ -60,97 +67,106 @@ function Login() {
   }
 
   return (
-    <div className="flex min-h-screen bg-[#f7f1e7]">
+    <div className="flex min-h-screen bg-background">
       <div className="flex w-full flex-col lg:flex-row">
         <div className="flex w-full items-center justify-center px-6 py-16 lg:w-1/2">
-          <Card className="w-full max-w-md rounded-2xl border-0 shadow-[0_32px_64px_-32px_rgba(33,37,41,0.35)]">
+          <Card className="w-full max-w-md rounded-2xl border-0 shadow-[0_32px_64px_-32px_rgba(33,37,41,0.35)] dark:shadow-[0_32px_64px_-32px_rgba(0,0,0,0.5)]">
             <CardHeader className="space-y-6 pb-4 pt-10">
-              <span className="h-1 w-12 rounded-md bg-olive-dark" />
-              <div className="space-y-2">
-                <CardTitle className="text-3xl font-semibold text-text-dark">Login</CardTitle>
-                <CardDescription className="text-base text-text-dark/70">
-                  Access your Nutaria account
-                </CardDescription>
-              </div>
+              <span className="h-1 w-12 rounded-md bg-olive-dark dark:bg-olive-light" />
             </CardHeader>
-            <CardContent className="space-y-8 pb-10">
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div className="space-y-2">
-                  <label htmlFor="email" className="text-sm font-medium text-text-dark">
-                    Email address
-                  </label>
-                  <div className="relative">
-                    <Mail className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-text-dark/40" />
-                    <Input
-                      id="email"
-                      type="email"
-                      placeholder="info@nutaria.co.za"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="h-14 rounded-xl border-none bg-[#f1e8dd] pl-12 text-base text-text-dark shadow-inner focus-visible:ring-2 focus-visible:ring-olive-dark"
-                      autoComplete="email"
-                    />
+            <CardContent className="pb-10">
+              <form onSubmit={handleSubmit} className={cn("flex flex-col gap-6")}>
+                <FieldGroup>
+                  <div className="flex flex-col gap-1 text-left">
+                    <h1 className="text-2xl font-bold text-card-foreground">Login to your account</h1>
+                    <p className="text-muted-foreground text-sm">
+                      Enter your email below to login to your account
+                    </p>
                   </div>
-                </div>
-                <div className="space-y-2">
-                  <label htmlFor="password" className="text-sm font-medium text-text-dark">
-                    Password
-                  </label>
-                  <div className="relative">
-                    <Lock className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-text-dark/40" />
-                    <Input
-                      id="password"
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="h-14 rounded-xl border-none bg-[#f1e8dd] pl-12 text-base text-text-dark shadow-inner focus-visible:ring-2 focus-visible:ring-olive-dark"
-                      autoComplete="current-password"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword((prev) => !prev)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-text-dark/50 hover:text-text-dark focus:outline-none"
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  <Field>
+                    <FieldLabel htmlFor="email">Email</FieldLabel>
+                    <div className="relative">
+                      <Mail className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="email"
+                        type="email"
+                        placeholder="info@nutaria.co.za"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="h-14 rounded-xl border-none bg-muted pl-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"
+                        autoComplete="email"
+                        required
+                      />
+                    </div>
+                  </Field>
+                  <Field>
+                    <div className="flex items-center">
+                      <FieldLabel htmlFor="password">Password</FieldLabel>
+                      <button
+                        type="button"
+                        onClick={handlePasswordReset}
+                        disabled={resetting}
+                        className="ml-auto text-sm text-muted-foreground underline-offset-4 hover:text-card-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                      >
+                        {resetting ? 'Sending reset link…' : 'Forgot your password?'}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="h-14 rounded-xl border-none bg-muted pl-12 pr-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"
+                        autoComplete="current-password"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-card-foreground focus:outline-none transition-colors"
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                      </button>
+                    </div>
+                  </Field>
+                  <Field>
+                    <Button
+                      type="submit"
+                      className="h-14 w-full rounded-xl bg-olive-dark dark:bg-primary text-base font-semibold tracking-wide hover:bg-olive-dark/90 dark:hover:bg-primary/90 text-white dark:text-primary-foreground"
+                      disabled={authenticating}
                     >
-                      {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                    </button>
-                  </div>
-                </div>
-                <Button
-                  type="submit"
-                  className="h-14 w-full rounded-xl bg-olive-dark text-base font-semibold tracking-wide hover:bg-olive-dark/90"
-                  disabled={authenticating}
-                >
-                  {authenticating ? 'Signing In…' : 'LOGIN'}
-                </Button>
+                      {authenticating ? 'Signing In…' : 'Login'}
+                    </Button>
+                  </Field>
+                  <Field>
+                    <FieldDescription className="text-left">
+                      Need help?{' '}
+                      <button
+                        type="button"
+                        onClick={() => (window.location.href = 'mailto:support@nutaria.com')}
+                        className="font-semibold text-olive-dark dark:text-primary underline underline-offset-4 hover:text-olive-dark/90 dark:hover:text-primary/90 transition-colors"
+                      >
+                        Get help signing in
+                      </button>
+                    </FieldDescription>
+                  </Field>
+                  <Field>
+                    <FieldDescription className="text-left text-xs">
+                      <a href="/terms" className="hover:text-card-foreground transition-colors">
+                        Terms of use
+                      </a>{' '}
+                      ·{' '}
+                      <a href="/privacy" className="hover:text-card-foreground transition-colors">
+                        Privacy Policy
+                      </a>
+                    </FieldDescription>
+                  </Field>
+                </FieldGroup>
               </form>
-              <div className="space-y-2 text-center text-sm">
-                <button
-                  type="button"
-                  onClick={handlePasswordReset}
-                  disabled={resetting}
-                  className="block text-text-dark/70 transition hover:text-text-dark disabled:cursor-not-allowed disabled:text-text-dark/40"
-                >
-                  {resetting ? 'Sending reset link…' : 'Forgot your password?'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => (window.location.href = 'mailto:support@nutaria.com')}
-                  className="block font-semibold text-olive-dark transition hover:text-olive-dark/90"
-                >
-                  Get help signing in
-                </button>
-              </div>
-              <div className="text-center text-xs text-text-dark/50">
-                <a href="/terms" className="hover:text-text-dark">
-                  Terms of use
-                </a>{' '}
-                ·{' '}
-                <a href="/privacy" className="hover:text-text-dark">
-                  Privacy Policy
-                </a>
-              </div>
             </CardContent>
           </Card>
         </div>

@@ -1,10 +1,24 @@
 /// <reference types="../vite-env" />
-import { useMemo } from 'react'
+import { useMemo, memo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { AlertCircle, Package, Truck, Users } from 'lucide-react'
+import { AlertCircle, Package, Truck, Users, LucideIcon } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { useDashboardData } from '@/hooks/useDashboardData'
+import { Spinner } from '@/components/ui/spinner'
+
+interface NormalizedInventoryRow {
+  id: string
+  product_name: string
+  product_sku: string
+  warehouse_name: string
+  unit: string
+  available: number
+  on_hand: number
+  reorder_point: number | null
+  safety_stock: number | null
+  last_updated: Date | null
+}
 
 const FALLBACK_LOW_STOCK_THRESHOLD = Number.isFinite(
   Number.parseFloat(import.meta.env.VITE_DASHBOARD_LOW_STOCK_THRESHOLD || '')
@@ -41,6 +55,87 @@ function resolveThreshold(entry: ThresholdEntry) {
   return FALLBACK_LOW_STOCK_THRESHOLD
 }
 
+interface StatCardProps {
+  title: string
+  value: number
+  description: string
+  icon: LucideIcon
+  color: string
+  loading: boolean
+  formatter: Intl.NumberFormat
+}
+
+const StatCard = memo(function StatCard({
+  title,
+  value,
+  description,
+  icon: Icon,
+  color,
+  loading,
+  formatter,
+}: StatCardProps) {
+  return (
+    <Card className="border border-border bg-card">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-sm font-medium text-foreground">{title}</CardTitle>
+        <div className={`${color} rounded-md p-2 text-white`}>
+          <Icon className="h-4 w-4 text-white" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold text-foreground">
+          {loading ? '—' : formatter.format(value ?? 0)}
+        </div>
+        <CardDescription className="mt-1 text-xs text-muted-foreground">
+          {description}
+          {title === 'Low Stock Items' && !loading && value === 0 ? ' (all clear)' : ''}
+        </CardDescription>
+      </CardContent>
+    </Card>
+  )
+})
+
+interface RecentStockItemProps {
+  stock: NormalizedInventoryRow
+  quantityFormatter: Intl.NumberFormat
+}
+
+const RecentStockItem = memo(function RecentStockItem({ stock, quantityFormatter }: RecentStockItemProps) {
+  const effectiveAvailable = Number.isFinite(stock.available) ? stock.available : stock.on_hand ?? 0
+  const threshold = resolveThreshold(stock)
+  const isLow = effectiveAvailable < threshold
+  const displayQty = quantityFormatter.format(effectiveAvailable ?? 0)
+  const timestamp = stock.last_updated ? new Date(stock.last_updated) : null
+  const timestampLabel =
+    timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())
+      ? timestamp.toLocaleString()
+      : 'Timestamp unavailable'
+
+  return (
+    <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-sm font-semibold text-foreground">{stock.product_name}</p>
+        <p className="text-xs text-muted-foreground">SKU: {stock.product_sku || 'Not captured'}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{stock.warehouse_name || 'Warehouse not set'}</p>
+      </div>
+      <div className="flex flex-col items-start gap-2 sm:items-end">
+        <span className="text-sm font-semibold text-foreground">
+          {displayQty} {stock.unit || ''}
+        </span>
+        <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground sm:items-end">
+          <span>{timestampLabel}</span>
+          {isLow && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-1 font-medium text-orange-900 dark:bg-orange-500/20 dark:text-orange-200">
+              <AlertCircle className="h-3 w-3" />
+              Low Stock (threshold {quantityFormatter.format(threshold)})
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+})
+
 function Dashboard() {
   const { user, profile } = useAuth()
   const { stats, recentStock, loading, errors, refresh } = useDashboardData()
@@ -60,45 +155,59 @@ function Dashboard() {
     []
   )
 
-  const statCards = [
-    {
-      title: 'Total Products',
-      value: stats.totalProducts,
-      description: 'SKUs in catalog',
-      icon: Package,
-      color: 'bg-olive-dark',
-    },
-    {
-      title: 'Low Stock Items',
-      value: stats.lowStockCount,
-      description: 'Below safety levels',
-      icon: AlertCircle,
-      color: 'bg-orange-500',
-    },
-    {
-      title: 'Open Shipments',
-      value: stats.openShipments,
-      description: 'Pending dispatch',
-      icon: Truck,
-      color: 'bg-brown',
-    },
-    {
-      title: 'Halal Suppliers',
-      value: stats.halalSuppliers,
-      description: 'Certified partners',
-      icon: Users,
-      color: 'bg-olive',
-    },
-  ]
+  const statCards = useMemo(
+    () => [
+      {
+        title: 'Total Products',
+        value: stats.totalProducts,
+        description: 'SKUs in catalog',
+        icon: Package,
+        color: 'bg-olive-dark',
+      },
+      {
+        title: 'Low Stock Items',
+        value: stats.lowStockCount,
+        description: 'Below safety levels',
+        icon: AlertCircle,
+        color: 'bg-orange-500',
+      },
+      {
+        title: 'Open Shipments',
+        value: stats.openShipments,
+        description: 'Pending dispatch',
+        icon: Truck,
+        color: 'bg-brown',
+      },
+      {
+        title: 'Halal Suppliers',
+        value: stats.halalSuppliers,
+        description: 'Certified partners',
+        icon: Users,
+        color: 'bg-olive',
+      },
+    ],
+    [stats]
+  )
 
-  const displayName =
-    profile?.full_name?.trim() ||
-    user?.user_metadata?.full_name ||
-    user?.user_metadata?.name ||
-    user?.user_metadata?.fullName ||
-    user?.email ||
-    user?.phone ||
-    'User'
+  const displayName = useMemo(
+    () =>
+      profile?.full_name?.trim() ||
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.name ||
+      user?.user_metadata?.fullName ||
+      user?.email ||
+      user?.phone ||
+      'User',
+    [profile?.full_name, user]
+  )
+
+  if (loading) {
+    return (
+      <PageLayout title="Dashboard" activeItem="dashboard" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+        <Spinner text="Loading dashboard data..." />
+      </PageLayout>
+    )
+  }
 
   return (
     <PageLayout title="Dashboard" activeItem="dashboard" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
@@ -108,30 +217,18 @@ function Dashboard() {
       </div>
 
       <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-        {statCards.map((stat, index) => {
-          const Icon = stat.icon
-          return (
-            <Card key={index} className="border border-border bg-card">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-foreground">
-                  {stat.title}
-                </CardTitle>
-                <div className={`${stat.color} rounded-md p-2 text-white`}>
-                  <Icon className="h-4 w-4 text-white" />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-foreground">
-                  {loading ? '—' : integerFormatter.format(stat.value ?? 0)}
-                </div>
-                <CardDescription className="mt-1 text-xs text-muted-foreground">
-                  {stat.description}
-                  {stat.title === 'Low Stock Items' && !loading && stat.value === 0 ? ' (all clear)' : ''}
-                </CardDescription>
-              </CardContent>
-            </Card>
-          )
-        })}
+        {statCards.map((stat) => (
+          <StatCard
+            key={stat.title}
+            title={stat.title}
+            value={stat.value}
+            description={stat.description}
+            icon={stat.icon}
+            color={stat.color}
+            loading={loading}
+            formatter={integerFormatter}
+          />
+        ))}
       </div>
 
       {errors.length > 0 ? (
@@ -179,50 +276,9 @@ function Dashboard() {
                 No inventory activity has been recorded yet. Capture supplies or stock movements to populate this view.
               </div>
             ) : (
-              recentStock.map((stock) => {
-                const effectiveAvailable = Number.isFinite(stock.available) ? stock.available : stock.on_hand ?? 0
-                const threshold = resolveThreshold(stock)
-                const isLow = effectiveAvailable < threshold
-                const displayQty = quantityFormatter.format(effectiveAvailable ?? 0)
-                const timestamp = stock.last_updated ? new Date(stock.last_updated) : null
-                const timestampLabel =
-                  timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())
-                    ? timestamp.toLocaleString()
-                    : 'Timestamp unavailable'
-
-                return (
-                  <div
-                    key={stock.id}
-                    className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">
-                        {stock.product_name}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        SKU: {stock.product_sku || 'Not captured'}
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {stock.warehouse_name || 'Warehouse not set'}
-                      </p>
-                    </div>
-                    <div className="flex flex-col items-start gap-2 sm:items-end">
-                      <span className="text-sm font-semibold text-foreground">
-                        {displayQty} {stock.unit || ''}
-                      </span>
-                      <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground sm:items-end">
-                        <span>{timestampLabel}</span>
-                        {isLow && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-1 font-medium text-orange-900 dark:bg-orange-500/20 dark:text-orange-200">
-                            <AlertCircle className="h-3 w-3" />
-                            Low Stock (threshold {quantityFormatter.format(threshold)})
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })
+              recentStock.map((stock) => (
+                <RecentStockItem key={stock.id} stock={stock} quantityFormatter={quantityFormatter} />
+              ))
             )}
           </div>
         </CardContent>

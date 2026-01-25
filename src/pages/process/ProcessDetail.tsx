@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, FormEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Clock, CheckCircle2, Shield, MapPin, Layers } from 'lucide-react'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
+import { Spinner } from '@/components/ui/spinner'
 
 interface Process {
   id: number
@@ -177,6 +178,7 @@ function buildIntervalString(hoursValue: number | null | undefined, minutesValue
 function ProcessDetail() {
   const { processId } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [process, setProcess] = useState<Process | null>(null)
   const [steps, setSteps] = useState<ProcessStep[]>([])
   const [loading, setLoading] = useState(true)
@@ -395,6 +397,18 @@ function ProcessDetail() {
     })
     setIsEditModalOpen(true)
   }
+
+  // Auto-open edit modal if edit=true in URL
+  useEffect(() => {
+    const shouldEdit = searchParams.get('edit') === 'true'
+    if (shouldEdit && process && !isEditModalOpen && !loading) {
+      handleOpenEditModal()
+      // Remove the query parameter from URL
+      const newParams = new URLSearchParams(searchParams)
+      newParams.delete('edit')
+      setSearchParams(newParams, { replace: true })
+    }
+  }, [searchParams, process, isEditModalOpen, loading, handleOpenEditModal, setSearchParams])
 
   const handleCloseEditModal = () => {
     if (isSaving) {
@@ -800,7 +814,7 @@ function ProcessDetail() {
         }
         contentClassName="px-4 sm:px-6 lg:px-10 py-8"
       >
-        <div className="flex min-h-[40vh] items-center justify-center text-text-dark/70">Loading process details…</div>
+        <Spinner text="Loading process details..." />
       </PageLayout>
     )
   }

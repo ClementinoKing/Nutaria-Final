@@ -27,6 +27,8 @@ import {
   ListChecks,
   Sun,
   Moon,
+  FileText,
+  HelpCircle,
 } from 'lucide-react'
 import { useDailyChecks } from '@/context/DailyChecksContext'
 import { useTheme } from '@/context/ThemeContext'
@@ -131,6 +133,8 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         { name: 'Processes', icon: Cog, key: 'processes', path: '/process/processes' },
       ],
     },
+    { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
+    { name: 'Help', icon: HelpCircle, key: 'help', path: '/help' },
   ]
 
   const closeSidebarOnMobile = () => {
