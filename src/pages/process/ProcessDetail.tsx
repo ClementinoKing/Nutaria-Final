@@ -6,10 +6,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
-import { ArrowLeft, Clock, CheckCircle2, Shield, MapPin, Layers } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle2, Shield, MapPin, Layers, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
+import { useProcessStepNames, type ProcessStepName } from '@/hooks/useProcessStepNames'
 
 interface Process {
   id: number
@@ -25,9 +27,11 @@ interface ProcessStep {
   seq: number
   step_code: string
   step_name: string
+  step_name_id: number | null
   description: string | null
   raw_description: string
   requires_qc: boolean
+  can_be_skipped: boolean
   default_location_id: number | null
   default_location_name: string | null
   estimated_duration: string | null
@@ -57,12 +61,14 @@ interface FormStep {
   id: number | null
   seq: number
   step_code: string
-  step_name: string
+  step_name_id: number | null
   description: string
   requires_qc: boolean
+  can_be_skipped: boolean
   default_location_id: string
   duration_hours: string
   duration_minutes: string
+  qualityParameterIds: number[]
 }
 
 interface FormState {
@@ -185,12 +191,18 @@ function ProcessDetail() {
   const [error, setError] = useState<Error | PostgrestError | null>(null)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [currentEditStep, setCurrentEditStep] = useState<1 | 2>(1)
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [warehousesLoading, setWarehousesLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
   const [productsLoading, setProductsLoading] = useState(false)
   const [productsError, setProductsError] = useState<PostgrestError | null>(null)
   const [productProcesses, setProductProcesses] = useState<ProductProcess[]>([])
+  const [stepQualityParameters, setStepQualityParameters] = useState<Map<number, number[]>>(new Map())
+  const { qualityParameters, loading: qualityParametersLoading } = useQualityParameters()
+  const { processStepNames, loading: processStepNamesLoading } = useProcessStepNames()
+  const [qualityParameterSearchTerms, setQualityParameterSearchTerms] = useState<Record<string, string>>({})
+  const [productSearchTerm, setProductSearchTerm] = useState('')
   const [formState, setFormState] = useState<FormState>({
     code: '',
     name: '',
@@ -222,23 +234,61 @@ function ProcessDetail() {
     setProductsLoading(true)
     setProductsError(null)
 
-    const { data, error: fetchError } = await supabase
+    // Fetch all raw products
+    const { data: productsData, error: productsError } = await supabase
       .from('products')
-      .select('id, sku, name')
+      .select('id, sku, name, product_type')
+      .eq('product_type', 'RAW')
       .order('name', { ascending: true })
 
-    if (fetchError) {
-      console.error('Error fetching products for process editor', fetchError)
-      toast.error(fetchError.message ?? 'Unable to load products from Supabase.')
+    if (productsError) {
+      console.error('Error fetching products for process editor', productsError)
+      toast.error(productsError.message ?? 'Unable to load products from Supabase.')
       setProducts([])
-      setProductsError(fetchError)
+      setProductsError(productsError)
       setProductsLoading(false)
       return
     }
 
-    setProducts(Array.isArray(data) ? data : [])
+    // Fetch products that already have processes assigned (excluding current process)
+    const { data: assignedProductsData, error: assignedError } = await supabase
+      .from('product_processes')
+      .select('product_id, process_id')
+
+    if (assignedError) {
+      console.error('Error fetching assigned products', assignedError)
+      // Continue even if this fails - we'll just show all products
+    }
+
+    // Get list of product IDs that are assigned to OTHER processes (not the current one)
+    const assignedProductIds = new Set<number>()
+    if (Array.isArray(assignedProductsData) && processId) {
+      const currentProcessId = Number(processId)
+      assignedProductsData.forEach((item: { product_id: number; process_id: number }) => {
+        // Only exclude products assigned to OTHER processes
+        if (item.product_id && Number.isInteger(item.product_id) && 
+            item.process_id !== currentProcessId) {
+          assignedProductIds.add(item.product_id)
+        }
+      })
+    } else if (Array.isArray(assignedProductsData)) {
+      // If no processId (shouldn't happen in edit mode), exclude all assigned products
+      assignedProductsData.forEach((item: { product_id: number }) => {
+        if (item.product_id && Number.isInteger(item.product_id)) {
+          assignedProductIds.add(item.product_id)
+        }
+      })
+    }
+
+    // Filter out products that are assigned to other processes
+    // Products assigned to current process will still be available
+    const availableProducts = Array.isArray(productsData)
+      ? productsData.filter((product: Product) => !assignedProductIds.has(product.id))
+      : []
+
+    setProducts(availableProducts)
     setProductsLoading(false)
-  }, [])
+  }, [processId])
 
   useEffect(() => {
     fetchWarehouses().catch((fetchError) => {
@@ -276,7 +326,7 @@ function ProcessDetail() {
           .maybeSingle(),
         supabase
           .from('process_steps')
-          .select('id, seq, step_code, step_name, description, requires_qc, default_location_id, estimated_duration, default_location:warehouses ( id, name )')
+          .select('id, seq, description, requires_qc, can_be_skipped, default_location_id, estimated_duration, step_name_id, process_step_names ( id, code, name ), default_location:warehouses ( id, name )')
           .eq('process_id', numericId)
           .order('seq', { ascending: true }),
         supabase
@@ -286,6 +336,18 @@ function ProcessDetail() {
           .order('is_default', { ascending: false })
           .order('product_id', { ascending: true }),
       ])
+
+      // Fetch step quality parameters after we have step IDs
+      let stepQualityParametersResult: { data: Array<{ process_step_id: number; quality_parameter_id: number }> | null; error: PostgrestError | null } = { data: [], error: null }
+      if (stepsResult.data && Array.isArray(stepsResult.data) && stepsResult.data.length > 0) {
+        const stepIds = stepsResult.data.map((s: any) => s.id).filter((id: any) => id != null)
+        if (stepIds.length > 0) {
+          stepQualityParametersResult = await supabase
+            .from('process_step_quality_parameters')
+            .select('process_step_id, quality_parameter_id')
+            .in('process_step_id', stepIds)
+        }
+      }
 
       if (signal?.aborted) {
         return
@@ -305,25 +367,34 @@ function ProcessDetail() {
         setSteps([])
       } else {
         const normalizedSteps: ProcessStep[] = Array.isArray(stepsResult.data)
-          ? stepsResult.data.map((step: any) => ({
-              id: step.id,
-              seq: step.seq,
-              step_code: generateStepCode(step.seq),
-              step_name: step.step_name,
-              description: step.description ?? 'No description provided.',
-              raw_description: step.description ?? '',
-              requires_qc: Boolean(step.requires_qc),
-              default_location_id: step.default_location_id,
-              default_location_name: (step.default_location as { name?: string } | null)?.name ?? null,
-              estimated_duration_raw: step.estimated_duration,
-              ...(() => {
-                const interval = parseInterval(step.estimated_duration)
-                return {
-                  estimated_duration: interval.display,
-                  estimated_duration_hours: interval.hours,
-                }
-              })(),
-            }))
+          ? stepsResult.data.map((step: any) => {
+              // Handle the joined process_step_names data (can be object or array)
+              const stepNameData = step.process_step_names
+              const stepName = Array.isArray(stepNameData) 
+                ? (stepNameData[0] as { id?: number; name?: string; code?: string } | null)
+                : (stepNameData as { id?: number; name?: string; code?: string } | null)
+              return {
+                id: step.id,
+                seq: step.seq,
+                step_code: stepName?.code || generateStepCode(step.seq),
+                step_name: stepName?.name || 'Unnamed Step',
+                step_name_id: step.step_name_id || stepName?.id || null,
+                description: step.description ?? 'No description provided.',
+                raw_description: step.description ?? '',
+                requires_qc: Boolean(step.requires_qc),
+                can_be_skipped: Boolean(step.can_be_skipped),
+                default_location_id: step.default_location_id,
+                default_location_name: (step.default_location as { name?: string } | null)?.name ?? null,
+                estimated_duration_raw: step.estimated_duration,
+                ...(() => {
+                  const interval = parseInterval(step.estimated_duration)
+                  return {
+                    estimated_duration: interval.display,
+                    estimated_duration_hours: interval.hours,
+                  }
+                })(),
+              }
+            })
           : []
         setSteps(normalizedSteps)
       }
@@ -334,6 +405,26 @@ function ProcessDetail() {
         setProductProcesses([])
       } else {
         setProductProcesses(Array.isArray(productProcessesResult.data) ? productProcessesResult.data : [])
+      }
+
+      if (stepQualityParametersResult.error) {
+        console.error('Error fetching step quality parameters', stepQualityParametersResult.error)
+        toast.error(stepQualityParametersResult.error?.message ?? 'Unable to load step quality parameters.')
+        setStepQualityParameters(new Map())
+      } else {
+        // Build a map of step_id -> quality_parameter_ids[]
+        const qpMap = new Map<number, number[]>()
+        if (Array.isArray(stepQualityParametersResult.data)) {
+          stepQualityParametersResult.data.forEach((item: { process_step_id: number; quality_parameter_id: number }) => {
+            const stepId = item.process_step_id
+            const qpId = item.quality_parameter_id
+            if (!qpMap.has(stepId)) {
+              qpMap.set(stepId, [])
+            }
+            qpMap.get(stepId)!.push(qpId)
+          })
+        }
+        setStepQualityParameters(qpMap)
       }
 
       setLoading(false)
@@ -367,17 +458,20 @@ function ProcessDetail() {
 
     const preparedSteps = steps.map((step) => {
       const durationParts = parseIntervalToDurationParts(step.estimated_duration_raw)
+      const stepQPs = step.id ? (stepQualityParameters.get(step.id) || []) : []
       return {
         clientId: createClientId(`step-${step.id ?? 'new'}`),
         id: step.id ?? null,
         seq: step.seq,
         step_code: generateStepCode(step.seq),
-        step_name: step.step_name ?? '',
+        step_name_id: step.step_name_id ?? null,
         description: step.raw_description ?? '',
         requires_qc: Boolean(step.requires_qc),
+        can_be_skipped: Boolean(step.can_be_skipped),
         default_location_id: step.default_location_id ? String(step.default_location_id) : '',
         duration_hours: durationParts.hours,
         duration_minutes: durationParts.minutes,
+        qualityParameterIds: stepQPs,
       }
     })
 
@@ -414,6 +508,9 @@ function ProcessDetail() {
     if (isSaving) {
       return
     }
+    setQualityParameterSearchTerms({})
+    setProductSearchTerm('')
+    setCurrentEditStep(1)
     setIsEditModalOpen(false)
   }
 
@@ -433,12 +530,14 @@ function ProcessDetail() {
           id: null,
           seq: prev.steps.length + 1,
           step_code: generateStepCode(prev.steps.length + 1),
-          step_name: '',
+          step_name_id: null,
           description: '',
           requires_qc: false,
+          can_be_skipped: false,
           default_location_id: '',
           duration_hours: '',
           duration_minutes: '',
+          qualityParameterIds: [],
         },
       ]
       return {
@@ -462,7 +561,7 @@ function ProcessDetail() {
     })
   }
 
-  const handleStepFieldChange = (clientId: string, field: keyof FormStep, value: string | boolean) => {
+  const handleStepFieldChange = (clientId: string, field: keyof FormStep, value: string | boolean | number | null) => {
     setFormState((prev) => ({
       ...prev,
       steps: prev.steps.map((step) =>
@@ -490,6 +589,30 @@ function ProcessDetail() {
     }))
   }
 
+  const handleToggleStepQualityParameter = (clientId: string, qualityParameterId: number) => {
+    setFormState((prev) => {
+      const qpIdNumber = Number(qualityParameterId)
+      if (!Number.isInteger(qpIdNumber) || qpIdNumber <= 0) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        steps: prev.steps.map((step) => {
+          if (step.clientId !== clientId) return step
+          
+          const exists = step.qualityParameterIds.includes(qpIdNumber)
+          return {
+            ...step,
+            qualityParameterIds: exists
+              ? step.qualityParameterIds.filter((id: number) => id !== qpIdNumber)
+              : [...step.qualityParameterIds, qpIdNumber],
+          }
+        })
+      }
+    })
+  }
+
   const handleToggleProductSelection = (productId: number) => {
     setFormState((prev) => {
       const productIdNumber = Number(productId)
@@ -507,7 +630,7 @@ function ProcessDetail() {
     })
   }
 
-  const validateFormState = () => {
+  const validateStep1 = (): boolean => {
     const trimmedCode = formState.code.trim()
     const trimmedName = formState.name.trim()
 
@@ -521,9 +644,18 @@ function ProcessDetail() {
       return false
     }
 
+    return true
+  }
+
+  const validateStep2 = (): boolean => {
+    if (formState.steps.length === 0) {
+      toast.error('Please add at least one process step.')
+      return false
+    }
+
     for (const step of formState.steps) {
-      if (!(step.step_name ?? '').trim()) {
-        toast.error('Each step must include a step name.')
+      if (!step.step_name_id || step.step_name_id <= 0) {
+        toast.error('Each step must have a step name selected.')
         return false
       }
 
@@ -550,14 +682,39 @@ function ProcessDetail() {
     return true
   }
 
+  const handleNextEditStep = () => {
+    if (currentEditStep === 1) {
+      if (validateStep1()) {
+        setCurrentEditStep(2)
+      }
+    }
+  }
+
+  const handleBackEditStep = () => {
+    if (currentEditStep === 2) {
+      setCurrentEditStep(1)
+    }
+  }
+
   const handleSaveChanges = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (isSaving || !process) {
       return
     }
 
-    if (!validateFormState()) {
+    // Validate current step before submission
+    if (currentEditStep === 1) {
+      if (!validateStep1()) {
+        return
+      }
+      handleNextEditStep()
       return
+    }
+
+    if (currentEditStep === 2) {
+      if (!validateStep2()) {
+        return
+      }
     }
 
     setIsSaving(true)
@@ -584,12 +741,13 @@ function ProcessDetail() {
           id: step.id,
           clientId: step.clientId,
           seq: index + 1,
-          step_code: generateStepCode(index + 1),
-          step_name: step.step_name.trim(),
+          step_name_id: step.step_name_id ? Number(step.step_name_id) : null,
           description: descriptionTrimmed ? descriptionTrimmed : null,
           requires_qc: Boolean(step.requires_qc),
+          can_be_skipped: Boolean(step.can_be_skipped),
           default_location_id: step.default_location_id ? Number(step.default_location_id) : null,
           estimated_duration: intervalString,
+          qualityParameterIds: step.qualityParameterIds || [],
         }
       })
 
@@ -615,10 +773,10 @@ function ProcessDetail() {
           id: step.id,
           process_id: process.id,
           seq: step.seq,
-          step_code: step.step_code,
-          step_name: step.step_name,
+          step_name_id: step.step_name_id,
           description: step.description,
           requires_qc: step.requires_qc,
+          can_be_skipped: step.can_be_skipped,
           default_location_id: step.default_location_id,
           estimated_duration: step.estimated_duration,
         }))
@@ -636,20 +794,31 @@ function ProcessDetail() {
         const insertPayload = stepsToInsert.map((step) => ({
           process_id: process.id,
           seq: step.seq,
-          step_code: step.step_code,
-          step_name: step.step_name,
+          step_name_id: step.step_name_id,
           description: step.description,
           requires_qc: step.requires_qc,
+          can_be_skipped: step.can_be_skipped,
           default_location_id: step.default_location_id,
           estimated_duration: step.estimated_duration,
         }))
 
-        const { error: insertError } = await supabase
+        const { data: insertedSteps, error: insertError } = await supabase
           .from('process_steps')
           .insert(insertPayload)
+          .select('id, seq')
 
         if (insertError) {
           throw insertError
+        }
+
+        // Map inserted steps back to normalizedSteps for QP handling
+        if (insertedSteps && Array.isArray(insertedSteps)) {
+          insertedSteps.forEach((insertedStep, index) => {
+            const originalStep = stepsToInsert[index]
+            if (originalStep && insertedStep) {
+              originalStep.id = insertedStep.id
+            }
+          })
         }
       }
 
@@ -713,6 +882,65 @@ function ProcessDetail() {
         }
       }
 
+      // Handle step-level quality parameters
+      // For each step, handle its QPs
+      for (const step of normalizedSteps) {
+        if (!step.id) continue
+
+        const stepQPs = step.qualityParameterIds || []
+        const stepQPsPayload = stepQPs
+          .map((value: number) => Number(value))
+          .filter((value: number) => Number.isInteger(value) && value > 0)
+
+        // Get existing QPs for this step
+        const existingStepQPs = Array.from(stepQualityParameters.get(step.id) || [])
+
+        // Delete QPs that were removed
+        const qpsToDelete = existingStepQPs.filter((id) => !stepQPsPayload.includes(id))
+        if (qpsToDelete.length > 0) {
+          const { error: deleteStepQPsError } = await supabase
+            .from('process_step_quality_parameters')
+            .delete()
+            .eq('process_step_id', step.id)
+            .in('quality_parameter_id', qpsToDelete)
+
+          if (deleteStepQPsError) {
+            throw deleteStepQPsError
+          }
+        }
+
+        // Insert new QPs
+        const qpsToInsert = stepQPsPayload.filter((id) => !existingStepQPs.includes(id))
+        if (qpsToInsert.length > 0) {
+          const insertPayload = qpsToInsert.map((qpId: number) => ({
+            process_step_id: step.id!,
+            quality_parameter_id: qpId,
+          }))
+
+          const { error: insertStepQPsError } = await supabase
+            .from('process_step_quality_parameters')
+            .insert(insertPayload)
+
+          if (insertStepQPsError) {
+            throw insertStepQPsError
+          }
+        }
+      }
+
+      // Clean up QPs for deleted steps
+      if (stepsToDelete.length > 0) {
+        // QPs are automatically deleted via CASCADE, but we can verify
+        const { error: cleanupError } = await supabase
+          .from('process_step_quality_parameters')
+          .delete()
+          .in('process_step_id', stepsToDelete)
+
+        // Ignore errors here as CASCADE should handle it, but log if needed
+        if (cleanupError) {
+          console.warn('Error cleaning up step QPs for deleted steps:', cleanupError)
+        }
+      }
+
       const processPayload = {
         code: formState.code.trim(),
         name: formState.name.trim(),
@@ -737,6 +965,8 @@ function ProcessDetail() {
       }
 
       await fetchProcessData()
+      // Refresh products list to exclude newly assigned products
+      await fetchProducts()
       setIsEditModalOpen(false)
     } catch (saveError) {
       console.error('Error updating process', saveError)
@@ -800,6 +1030,27 @@ function ProcessDetail() {
       })
       .filter((item): item is { product_id: number; is_default: boolean; name: string; sku: string | null } => item !== null)
   }, [productProcesses, process, productLookup])
+
+  const qualityParameterLookup = useMemo(() => {
+    const lookup = new Map<number, QualityParameter>()
+    qualityParameters.forEach((qp: QualityParameter) => {
+      if (Number.isInteger(qp.id)) {
+        lookup.set(qp.id, qp)
+      }
+    })
+    return lookup
+  }, [qualityParameters])
+
+  const getStepQualityParameters = useCallback(
+    (stepId: number | null | undefined): QualityParameter[] => {
+      if (!stepId) return []
+      const qpIds = stepQualityParameters.get(stepId) || []
+      return qpIds
+        .map((id) => qualityParameterLookup.get(id))
+        .filter((qp): qp is QualityParameter => qp !== undefined)
+    },
+    [stepQualityParameters, qualityParameterLookup],
+  )
 
   if (loading) {
     return (
@@ -971,6 +1222,34 @@ function ProcessDetail() {
                         </div>
                       )}
                     </div>
+
+                    {(() => {
+                      const stepQPs = getStepQualityParameters(step.id)
+                      return stepQPs.length > 0 ? (
+                        <div className="mt-3 border-t border-olive-light/20 pt-3">
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                            <Shield className="h-3.5 w-3.5 text-olive" />
+                            Quality Parameters
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {stepQPs.map((qp) => (
+                              <div
+                                key={qp.id}
+                                className="inline-flex items-center gap-1.5 rounded-full border border-olive-light/40 bg-white px-2.5 py-1 text-xs font-medium text-text-dark shadow-sm"
+                              >
+                                <span className="font-mono text-[10px] uppercase tracking-wide text-olive-dark">
+                                  {qp.code}
+                                </span>
+                                <span className="text-text-dark/80">{qp.name}</span>
+                                {qp.specification && (
+                                  <span className="text-[10px] text-text-dark/50">({qp.specification})</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null
+                    })()}
                   </li>
                 ))}
               </ol>
@@ -1032,110 +1311,187 @@ function ProcessDetail() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="flex w-full max-w-4xl max-h-[90vh] flex-col overflow-hidden rounded-lg bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-olive-light/20 p-4 sm:p-6">
-              <h2 className="text-2xl font-bold text-text-dark">Edit Process</h2>
+              <div>
+                <h2 className="text-2xl font-bold text-text-dark">Edit Process</h2>
+                <p className="text-sm text-text-dark/70 mt-1">Step {currentEditStep} of 2</p>
+              </div>
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="icon"
                 onClick={handleCloseEditModal}
                 className="text-text-dark hover:bg-olive-light/10"
                 disabled={isSaving}
               >
-                Close
+                <X className="h-6 w-6" />
               </Button>
             </div>
 
-            <form onSubmit={handleSaveChanges} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="process_code">
-                    Process Code<span className="text-red-500"> *</span>
-                  </Label>
-                  <Input
-                    id="process_code"
-                    value={formState.code}
-                    onChange={(event) => handleFormFieldChange('code', event.target.value)}
-                    required
-                    className="bg-white"
-                  />
+            {/* Progress Indicator */}
+            <div className="border-b border-olive-light/20 px-4 sm:px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-full ${currentEditStep >= 1 ? 'bg-olive text-white' : 'bg-gray-200 text-gray-600'}`}>
+                    {currentEditStep > 1 ? '✓' : '1'}
+                  </div>
+                  <span className={`text-sm font-medium ${currentEditStep >= 1 ? 'text-text-dark' : 'text-text-dark/60'}`}>Basic Information</span>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="process_name">
-                    Process Name<span className="text-red-500"> *</span>
-                  </Label>
-                  <Input
-                    id="process_name"
-                    value={formState.name}
-                    onChange={(event) => handleFormFieldChange('name', event.target.value)}
-                    required
-                    className="bg-white"
-                  />
+                <div className="flex-1 h-0.5 mx-4 bg-olive-light/30">
+                  <div className={`h-full transition-all ${currentEditStep >= 2 ? 'bg-olive w-full' : 'bg-transparent w-0'}`} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-full ${currentEditStep >= 2 ? 'bg-olive text-white' : 'bg-gray-200 text-gray-600'}`}>
+                    2
+                  </div>
+                  <span className={`text-sm font-medium ${currentEditStep >= 2 ? 'text-text-dark' : 'text-text-dark/60'}`}>Process Steps</span>
                 </div>
               </div>
+            </div>
 
-              <div className="space-y-3">
-                <Label className="text-text-dark">
-                  Products <span className="text-red-500">*</span>
-                </Label>
-                {productsLoading ? (
-                  <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
-                    Loading products…
+            <form onSubmit={handleSaveChanges} className="flex-1 overflow-y-auto p-4 sm:p-6">
+              {/* Step 1: Basic Information */}
+              {currentEditStep === 1 && (
+                <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="process_code">
+                        Process Code<span className="text-red-500"> *</span>
+                      </Label>
+                      <Input
+                        id="process_code"
+                        value={formState.code}
+                        readOnly
+                        required
+                        className="bg-olive-light/10 text-text-dark/80"
+                      />
+                      <p className="text-xs text-text-dark/60">
+                        Process code cannot be changed
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="process_name">
+                        Process Name<span className="text-red-500"> *</span>
+                      </Label>
+                      <Input
+                        id="process_name"
+                        value={formState.name}
+                        onChange={(event) => handleFormFieldChange('name', event.target.value)}
+                        required
+                        className="bg-white"
+                      />
+                    </div>
                   </div>
-                ) : productsError ? (
-                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                    {productsError.message ?? 'Unable to load products.'}
-                  </div>
-                ) : products.length === 0 ? (
-                  <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
-                    No products available. Add products before configuring a process.
-                  </div>
-                ) : (
-                  <div className="max-h-56 overflow-y-auto rounded-lg border border-olive-light/30 bg-olive-light/5">
-                    <ul className="divide-y divide-olive-light/20">
-                      {products.map((product) => {
-                        const isSelected = formState.productIds.includes(product.id)
-                        return (
-                          <li key={product.id}>
-                            <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
-                              <input
-                                type="checkbox"
-                                className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                                checked={isSelected}
-                                onChange={() => handleToggleProductSelection(product.id)}
-                              />
-                              <div>
-                                <p className="font-medium text-text-dark">{product.name}</p>
-                                <p className="text-xs uppercase tracking-wide text-text-dark/60">
-                                  {product.sku || 'No SKU'}
-                                </p>
-                              </div>
-                            </label>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  </div>
-                )}
-                {Array.isArray(formState.productIds) && formState.productIds.length > 0 && (
-                  <p className="text-xs text-text-dark/60">
-                    {formState.productIds.length} product{formState.productIds.length === 1 ? '' : 's'} selected
-                  </p>
-                )}
-              </div>
 
-              <div className="space-y-3 border-t border-olive-light/20 pt-4">
-                <div className="flex items-center justify-between">
-                  <Label className="text-base font-semibold text-text-dark">Process Steps</Label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleAddStep}
-                    className="border-olive-light/30"
-                  >
-                    Add Step
-                  </Button>
+                  <div className="space-y-3">
+                    <Label className="text-text-dark">
+                      Products (Raw Materials Only) <span className="text-red-500">*</span>
+                    </Label>
+                    {productsLoading ? (
+                      <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                        Loading products…
+                      </div>
+                    ) : productsError ? (
+                      <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                        {productsError.message ?? 'Unable to load products.'}
+                      </div>
+                    ) : products.length === 0 ? (
+                      <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                        No available raw products. All raw products have been assigned to other processes, or no raw products exist. Add new raw products before configuring a process.
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-olive-light/30 bg-olive-light/5">
+                        <div className="border-b border-olive-light/20 p-2">
+                          <Input
+                            type="text"
+                            placeholder="Search products by name or SKU..."
+                            value={productSearchTerm}
+                            onChange={(e) => setProductSearchTerm(e.target.value)}
+                            className="bg-white text-sm"
+                          />
+                        </div>
+                        <div className="max-h-56 overflow-y-auto">
+                          {(() => {
+                            // Filter products by search term
+                            const filteredProducts = productSearchTerm.trim()
+                              ? products.filter((product) => {
+                                  const name = (product.name || '').toLowerCase()
+                                  const sku = (product.sku || '').toLowerCase()
+                                  const search = productSearchTerm.toLowerCase()
+                                  return name.includes(search) || sku.includes(search)
+                                })
+                              : products
+
+                            // Sort: selected products first, then by name
+                            const sortedProducts = [...filteredProducts].sort((a, b) => {
+                              const aSelected = formState.productIds.includes(a.id)
+                              const bSelected = formState.productIds.includes(b.id)
+                              if (aSelected && !bSelected) return -1
+                              if (!aSelected && bSelected) return 1
+                              return (a.name || '').localeCompare(b.name || '')
+                            })
+
+                            if (sortedProducts.length === 0) {
+                              return (
+                                <div className="px-3 py-4 text-center text-sm text-text-dark/60">
+                                  No products found matching "{productSearchTerm}"
+                                </div>
+                              )
+                            }
+
+                            return (
+                              <ul className="divide-y divide-olive-light/20">
+                                {sortedProducts.map((product) => {
+                                  const isSelected = formState.productIds.includes(product.id)
+                                  return (
+                                    <li key={product.id}>
+                                      <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
+                                        <input
+                                          type="checkbox"
+                                          className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                                          checked={isSelected}
+                                          onChange={() => handleToggleProductSelection(product.id)}
+                                        />
+                                        <div>
+                                          <p className="font-medium text-text-dark">{product.name}</p>
+                                          <p className="text-xs uppercase tracking-wide text-text-dark/60">
+                                            {product.sku || 'No SKU'}
+                                          </p>
+                                        </div>
+                                      </label>
+                                    </li>
+                                  )
+                                })}
+                              </ul>
+                            )
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                    {Array.isArray(formState.productIds) && formState.productIds.length > 0 && (
+                      <p className="text-xs text-text-dark/60">
+                        {formState.productIds.length} product{formState.productIds.length === 1 ? '' : 's'} selected
+                      </p>
+                    )}
+                  </div>
                 </div>
+              )}
+
+              {/* Step 2: Process Steps */}
+              {currentEditStep === 2 && (
+                <div className="space-y-4">
+                  <div className="space-y-3 pt-4 border-t border-olive-light/20">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-base font-semibold text-text-dark">Process Steps</Label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleAddStep}
+                        className="border-olive-light/30"
+                      >
+                        Add Step
+                      </Button>
+                    </div>
 
                 {formState.steps.length === 0 ? (
                   <p className="py-2 text-sm italic text-text-dark/60">No steps configured. Click "Add Step" to begin.</p>
@@ -1184,15 +1540,30 @@ function ProcessDetail() {
                             <Label htmlFor={`step_name_${step.clientId}`}>
                               Step Name<span className="text-red-500"> *</span>
                             </Label>
-                            <Input
+                            <select
                               id={`step_name_${step.clientId}`}
-                              value={step.step_name}
+                              value={step.step_name_id || ''}
                               onChange={(event) =>
-                                handleStepFieldChange(step.clientId, 'step_name', event.target.value)
+                                handleStepFieldChange(step.clientId, 'step_name_id', event.target.value ? Number(event.target.value) : null)
                               }
                               required
-                              className="bg-white"
-                            />
+                              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                            >
+                              <option value="">Select step name</option>
+                              {processStepNames.map((stepName: ProcessStepName) => (
+                                <option key={stepName.id} value={stepName.id}>
+                                  {stepName.name} ({stepName.code})
+                                </option>
+                              ))}
+                            </select>
+                            {processStepNamesLoading && (
+                              <p className="mt-1 text-xs text-text-dark/60">Loading step names…</p>
+                            )}
+                            {processStepNames.length === 0 && !processStepNamesLoading && (
+                              <p className="mt-1 text-xs text-text-dark/60">
+                                No step names available. <a href="/settings/process-step-names" className="text-olive hover:underline">Add step names</a> first.
+                              </p>
+                            )}
                           </div>
                         </div>
 
@@ -1245,36 +1616,174 @@ function ProcessDetail() {
                               />
                             </div>
                           </div>
-                          <label className="flex items-center gap-2 text-sm text-text-dark">
-                            <input
-                              type="checkbox"
-                              checked={step.requires_qc}
-                              onChange={(event) =>
-                                handleToggleStepCheckbox(step.clientId, 'requires_qc', event.target.checked)
-                              }
-                              className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                            />
-                            Requires Quality Check
-                          </label>
+                          <div className="flex flex-col gap-2">
+                            <label className="flex items-center gap-2 text-sm text-text-dark">
+                              <input
+                                type="checkbox"
+                                checked={step.requires_qc}
+                                onChange={(event) =>
+                                  handleToggleStepCheckbox(step.clientId, 'requires_qc', event.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                              />
+                              Requires Quality Check
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-text-dark">
+                              <input
+                                type="checkbox"
+                                checked={step.can_be_skipped}
+                                onChange={(event) =>
+                                  handleToggleStepCheckbox(step.clientId, 'can_be_skipped', event.target.checked)
+                                }
+                                className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                              />
+                              Can be Skipped
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 border-t border-olive-light/20 pt-3">
+                          <Label className="text-sm font-medium text-text-dark">
+                            Quality Parameters
+                          </Label>
+                          {qualityParametersLoading ? (
+                            <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                              Loading quality parameters…
+                            </div>
+                          ) : qualityParameters.length === 0 ? (
+                            <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
+                              No quality parameters available. Add quality parameters in settings first.
+                            </div>
+                          ) : (
+                            <>
+                              <div className="rounded-lg border border-olive-light/30 bg-olive-light/5">
+                                <div className="border-b border-olive-light/20 p-2">
+                                  <Input
+                                    type="text"
+                                    placeholder="Search quality parameters..."
+                                    value={qualityParameterSearchTerms[step.clientId] || ''}
+                                    onChange={(event) => {
+                                      setQualityParameterSearchTerms(prev => ({
+                                        ...prev,
+                                        [step.clientId]: event.target.value
+                                      }))
+                                    }}
+                                    className="bg-white text-sm h-8"
+                                  />
+                                </div>
+                                <div className="max-h-48 overflow-y-auto">
+                                  {(() => {
+                                    const searchTerm = (qualityParameterSearchTerms[step.clientId] || '').toLowerCase()
+                                    const filteredQPs = searchTerm
+                                      ? qualityParameters.filter((qp) => {
+                                          const name = (qp.name || '').toLowerCase()
+                                          const code = (qp.code || '').toLowerCase()
+                                          const spec = (qp.specification || '').toLowerCase()
+                                          return name.includes(searchTerm) || code.includes(searchTerm) || spec.includes(searchTerm)
+                                        })
+                                      : qualityParameters
+                                    
+                                    // Sort: selected parameters first, then by name
+                                    const sortedQPs = [...filteredQPs].sort((a, b) => {
+                                      const aSelected = step.qualityParameterIds.includes(a.id)
+                                      const bSelected = step.qualityParameterIds.includes(b.id)
+                                      if (aSelected && !bSelected) return -1
+                                      if (!aSelected && bSelected) return 1
+                                      return (a.name || '').localeCompare(b.name || '')
+                                    })
+                                    
+                                    if (sortedQPs.length === 0) {
+                                      return (
+                                        <div className="px-3 py-4 text-center text-sm text-text-dark/60">
+                                          No quality parameters found matching "{qualityParameterSearchTerms[step.clientId]}"
+                                        </div>
+                                      )
+                                    }
+                                    
+                                    return (
+                                      <ul className="divide-y divide-olive-light/20">
+                                        {sortedQPs.map((qp) => {
+                                          const isSelected = step.qualityParameterIds.includes(qp.id)
+                                          return (
+                                            <li key={qp.id}>
+                                              <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
+                                                <input
+                                                  type="checkbox"
+                                                  className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                                                  checked={isSelected}
+                                                  onChange={() =>
+                                                    handleToggleStepQualityParameter(step.clientId, qp.id)
+                                                  }
+                                                />
+                                                <div className="flex-1">
+                                                  <div className="flex items-center gap-2">
+                                                    <span className="font-mono text-xs uppercase tracking-wide text-olive-dark">
+                                                      {qp.code}
+                                                    </span>
+                                                    <span className="font-medium text-text-dark">{qp.name}</span>
+                                                  </div>
+                                                  {qp.specification && (
+                                                    <p className="mt-1 text-xs text-text-dark/60">
+                                                      {qp.specification}
+                                                    </p>
+                                                  )}
+                                                </div>
+                                              </label>
+                                            </li>
+                                          )
+                                        })}
+                                      </ul>
+                                    )
+                                  })()}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                          {Array.isArray(step.qualityParameterIds) && step.qualityParameterIds.length > 0 && (
+                            <p className="text-xs text-text-dark/60">
+                              {step.qualityParameterIds.length} quality parameter
+                              {step.qualityParameterIds.length === 1 ? '' : 's'} selected
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
+                  </div>
+                </div>
+              )}
 
-              <div className="flex flex-col gap-3 border-t border-olive-light/20 pt-4 sm:flex-row sm:justify-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleCloseEditModal}
-                  className="border-olive-light/30"
+              {/* Modal Footer */}
+              <div className="mt-6 flex flex-col gap-3 border-t border-olive-light/20 pt-6 sm:flex-row sm:justify-between">
+                <div className="flex gap-3">
+                  {currentEditStep === 2 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleBackEditStep}
+                      className="border-olive-light/30"
+                      disabled={isSaving}
+                    >
+                      Back
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCloseEditModal}
+                    className="border-olive-light/30"
+                    disabled={isSaving}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                <Button 
+                  type="submit" 
+                  className="bg-olive hover:bg-olive-dark" 
                   disabled={isSaving}
                 >
-                  Cancel
-                </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSaving}>
-                  {isSaving ? 'Saving…' : 'Save Changes'}
+                  {currentEditStep === 1 ? 'Next' : isSaving ? 'Saving…' : 'Save Changes'}
                 </Button>
               </div>
             </form>

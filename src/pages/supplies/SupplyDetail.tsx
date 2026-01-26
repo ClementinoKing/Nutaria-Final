@@ -1,10 +1,14 @@
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState } from 'react'
+import type React from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { SUPPLY_QUALITY_PARAMETERS, SupplyQualityParameter } from '@/constants/supplyQuality'
+import { supabase } from '@/lib/supabaseClient'
+import jsPDF from 'jspdf'
+import { Download, Loader2 } from 'lucide-react'
 
 interface QualityParameterWithId extends SupplyQualityParameter {
   id?: number | null
@@ -116,6 +120,60 @@ function SupplyDetail() {
     Array.isArray(navigationState.qualityParameters) && navigationState.qualityParameters.length > 0
       ? navigationState.qualityParameters
       : SUPPLY_QUALITY_PARAMETERS
+  const supplyDocuments = Array.isArray(navigationState.supplyDocuments) ? navigationState.supplyDocuments : []
+  const vehicleInspection = navigationState.vehicleInspection ?? null
+  const packagingCheck = navigationState.packagingCheck ?? null
+  const packagingItems = Array.isArray(navigationState.packagingItems) ? navigationState.packagingItems : []
+  const supplierSignOff = navigationState.supplierSignOff ?? null
+  const [packagingParameters, setPackagingParameters] = useState<{ [key: number]: { code: string; name: string } }>({})
+  const [documentTypes, setDocumentTypes] = useState<{ [key: string]: string }>({})
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
+
+  useEffect(() => {
+    const fetchPackagingParameters = async () => {
+      if (packagingItems.length === 0) return
+      
+      const paramIds = packagingItems
+        .map((item: { [key: string]: unknown }) => item.parameter_id as number)
+        .filter((id: number | undefined): id is number => id !== undefined && id !== null)
+      
+      if (paramIds.length === 0) return
+
+      const { data, error } = await supabase
+        .from('packaging_quality_parameters')
+        .select('id, code, name')
+        .in('id', paramIds)
+
+      if (!error && data) {
+        const paramMap: { [key: number]: { code: string; name: string } } = {}
+        data.forEach((param) => {
+          if (param.id) {
+            paramMap[param.id] = { code: param.code, name: param.name }
+          }
+        })
+        setPackagingParameters(paramMap)
+      }
+    }
+
+    const fetchDocumentTypes = async () => {
+      if (supplyDocuments.length === 0) return
+
+      const { data, error } = await supabase
+        .from('supply_document_types')
+        .select('code, name')
+
+      if (!error && data) {
+        const typeMap: { [key: string]: string } = {}
+        data.forEach((type) => {
+          typeMap[type.code] = type.name
+        })
+        setDocumentTypes(typeMap)
+      }
+    }
+
+    fetchPackagingParameters()
+    fetchDocumentTypes()
+  }, [packagingItems, supplyDocuments])
 
   const supplierLookup = useMemo(
     () => new Map(Object.entries(navigationState.supplierLookup ?? {})),
@@ -178,6 +236,10 @@ function SupplyDetail() {
         const parsedScore = Number.parseInt(scoreValue ?? '', 10)
         scoreValue = Number.isFinite(parsedScore) ? parsedScore : null
       }
+      // Treat null scores as N/A (value 4)
+      if (scoreValue === null) {
+        scoreValue = 4
+      }
 
       const code =
         item.parameter_code ??
@@ -186,7 +248,7 @@ function SupplyDetail() {
       return {
         id: item.id ?? `${item.quality_check_id ?? 'check'}-${item.parameter_id ?? item.parameter_code}`,
         name: item.parameter_name ?? metadata?.name ?? 'Quality parameter',
-        specification: item.parameter_specification ?? metadata?.specification ?? '',
+        results: item.results ?? '',
         score: scoreValue,
         remarks: item.remarks ?? '',
         code: code ?? null,
@@ -215,6 +277,471 @@ function SupplyDetail() {
 
   const handleBack = () => {
     navigate('/supplies')
+  }
+
+  const handleDownloadPDF = async () => {
+    setIsGeneratingPDF(true)
+
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const margin = 15
+      let y = margin
+
+      /* ================= COLORS ================= */
+      const oliveDark: [number, number, number] = [34, 43, 28]
+      const bgLight: [number, number, number] = [248, 249, 245]
+      const textDark: [number, number, number] = [30, 30, 30]
+      const textMuted: [number, number, number] = [107, 114, 128]
+
+      const pageBreak = (space = 15) => {
+        if (y + space > pageHeight - margin) {
+          pdf.addPage()
+          y = margin
+        }
+      }
+
+      /* ================= BADGE ================= */
+      const badge = (label: string, xPos: number, yPos: number, color: [number, number, number]) => {
+        pdf.setFillColor(color[0], color[1], color[2])
+        pdf.roundedRect(xPos, yPos - 4, pdf.getTextWidth(label) + 6, 7, 3, 3, 'F')
+        pdf.setFontSize(8)
+        pdf.setTextColor(255, 255, 255)
+        pdf.text(label, xPos + 3, yPos + 1)
+      }
+
+      /* ================= SECTION HEADER ================= */
+      const section = (num: number, title: string) => {
+        pageBreak(20)
+        pdf.setFillColor(oliveDark[0], oliveDark[1], oliveDark[2])
+        pdf.roundedRect(margin, y, pageWidth - margin * 2, 8, 2, 2, 'F')
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(11)
+        pdf.setTextColor(255, 255, 255)
+        pdf.text(`${num}. ${title}`, margin + 4, y + 5)
+
+        y += 14
+      }
+
+      /* ================= HEADER CARD ================= */
+      pdf.setFillColor(bgLight[0], bgLight[1], bgLight[2])
+      const headerHeight = 32
+      pdf.roundedRect(margin, y, pageWidth - margin * 2, headerHeight, 4, 4, 'F')
+
+      const headerPadding = 8
+      const headerContentY = y + headerPadding
+      const logoWidth = 22
+      const logoHeight = 9
+      const logoX = margin + headerPadding
+      const logoY = headerContentY + (headerHeight - headerPadding * 2 - logoHeight) / 2
+
+      // Logo on the left - smaller and vertically centered
+      try {
+        const res = await fetch('/img/logos/Nutaria_logo_alt.svg')
+        const blob = await res.blob()
+        const img = new Image()
+        img.src = URL.createObjectURL(blob)
+
+        await new Promise<void>((r) => {
+          img.onload = () => {
+            const c = document.createElement('canvas')
+            c.width = img.width || 200
+            c.height = img.height || 100
+            const ctx = c.getContext('2d')
+            if (ctx) {
+              ctx.drawImage(img, 0, 0)
+              pdf.addImage(c.toDataURL('image/png'), 'PNG', logoX, logoY, logoWidth, logoHeight)
+            }
+            URL.revokeObjectURL(img.src)
+            r()
+          }
+          img.onerror = () => {
+            URL.revokeObjectURL(img.src)
+            r()
+          }
+        })
+      } catch {}
+
+      // Title in the center - properly spaced with clear boundaries
+      const titleStartX = logoX + logoWidth + 15
+      const rightColumnX = pageWidth - margin - headerPadding
+      const rightColumnWidth = 65
+      const titleWidth = rightColumnX - titleStartX - rightColumnWidth - 5
+      
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(13)
+      pdf.setTextColor(oliveDark[0], oliveDark[1], oliveDark[2])
+      const titleText = 'SUPPLY RECEIVING & QUALITY RECORD'
+      const titleLines = pdf.splitTextToSize(titleText, titleWidth)
+      const titleY = headerContentY + (headerHeight - headerPadding * 2 - (titleLines.length * 4.5)) / 2 + 1
+      pdf.text(titleLines, titleStartX, titleY)
+
+      // Document info on the right - properly aligned and spaced, no overlap
+      pdf.setFontSize(8)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+      const docInfoStartY = headerContentY + 3
+      pdf.text(`Doc: ${supply.doc_no}`, rightColumnX, docInfoStartY, { align: 'right' })
+      pdf.text(`Received:`, rightColumnX, docInfoStartY + 7, { align: 'right' })
+      pdf.setFontSize(7)
+      pdf.text(formatDateTime(supply.received_at), rightColumnX, docInfoStartY + 12, { align: 'right' })
+
+      y += headerHeight + 6
+
+      // Status badges below header
+      badge(supply.doc_status, margin, y, [76, 175, 80])
+      badge(supply.quality_status || 'QUALITY PENDING', margin + 35, y, [255, 193, 7])
+      y += 12
+
+      let sectionNum = 1
+
+      /* ================= SECTION 1 ================= */
+      section(sectionNum++, 'Supply Overview')
+      pdf.setFontSize(9)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+      const overview = [
+        ['Supplier', supplierDisplayName ?? 'Not captured'],
+        ['Warehouse', warehouseDisplayName ?? 'Not assigned'],
+        ['Reference', supply.reference ?? 'Not recorded'],
+        ['Transport Ref', supply.transport_reference ?? 'Not recorded'],
+        ['Received By', receivedByDisplayName ?? 'Not recorded'],
+        ['Pallets Received', supply.pallets_received?.toLocaleString() ?? '0'],
+        ['Expected On Site', formatDateTime(supply.expected_at)],
+        ['Created', formatDateTime(supply.created_at)],
+      ]
+
+      overview.forEach(([k, v]) => {
+        pageBreak(6)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+        pdf.text(`${k}:`, margin, y)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+        const valueLines = pdf.splitTextToSize(String(v), pageWidth - margin * 2 - 35)
+        pdf.text(valueLines, margin + 35, y)
+        y += valueLines.length * 5 + 1
+      })
+
+      /* ================= SECTION 2 ================= */
+      if (supplyDocuments.length > 0) {
+        section(sectionNum++, 'Supply Documents')
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        supplyDocuments.forEach((doc: { [key: string]: unknown }) => {
+          pageBreak(8)
+          const docType = String(doc.document_type_code ?? '')
+          const label = documentTypes[docType] || docType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase())
+          let value = 'Not recorded'
+
+          if (doc.value) {
+            value = String(doc.value)
+          } else if (doc.date_value) {
+            value = formatDate(doc.date_value as string | Date | number | null | undefined)
+          } else if (doc.boolean_value !== null && doc.boolean_value !== undefined) {
+            value = doc.boolean_value ? 'Yes' : 'No'
+          } else if (doc.document_id) {
+            value = 'Document uploaded'
+          }
+
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text(`${label}:`, margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          const valueLines = pdf.splitTextToSize(String(value), pageWidth - margin * 2 - 35)
+          pdf.text(valueLines, margin + 35, y)
+          y += valueLines.length * 5 + 1
+        })
+      }
+
+      /* ================= SECTION 3 ================= */
+      if (vehicleInspection) {
+        section(sectionNum++, 'Vehicle Inspection')
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        const inspection = [
+          ['Vehicle Clean', vehicleInspection.vehicle_clean],
+          ['No Foreign Objects', vehicleInspection.no_foreign_objects],
+          ['No Pest Infestation', vehicleInspection.no_pest_infestation],
+        ]
+
+        inspection.forEach(([k, v]) => {
+          pageBreak(6)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text(`${k}:`, margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text(String(v ?? 'Not recorded'), margin + 45, y)
+          y += 6
+        })
+
+        if (vehicleInspection.remarks) {
+          pageBreak(8)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Remarks:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          const remarksLines = pdf.splitTextToSize(String(vehicleInspection.remarks), pageWidth - margin * 2 - 35)
+          pdf.text(remarksLines, margin + 35, y)
+          y += remarksLines.length * 5 + 1
+        }
+      }
+
+      /* ================= SECTION 4 ================= */
+      if (packagingCheck && packagingItems.length > 0) {
+        section(sectionNum++, 'Packaging Quality Parameters')
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        packagingItems.forEach((item: { [key: string]: unknown }) => {
+          pageBreak(8)
+          const parameterId = item.parameter_id as number | undefined
+          const param = parameterId ? packagingParameters[parameterId] : null
+          const paramName = param?.name ?? 'Unknown Parameter'
+          let displayValue = 'Not recorded'
+
+          if (item.value) {
+            displayValue = String(item.value)
+          } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
+            displayValue = String(item.numeric_value)
+          }
+
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text(`${paramName}:`, margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          const valueLines = pdf.splitTextToSize(displayValue, pageWidth - margin * 2 - 35)
+          pdf.text(valueLines, margin + 35, y)
+          y += valueLines.length * 5 + 1
+        })
+      }
+
+      /* ================= SECTION 5 ================= */
+      if (qualityEvaluationRows.length > 0) {
+        section(sectionNum++, 'Quality Evaluation')
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        if (overallScoreValue !== null && Number.isFinite(overallScoreValue)) {
+          pageBreak(8)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(oliveDark[0], oliveDark[1], oliveDark[2])
+          pdf.text(`Overall Score: ${overallScoreValue.toFixed(2)}`, margin, y)
+          y += 8
+        }
+
+        qualityEvaluationRows.forEach((row) => {
+          pageBreak(12)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(oliveDark[0], oliveDark[1], oliveDark[2])
+          pdf.text(row.name, margin, y)
+          y += 5
+
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.setFontSize(8)
+          if (row.results) {
+            pdf.text(`Results: ${row.results}`, margin + 5, y)
+            y += 5
+          }
+          pdf.text(`Score: ${row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : row.score}`, margin + 5, y)
+          y += 5
+          if (row.remarks?.trim()) {
+            const remarksText = `Remarks: ${row.remarks.trim()}`
+            const remarksLines = pdf.splitTextToSize(remarksText, pageWidth - margin * 2 - 10)
+            pdf.text(remarksLines, margin + 5, y)
+            y += remarksLines.length * 4
+          }
+          y += 3
+        })
+      }
+
+      /* ================= SECTION 6 ================= */
+      if (lines.length > 0) {
+        section(sectionNum++, 'Line Items')
+        pdf.setFontSize(8)
+
+        lines.forEach((l: SupplyLineItem) => {
+          pageBreak(18)
+          const name = getProductMeta(l.product_id)?.name?.trim() ?? l.product_name ?? 'Product'
+          const sku = getProductMeta(l.product_id)?.sku?.trim() ?? l.product_sku ?? 'No SKU'
+
+          pdf.setFont('helvetica', 'bold')
+          pdf.text(name, margin, y)
+          y += 4
+
+          pdf.setFont('helvetica', 'normal')
+          pdf.text(`SKU: ${sku}`, margin + 4, y)
+          y += 4
+          pdf.text(`Ordered: ${formatQuantityWithUnit(l.ordered_qty ?? l.qty ?? 0, l.unit_id)}`, margin + 4, y)
+          y += 4
+          pdf.text(`Received: ${formatQuantityWithUnit(l.received_qty ?? 0, l.unit_id)}`, margin + 4, y)
+          y += 4
+          pdf.text(`Accepted: ${formatQuantityWithUnit(l.accepted_qty ?? 0, l.unit_id)}`, margin + 4, y)
+          if (l.variance_reason) {
+            y += 4
+            pdf.text(`Variance: ${l.variance_reason}`, margin + 4, y)
+          }
+          y += 6
+        })
+      }
+
+      /* ================= SECTION 7 ================= */
+      if (batches.length > 0) {
+        section(sectionNum++, 'Batches')
+        pdf.setFontSize(8)
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        batches.forEach((batch: SupplyBatchItem) => {
+          pageBreak(12)
+          pdf.setFont('helvetica', 'bold')
+          pdf.text(`Lot: ${batch.lot_no ?? 'N/A'}`, margin, y)
+          y += 4
+          pdf.setFont('helvetica', 'normal')
+          const productName = getProductMeta(batch.product_id)?.name?.trim() ?? batch.product_name ?? 'Product'
+          pdf.text(`Product: ${productName}`, margin + 5, y)
+          y += 4
+          pdf.text(`Received: ${formatQuantityWithUnit(batch.received_qty ?? 0, batch.unit_id)}`, margin + 5, y)
+          y += 4
+          pdf.text(`Accepted: ${formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)}`, margin + 5, y)
+          y += 4
+          pdf.text(`Quality Status: ${batch.quality_status ?? 'PENDING'}`, margin + 5, y)
+          y += 5
+        })
+      }
+
+      /* ================= SECTION 8 ================= */
+      section(sectionNum++, 'Acceptance Decision')
+      pdf.rect(margin, y, pageWidth - margin * 2, 22)
+      pdf.text('☐ Accepted   ☐ Accepted with Deviation   ☐ Rejected   ☐ Quality Hold', margin + 4, y + 8)
+      y += 28
+
+      /* ================= SECTION 9 ================= */
+      section(sectionNum++, 'Supplier Sign-Off')
+      if (supplierSignOff) {
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+        pdf.text('Signed By:', margin, y)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+        pdf.text(String(supplierSignOff.signed_by_name ?? 'Not recorded'), margin + 40, y)
+        y += 8
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+        pdf.text('Signature Type:', margin, y)
+        pdf.setFont('helvetica', 'normal')
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+        pdf.text(supplierSignOff.signature_type === 'E_SIGNATURE' ? 'E-Signature' : 'Uploaded Document', margin + 40, y)
+        y += 8
+
+        if (supplierSignOff.signed_at) {
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Signed At:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text(formatDateTime(supplierSignOff.signed_at), margin + 40, y)
+          y += 8
+        }
+
+        // Render signature image if it's an e-signature
+        if (supplierSignOff.signature_type === 'E_SIGNATURE' && supplierSignOff.signature_data) {
+          pageBreak(35)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Signature:', margin, y)
+          y += 6
+          
+          try {
+            const signatureData = String(supplierSignOff.signature_data)
+            // jsPDF can handle data URLs directly, but let's ensure it's in the right format
+            let imageData = signatureData
+            
+            // If it's not already a data URL, prepend the data URL prefix
+            if (!signatureData.startsWith('data:')) {
+              imageData = `data:image/png;base64,${signatureData}`
+            }
+            
+            // Add image to PDF (max width 80mm, height 30mm)
+            const imgWidth = 80
+            const imgHeight = 30
+            pdf.addImage(imageData, 'PNG', margin, y, imgWidth, imgHeight)
+            y += imgHeight + 5
+          } catch (error) {
+            console.warn('Could not add signature image to PDF:', error)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+            pdf.text('Signature image available but could not be rendered', margin, y)
+            y += 6
+          }
+        } else if (supplierSignOff.signature_type === 'UPLOADED_DOCUMENT' && supplierSignOff.document_id) {
+          pageBreak(8)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Signature:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text('Signature document uploaded (see attached)', margin + 40, y)
+          y += 8
+        }
+
+        if (supplierSignOff.remarks) {
+          pageBreak(10)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Remarks:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          const remarksLines = pdf.splitTextToSize(String(supplierSignOff.remarks), pageWidth - margin * 2 - 40)
+          pdf.text(remarksLines, margin + 40, y)
+          y += remarksLines.length * 5 + 2
+        }
+      } else {
+        pdf.text('Supplier Name:', margin, y)
+        pdf.line(margin + 40, y + 1, margin + 120, y + 1)
+        y += 8
+        pdf.text('Signature:', margin, y)
+        pdf.line(margin + 40, y + 1, margin + 120, y + 1)
+        y += 8
+        pdf.text('Date:', margin, y)
+        pdf.line(margin + 40, y + 1, margin + 80, y + 1)
+      }
+
+      /* ================= FOOTER ================= */
+      const pages = pdf.getNumberOfPages()
+      for (let i = 1; i <= pages; i++) {
+        pdf.setPage(i)
+        pdf.setFontSize(8)
+        pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+        pdf.text(`Generated by Nutaria Supply & Quality System`, margin, pageHeight - 8)
+        pdf.text(`Page ${i} of ${pages}`, pageWidth / 2, pageHeight - 8, { align: 'center' })
+      }
+
+      pdf.save(`Supply_${supply.doc_no}.pdf`)
+    } catch (error) {
+      console.error('Error generating PDF:', error)
+      alert('Failed to generate PDF. Please try again.')
+    } finally {
+      setIsGeneratingPDF(false)
+    }
   }
 
   if (!supply) {
@@ -530,9 +1057,29 @@ function SupplyDetail() {
       title="Supply Detail"
       activeItem="supplies"
       actions={
-        <Button variant="outline" onClick={handleBack}>
-          Back to Supplies
-        </Button>
+        <>
+          <Button 
+            variant="outline" 
+            onClick={handleDownloadPDF} 
+            className="gap-2"
+            disabled={isGeneratingPDF}
+          >
+            {isGeneratingPDF ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Generating PDF...
+              </>
+            ) : (
+              <>
+                <Download className="h-4 w-4" />
+                Download PDF
+              </>
+            )}
+          </Button>
+          <Button variant="outline" onClick={handleBack}>
+            Back to Supplies
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -731,12 +1278,12 @@ function SupplyDetail() {
                         <div className="flex items-start justify-between gap-4">
                           <div className="space-y-1">
                             <p className="text-sm font-medium text-text-dark">{row.name}</p>
-                            {row.specification ? (
-                              <p className="text-xs text-text-dark/60">{row.specification}</p>
+                            {row.results ? (
+                              <p className="text-xs text-text-dark/60">{row.results}</p>
                             ) : null}
                           </div>
                           <span className="text-sm font-semibold text-text-dark">
-                            {Number.isFinite(row.score) ? row.score : 'Pending'}
+                            {row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : Number.isFinite(row.score) ? row.score : 'Pending'}
                           </span>
                         </div>
                         <p className="text-xs text-text-dark/70">
@@ -753,6 +1300,220 @@ function SupplyDetail() {
             )}
           </CardContent>
         </Card>
+
+        {supplyDocuments.length > 0 && (
+          <Card className="border-olive-light/30 bg-white">
+            <CardHeader>
+              <CardTitle className="text-text-dark">Supply Documents</CardTitle>
+              <CardDescription>Document information and uploaded files for this supply.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                {supplyDocuments.map((doc: { [key: string]: unknown }) => {
+                  const docType = String(doc.document_type_code ?? '')
+                  const label = documentTypes[docType] || docType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l) => l.toUpperCase())
+                  let value: string | React.ReactNode = 'Not recorded'
+
+                  if (doc.value) {
+                    value = String(doc.value)
+                  } else if (doc.date_value) {
+                    const dateVal = doc.date_value as string | Date | number | null | undefined
+                    value = formatDate(dateVal)
+                  } else if (doc.boolean_value !== null && doc.boolean_value !== undefined) {
+                    value = doc.boolean_value ? 'Yes' : 'No'
+                  } else if (doc.document_id) {
+                    value = (
+                      <span className="inline-flex items-center gap-1 text-olive-dark">
+                        <span>Document uploaded</span>
+                      </span>
+                    )
+                  }
+
+                  return (
+                    <div key={`${doc.supply_id}-${doc.document_type_code}`} className="space-y-1">
+                      <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        {label}
+                      </dt>
+                      <dd className="text-sm font-medium text-text-dark">{value}</dd>
+                    </div>
+                  )
+                })}
+              </dl>
+            </CardContent>
+          </Card>
+        )}
+
+        {vehicleInspection && (
+          <Card className="border-olive-light/30 bg-white">
+            <CardHeader>
+              <CardTitle className="text-text-dark">Vehicle Inspections</CardTitle>
+              <CardDescription>Vehicle inspection checklist completed during receiving.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Vehicle Clean
+                    </dt>
+                    <dd className="text-sm font-medium text-text-dark">
+                      {String(vehicleInspection.vehicle_clean ?? 'Not recorded')}
+                    </dd>
+                  </div>
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      No Foreign Objects
+                    </dt>
+                    <dd className="text-sm font-medium text-text-dark">
+                      {String(vehicleInspection.no_foreign_objects ?? 'Not recorded')}
+                    </dd>
+                  </div>
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      No Pest Infestation
+                    </dt>
+                    <dd className="text-sm font-medium text-text-dark">
+                      {String(vehicleInspection.no_pest_infestation ?? 'Not recorded')}
+                    </dd>
+                  </div>
+                  {vehicleInspection.inspected_at && (
+                    <div className="space-y-1">
+                      <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Inspected At
+                      </dt>
+                      <dd className="text-sm font-medium text-text-dark">
+                        {formatDateTime(vehicleInspection.inspected_at)}
+                      </dd>
+                    </div>
+                  )}
+                </div>
+                {vehicleInspection.remarks && (
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Remarks
+                    </dt>
+                    <dd className="text-sm text-text-dark/70">{String(vehicleInspection.remarks)}</dd>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {packagingCheck && packagingItems.length > 0 && (
+          <Card className="border-olive-light/30 bg-white">
+            <CardHeader>
+              <CardTitle className="text-text-dark">Packaging Quality Parameters</CardTitle>
+              <CardDescription>Packaging quality evaluation results.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {packagingCheck.checked_at && (
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                    Checked {formatDateTime(packagingCheck.checked_at)}
+                  </div>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {packagingItems.map((item: { [key: string]: unknown }) => {
+                    const parameterId = item.parameter_id as number | undefined
+                    const param = parameterId ? packagingParameters[parameterId] : null
+                    const paramName = param?.name ?? 'Unknown Parameter'
+                    let displayValue = 'Not recorded'
+
+                    if (item.value) {
+                      displayValue = String(item.value)
+                    } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
+                      displayValue = String(item.numeric_value)
+                    }
+
+                    return (
+                      <div
+                        key={`packaging-${item.id}`}
+                        className="flex flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-4 py-3"
+                      >
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-text-dark">{paramName}</p>
+                          <p className="text-sm font-semibold text-text-dark">{displayValue}</p>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {packagingCheck.remarks && (
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Remarks
+                    </dt>
+                    <dd className="text-sm text-text-dark/70">{String(packagingCheck.remarks)}</dd>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {supplierSignOff && (
+          <Card className="border-olive-light/30 bg-white">
+            <CardHeader>
+              <CardTitle className="text-text-dark">Supplier Sign-Off</CardTitle>
+              <CardDescription>Supplier acknowledgment and signature.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Signed By
+                    </dt>
+                    <dd className="text-sm font-medium text-text-dark">
+                      {String(supplierSignOff.signed_by_name ?? 'Not recorded')}
+                    </dd>
+                  </div>
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Signature Type
+                    </dt>
+                    <dd className="text-sm font-medium text-text-dark">
+                      {supplierSignOff.signature_type === 'E_SIGNATURE' ? 'E-Signature' : 'Uploaded Document'}
+                    </dd>
+                  </div>
+                  {supplierSignOff.signed_at && (
+                    <div className="space-y-1">
+                      <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Signed At
+                      </dt>
+                      <dd className="text-sm font-medium text-text-dark">
+                        {formatDateTime(supplierSignOff.signed_at)}
+                      </dd>
+                    </div>
+                  )}
+                </div>
+                {supplierSignOff.signature_type === 'E_SIGNATURE' && supplierSignOff.signature_data && (
+                  <div className="space-y-2">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Signature
+                    </dt>
+                    <dd>
+                      <img
+                        src={String(supplierSignOff.signature_data)}
+                        alt="Supplier signature"
+                        className="max-w-xs rounded-lg border border-olive-light/40"
+                      />
+                    </dd>
+                  </div>
+                )}
+                {supplierSignOff.remarks && (
+                  <div className="space-y-1">
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                      Remarks
+                    </dt>
+                    <dd className="text-sm text-text-dark/70">{String(supplierSignOff.remarks)}</dd>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </PageLayout>
   )

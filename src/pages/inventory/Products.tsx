@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Package2, Pencil, Plus, RefreshCcw, X } from 'lucide-react'
+import { Package2, Pencil, Plus, RefreshCcw, Trash2, X } from 'lucide-react'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
@@ -24,6 +24,7 @@ interface Product {
   notes: string | null
   created_at: string | null
   updated_at: string | null
+  product_type: 'RAW' | 'WIP' | 'FINISHED' | null
 }
 
 interface PreparedProduct extends Product {
@@ -47,6 +48,7 @@ interface ProductFormData {
   target_stock: string
   status: string
   notes: string
+  product_type: string
 }
 
 interface FormErrors {
@@ -54,6 +56,7 @@ interface FormErrors {
   name?: string
   category?: string
   status?: string
+  product_type?: string
 }
 
 const statusBadgeStyles = {
@@ -62,12 +65,19 @@ const statusBadgeStyles = {
   DEVELOPMENT: 'bg-blue-100 text-blue-800',
 }
 
+const productTypeBadgeStyles: Record<string, string> = {
+  RAW: 'bg-amber-100 text-amber-800',
+  WIP: 'bg-blue-100 text-blue-800',
+  FINISHED: 'bg-green-100 text-green-800',
+}
+
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
 const sortableColumns = [
   { value: 'name', label: 'Name' },
   { value: 'sku', label: 'SKU' },
   { value: 'category', label: 'Category' },
+  { value: 'product_type', label: 'Type' },
   { value: 'reorder_point', label: 'Reorder Point' },
   { value: 'safety_stock', label: 'Safety Stock' },
   { value: 'target_stock', label: 'Target Stock' },
@@ -85,6 +95,7 @@ function createEmptyProductForm() {
     target_stock: '',
     status: 'ACTIVE',
     notes: '',
+    product_type: 'RAW',
   }
 }
 
@@ -132,8 +143,12 @@ function Products() {
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [categoryFilter, setCategoryFilter] = useState('ALL')
+  const [productTypeFilter, setProductTypeFilter] = useState<'ALL' | 'RAW' | 'WIP' | 'FINISHED'>('ALL')
   const [sortBy, setSortBy] = useState('name')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [deletingProductId, setDeletingProductId] = useState<number | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
@@ -148,7 +163,7 @@ function Products() {
     const { data, error: fetchError } = await supabase
       .from('products')
       .select(
-        'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
+        'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
       )
       .order('updated_at', { ascending: false, nullsFirst: false })
 
@@ -191,6 +206,10 @@ function Products() {
   useEffect(() => {
     fetchUnits()
   }, [fetchUnits])
+
+  useEffect(() => {
+    setPage(1)
+  }, [searchTerm, statusFilter, categoryFilter, productTypeFilter, sortBy, sortDirection])
 
   const unitMap = useMemo(() => {
     const map = new Map<number, Unit>()
@@ -251,7 +270,11 @@ function Products() {
       const matchesCategory =
         categoryFilter === 'ALL' || (product.category ?? '').toLowerCase() === categoryFilter.toLowerCase()
 
-      return matchesSearch && matchesStatus && matchesCategory
+      const matchesProductType =
+        productTypeFilter === 'ALL' ||
+        (product.product_type ?? 'RAW').toUpperCase() === productTypeFilter.toUpperCase()
+
+      return matchesSearch && matchesStatus && matchesCategory && matchesProductType
     }
 
     const comparator = (a: PreparedProduct, b: PreparedProduct): number => {
@@ -269,6 +292,14 @@ function Products() {
         return (aDate - bDate) * direction
       }
 
+      if (sortBy === 'product_type') {
+        const aVal = (a.product_type ?? 'RAW').toLowerCase()
+        const bVal = (b.product_type ?? 'RAW').toLowerCase()
+        if (aVal < bVal) return -1 * direction
+        if (aVal > bVal) return 1 * direction
+        return 0
+      }
+
       const aValue = (a[sortBy as keyof PreparedProduct] ?? '').toString().toLowerCase()
       const bValue = (b[sortBy as keyof PreparedProduct] ?? '').toString().toLowerCase()
 
@@ -278,7 +309,17 @@ function Products() {
     }
 
     return preparedProducts.filter(matchesFilters).sort(comparator)
-  }, [categoryFilter, preparedProducts, searchTerm, sortBy, sortDirection, statusFilter])
+  }, [categoryFilter, preparedProducts, productTypeFilter, searchTerm, sortBy, sortDirection, statusFilter])
+
+  const paginatedProducts = useMemo(
+    () => filteredProducts.slice((page - 1) * pageSize, page * pageSize),
+    [filteredProducts, page, pageSize]
+  )
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize))
+    if (page > totalPages) setPage(totalPages)
+  }, [filteredProducts.length, page, pageSize])
 
   const stats = useMemo(() => {
     const total = preparedProducts.length
@@ -369,12 +410,40 @@ function Products() {
           : '',
       status: (product.status ?? 'ACTIVE').toUpperCase(),
       notes: product.notes ?? '',
+      product_type: (product.product_type ?? 'RAW').toUpperCase(),
     })
     setFormErrors({})
     setModalMode('edit')
     setEditingProduct(product)
     setIsModalOpen(true)
   }, [])
+
+  const handleDeleteProduct = useCallback(
+    async (product: Product) => {
+      if (!product?.id) return
+      const displayName = product.name ?? product.sku ?? 'Unknown'
+      const confirmed = window.confirm(
+        `Delete product "${displayName}"? This cannot be undone.`
+      )
+      if (!confirmed) return
+      setDeletingProductId(product.id)
+      try {
+        const { error: deleteError } = await supabase
+          .from('products')
+          .delete()
+          .eq('id', product.id)
+        if (deleteError) throw deleteError
+        toast.success('Product deleted.')
+        setProducts((prev) => prev.filter((p) => p.id !== product.id))
+      } catch (err) {
+        const msg = (err as PostgrestError)?.message ?? 'Unable to delete product.'
+        toast.error(msg)
+      } finally {
+        setDeletingProductId(null)
+      }
+    },
+    []
+  )
 
   const handleFormChange = (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = event.target
@@ -413,6 +482,12 @@ function Products() {
     if (formData.status && !['ACTIVE', 'INACTIVE', 'DEVELOPMENT'].includes(formData.status.toUpperCase())) {
       errors.status = 'Status must be Active, Inactive, or Development.'
     }
+    if (
+      formData.product_type &&
+      !['RAW', 'WIP', 'FINISHED'].includes(formData.product_type.toUpperCase())
+    ) {
+      errors.product_type = 'Product type must be Raw, WIP, or Finished.'
+    }
 
     setFormErrors(errors)
     return Object.keys(errors).length === 0
@@ -427,6 +502,9 @@ function Products() {
     setIsSubmitting(true)
     const isEditing = modalMode === 'edit' && editingProduct?.id !== undefined
     try {
+      const productType = (formData.product_type || 'RAW').toUpperCase()
+      const productTypeVal =
+        productType === 'RAW' || productType === 'WIP' || productType === 'FINISHED' ? productType : 'RAW'
       const payload = {
         sku: formData.sku.trim(),
         name: formData.name.trim(),
@@ -437,6 +515,7 @@ function Products() {
         target_stock: numbersToPayload(formData.target_stock),
         status: (formData.status || 'ACTIVE').toUpperCase(),
         notes: formData.notes.trim() || null,
+        product_type: productTypeVal,
       }
 
       if (isEditing) {
@@ -445,7 +524,7 @@ function Products() {
           .update(payload)
           .eq('id', editingProduct.id)
           .select(
-            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
           )
           .single()
 
@@ -462,7 +541,7 @@ function Products() {
           .from('products')
           .insert(payload)
           .select(
-            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at'
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
           )
           .single()
 
@@ -527,6 +606,32 @@ function Products() {
         header: 'Category',
         render: (product: PreparedProduct) => product.category ?? '—',
         mobileRender: (product: PreparedProduct) => product.category ?? '—',
+        cellClassName: 'text-text-dark/70',
+        mobileValueClassName: 'text-text-dark',
+      },
+      {
+        key: 'product_type',
+        header: 'Type',
+        render: (product: PreparedProduct) => {
+          const t = (product.product_type ?? 'RAW').toUpperCase()
+          const style = productTypeBadgeStyles[t] ?? productTypeBadgeStyles.RAW
+          const label = t === 'WIP' ? 'WIP' : t.charAt(0) + t.slice(1).toLowerCase()
+          return (
+            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${style}`}>
+              {label}
+            </span>
+          )
+        },
+        mobileRender: (product: PreparedProduct) => {
+          const t = (product.product_type ?? 'RAW').toUpperCase()
+          const style = productTypeBadgeStyles[t] ?? productTypeBadgeStyles.RAW
+          const label = t === 'WIP' ? 'WIP' : t.charAt(0) + t.slice(1).toLowerCase()
+          return (
+            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${style}`}>
+              {label}
+            </span>
+          )
+        },
         cellClassName: 'text-text-dark/70',
         mobileValueClassName: 'text-text-dark',
       },
@@ -625,7 +730,7 @@ function Products() {
         mobileHeader: 'Actions',
         mobileValueClassName: 'text-right',
         render: (product: PreparedProduct) => (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
             <Button
               type="button"
               size="sm"
@@ -638,27 +743,70 @@ function Products() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="text-red-600 hover:bg-red-50"
+              onClick={(event) => {
+                event.stopPropagation()
+                handleDeleteProduct(product)
+              }}
+              disabled={deletingProductId === product.id}
+            >
+              {deletingProductId === product.id ? (
+                'Deleting…'
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </>
+              )}
+            </Button>
           </div>
         ),
         mobileRender: (product: PreparedProduct) => (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="w-full justify-center"
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              handleOpenEditModal(product)
-            }}
-          >
-            <Pencil className="mr-2 h-4 w-4" />
-            Edit
-          </Button>
+          <div className="flex flex-col gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full justify-center"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                handleOpenEditModal(product)
+              }}
+            >
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="w-full justify-center text-red-600 hover:bg-red-50"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                handleDeleteProduct(product)
+              }}
+              disabled={deletingProductId === product.id}
+            >
+              {deletingProductId === product.id ? (
+                'Deleting…'
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </>
+              )}
+            </Button>
+          </div>
         ),
       },
     ],
-    [handleOpenEditModal, unitMap]
+    [handleOpenEditModal, handleDeleteProduct, deletingProductId, unitMap]
   )
 
   const isEditMode = modalMode === 'edit'
@@ -726,7 +874,7 @@ function Products() {
           <CardDescription>Manage your product catalog, stock parameters, and statuses.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-6">
             <div className="sm:col-span-2">
               <Label htmlFor="product-search">Search products</Label>
               <Input
@@ -769,6 +917,22 @@ function Products() {
                 ))}
               </select>
             </div>
+            <div>
+              <Label htmlFor="product-type-filter">Product type</Label>
+              <select
+                id="product-type-filter"
+                value={productTypeFilter}
+                onChange={(event) =>
+                  setProductTypeFilter(event.target.value as 'ALL' | 'RAW' | 'WIP' | 'FINISHED')
+                }
+                className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+              >
+                <option value="ALL">All types</option>
+                <option value="RAW">Raw</option>
+                <option value="WIP">WIP</option>
+                <option value="FINISHED">Finished</option>
+              </select>
+            </div>
             <div className="sm:col-span-1">
               <Label htmlFor="sort-field">Sort by</Label>
               <div className="mt-1 flex gap-2">
@@ -796,7 +960,7 @@ function Products() {
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-6">
             <div className="rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70 sm:col-span-2">
               <div className="font-medium text-text-dark">Results</div>
               <div>
@@ -825,7 +989,7 @@ function Products() {
 
           <ResponsiveTable
             columns={columns}
-            data={loading ? [] : filteredProducts}
+            data={loading ? [] : paginatedProducts}
             rowKey="id"
             emptyMessage={emptyMessage}
             tableClassName=""
@@ -833,6 +997,51 @@ function Products() {
             getRowClassName={() => ''}
             onRowClick={undefined}
           />
+
+          {filteredProducts.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
+              <div className="text-sm text-text-dark/70">
+                Showing {(page - 1) * pageSize + 1}–
+                {Math.min(page * pageSize, filteredProducts.length)} of {filteredProducts.length}
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="page-size" className="text-sm text-text-dark/70">
+                  Per page
+                </label>
+                <select
+                  id="page-size"
+                  value={pageSize}
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value))
+                    setPage(1)
+                  }}
+                  className="rounded-md border border-olive-light/60 bg-white px-2 py-1 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  Previous
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={page * pageSize >= filteredProducts.length}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -896,7 +1105,7 @@ function Products() {
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <div>
                   <Label htmlFor="product-category">Category</Label>
                   <Input
@@ -928,6 +1137,24 @@ function Products() {
                   </select>
                   {formErrors.status ? (
                     <p className="mt-1 text-sm text-red-600">{formErrors.status}</p>
+                  ) : null}
+                </div>
+                <div>
+                  <Label htmlFor="product-type">Product type</Label>
+                  <select
+                    id="product-type"
+                    name="product_type"
+                    value={formData.product_type}
+                    onChange={handleFormChange}
+                    className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                    disabled={isSubmitting}
+                  >
+                    <option value="RAW">Raw</option>
+                    <option value="WIP">WIP</option>
+                    <option value="FINISHED">Finished</option>
+                  </select>
+                  {formErrors.product_type ? (
+                    <p className="mt-1 text-sm text-red-600">{formErrors.product_type}</p>
                   ) : null}
                 </div>
               </div>

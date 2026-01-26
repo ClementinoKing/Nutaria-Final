@@ -29,6 +29,7 @@ import {
   Moon,
   FileText,
   HelpCircle,
+  Tag,
 } from 'lucide-react'
 import { useDailyChecks } from '@/context/DailyChecksContext'
 import { useTheme } from '@/context/ThemeContext'
@@ -131,6 +132,10 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         { name: 'Warehouses', icon: Warehouse, key: 'warehouses', path: '/inventory/warehouses' },
         { name: 'Products', icon: Package2, key: 'products', path: '/inventory/products' },
         { name: 'Processes', icon: Cog, key: 'processes', path: '/process/processes' },
+        { name: 'Supplier Types', icon: Tag, key: 'supplier-types', path: '/settings/supplier-types' },
+        { name: 'Document Types', icon: FileText, key: 'document-types', path: '/settings/document-types' },
+        { name: 'Quality Parameters', icon: BadgeCheck, key: 'quality-parameters', path: '/settings/quality-parameters' },
+        { name: 'Process Step Names', icon: Layers, key: 'process-step-names', path: '/settings/process-step-names' },
       ],
     },
     { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
@@ -151,7 +156,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
   }
 
   const inventoryPaths = ['/inventory/stock-levels', '/inventory/stock-movements']
-  const settingsPaths = ['/inventory/units', '/inventory/warehouses', '/inventory/products', '/process/processes']
+  const settingsPaths = ['/inventory/units', '/inventory/warehouses', '/inventory/products', '/process/processes', '/settings/supplier-types', '/settings/document-types', '/settings/quality-parameters']
   const processPaths = ['/process/view', '/process/process-steps']
   const isInventoryActive = inventoryPaths.some(path => location.pathname.startsWith(path))
   const isSettingsActive = settingsPaths.some(path => location.pathname.startsWith(path))

@@ -146,7 +146,7 @@ function ProcessStepsProgress() {
     enabled: lotRunId !== null,
   })
 
-  const { stepRuns, loading: loadingStepRuns, refresh: refreshStepRuns, updateStepRun } = useProcessStepRuns({
+  const { stepRuns, loading: loadingStepRuns, refresh: refreshStepRuns } = useProcessStepRuns({
     lotRunId,
     enabled: lotRunId !== null,
   })

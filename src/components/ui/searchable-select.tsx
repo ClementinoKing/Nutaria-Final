@@ -80,8 +80,9 @@ export function SearchableSelect({
     setSearchTerm('')
   }
 
-  const handleClear = (e: React.MouseEvent) => {
+  const handleClear = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation()
+    e.preventDefault()
     onChange('')
     setSearchTerm('')
   }
@@ -119,14 +120,21 @@ export function SearchableSelect({
           </span>
           <div className="flex items-center gap-1">
             {selectedOption && !disabled && (
-              <button
-                type="button"
+              <span
                 onClick={handleClear}
-                className="rounded p-0.5 hover:bg-gray-200 dark:hover:bg-slate-700"
+                className="cursor-pointer rounded p-0.5 hover:bg-gray-200 dark:hover:bg-slate-700"
                 aria-label="Clear selection"
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    handleClear(e as any)
+                  }
+                }}
               >
                 <X className="h-3 w-3" />
-              </button>
+              </span>
             )}
             <ChevronDown
               className={cn(

@@ -13,12 +13,17 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useSuppliers } from '@/hooks/useSuppliers'
 import QualityEvaluationTable from '@/components/supplies/QualityEvaluationTable'
-import { SUPPLY_QUALITY_PARAMETERS, SUPPLY_QUALITY_SCORE_LEGEND, SupplyQualityParameter } from '@/constants/supplyQuality'
+import { SUPPLY_QUALITY_SCORE_LEGEND } from '@/constants/supplyQuality'
 import { Spinner } from '@/components/ui/spinner'
+import { SupplyDocumentsStep, SupplyDocument } from '@/components/supplies/SupplyDocumentsStep'
+import { VehicleInspectionsStep, VehicleInspection } from '@/components/supplies/VehicleInspectionsStep'
+import { PackagingQualityStep, PackagingQuality } from '@/components/supplies/PackagingQualityStep'
+import { SupplierSignOffStep, SupplierSignOff } from '@/components/supplies/SupplierSignOffStep'
 
 interface QualityEntry {
-  score: number | string
+  score: number | string | null
   remarks: string
+  results: string
 }
 
 interface QualityEntries {
@@ -85,6 +90,7 @@ interface Product {
   id: number
   name: string
   sku?: string
+  product_type?: 'RAW' | 'WIP' | 'FINISHED' | null
   [key: string]: unknown
 }
 
@@ -102,8 +108,12 @@ interface UserProfile {
   [key: string]: unknown
 }
 
-interface QualityParameterWithId extends SupplyQualityParameter {
+interface QualityParameterWithId {
   id?: number | null
+  code: string
+  name: string
+  specification: string
+  defaultRemarks: string
 }
 
 function formatDateTime(value: string | Date | number | null | undefined): string {
@@ -223,13 +233,22 @@ function getMonthGrid(monthDate: Date): Date[] {
 
 const WEEK_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
-const STEPS = ['Basic information', 'Quality evaluation', 'Supply batches & submit']
+const STEPS = [
+  'Basic information',
+  'Supply documents',
+  'Vehicle inspections',
+  'Packaging quality parameters',
+  'Quality evaluation',
+  'Supply batches & submit',
+  'Supplier sign-off',
+]
 
-function createInitialQualityEntries(): QualityEntries {
-  return SUPPLY_QUALITY_PARAMETERS.reduce((accumulator: QualityEntries, parameter) => {
+function createInitialQualityEntries(parameters: QualityParameterWithId[] = []): QualityEntries {
+  return parameters.reduce((accumulator: QualityEntries, parameter) => {
     accumulator[parameter.code] = {
       score: 3,
-      remarks: parameter.defaultRemarks ?? '',
+      remarks: '',
+      results: '',
     }
     return accumulator
   }, {} as QualityEntries)
@@ -237,7 +256,9 @@ function createInitialQualityEntries(): QualityEntries {
 
 function calculateAverageScore(entries: QualityEntries): number | null {
   const scores = Object.values(entries)
-    .map((entry) => Number(entry.score))
+    .map((entry) => entry.score)
+    .filter((score) => score !== null && score !== '' && score !== undefined && score !== 4 && score !== '4')
+    .map((score) => Number(score))
     .filter((value) => Number.isFinite(value))
 
   if (scores.length === 0) {
@@ -275,12 +296,46 @@ function Supplies() {
   const [supplyBatches, setSupplyBatches] = useState<SupplyBatchData[]>([])
   const [supplyQualityChecks, setSupplyQualityChecks] = useState<{ [key: string]: unknown }[]>([])
   const [supplyQualityItems, setSupplyQualityItems] = useState<{ [key: string]: unknown }[]>([])
+  const [fetchedSupplyDocuments, setFetchedSupplyDocuments] = useState<{ [key: string]: unknown }[]>([])
+  const [vehicleInspections, setVehicleInspections] = useState<{ [key: string]: unknown }[]>([])
+  const [packagingChecks, setPackagingChecks] = useState<{ [key: string]: unknown }[]>([])
+  const [packagingItems, setPackagingItems] = useState<{ [key: string]: unknown }[]>([])
+  const [supplierSignOffs, setSupplierSignOffs] = useState<{ [key: string]: unknown }[]>([])
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [units, setUnits] = useState<Unit[]>([])
   const [userProfiles, setUserProfiles] = useState<UserProfile[]>([])
-  const [qualityParameters, setQualityParameters] = useState<QualityParameterWithId[]>(SUPPLY_QUALITY_PARAMETERS)
+  const [qualityParameters, setQualityParameters] = useState<QualityParameterWithId[]>([])
   const [qualityEntries, setQualityEntries] = useState<QualityEntries>(() => createInitialQualityEntries())
+  const [supplyDocuments, setSupplyDocuments] = useState<SupplyDocument>(() => ({
+    invoiceNumber: '',
+    driverLicenseName: '',
+    batchNumber: '',
+    productionDate: '',
+    expiryDate: '',
+    coaAvailable: '',
+    invoiceFile: null,
+  }))
+  const [vehicleInspection, setVehicleInspection] = useState<VehicleInspection>(() => ({
+    vehicleClean: '',
+    noForeignObjects: '',
+    noPestInfestation: '',
+    remarks: '',
+  }))
+  const [packagingQuality, setPackagingQuality] = useState<PackagingQuality>(() => ({
+    inaccurateLabelling: '',
+    visibleDamage: '',
+    specifiedQuantity: '',
+    odor: '',
+    strengthIntegrity: '',
+  }))
+  const [supplierSignOff, setSupplierSignOff] = useState<SupplierSignOff>(() => ({
+    signatureType: '',
+    signatureData: null,
+    documentFile: null,
+    signedByName: '',
+    remarks: '',
+  }))
   const [loadingData, setLoadingData] = useState(true)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
@@ -368,6 +423,8 @@ function Supplies() {
     })
     return map
   }, [supplierList])
+
+  const rawProducts = useMemo(() => products.filter((product) => product.product_type === 'RAW'), [products])
 
   const qualityParameterIdMap = useMemo(() => {
     const map = new Map<string, number | null>()
@@ -553,7 +610,7 @@ function Supplies() {
   }, [currentUserName])
 
   useEffect(() => {
-    if (currentStep !== 2) {
+    if (currentStep !== 5) {
       return
     }
 
@@ -770,14 +827,12 @@ function Supplies() {
   }
 
   const handleQualityEntryChange = (code: string, entry: QualityEntry) => {
-    const scoreValue =
-      typeof entry.score === 'number' && Number.isFinite(entry.score) ? entry.score : ''
-
     setQualityEntries((previous) => ({
       ...previous,
       [code]: {
-        score: scoreValue,
+        score: entry.score,
         remarks: entry.remarks,
+        results: entry.results,
       },
     }))
   }
@@ -796,19 +851,60 @@ function Supplies() {
       }
 
       if (step === 1) {
-        const missingScore = qualityParameters.find((parameter) => {
-          const entry = qualityEntries[parameter.code]
-          const score = Number(entry?.score ?? 0)
-          return !Number.isFinite(score) || score < 1 || score > 3
-        })
-
-        if (missingScore) {
-          toast.error(`Provide a score for ${missingScore.name} before continuing.`)
+        // Supply documents validation
+        if (!supplyDocuments.invoiceNumber || !supplyDocuments.driverLicenseName || !supplyDocuments.batchNumber) {
+          toast.error('Complete all required document fields before continuing.')
           return false
         }
       }
 
       if (step === 2) {
+        // Vehicle inspections validation
+        if (
+          vehicleInspection.vehicleClean === '' ||
+          vehicleInspection.noForeignObjects === '' ||
+          vehicleInspection.noPestInfestation === ''
+        ) {
+          toast.error('Complete all vehicle inspection fields before continuing.')
+          return false
+        }
+      }
+
+      if (step === 3) {
+        // Packaging quality parameters validation
+        if (
+          packagingQuality.inaccurateLabelling === '' ||
+          packagingQuality.visibleDamage === '' ||
+          !packagingQuality.specifiedQuantity ||
+          packagingQuality.odor === '' ||
+          packagingQuality.strengthIntegrity === ''
+        ) {
+          toast.error('Complete all packaging quality parameters before continuing.')
+          return false
+        }
+      }
+
+      if (step === 4) {
+        // Quality evaluation validation
+        const missingScore = qualityParameters.find((parameter) => {
+          const entry = qualityEntries[parameter.code]
+          const score = entry?.score
+          // Allow null/N/A (value 4), or valid scores 1-3
+          if (score === null || score === '' || score === 4 || score === '4') {
+            return false // N/A is valid
+          }
+          const scoreNum = Number(score)
+          return !Number.isFinite(scoreNum) || scoreNum < 1 || scoreNum > 3
+        })
+
+        if (missingScore) {
+          toast.error(`Provide a valid score for ${missingScore.name} before continuing.`)
+          return false
+        }
+      }
+
+      if (step === 5) {
+        // Supply batches validation
         if (formData.supply_batches.length === 0) {
           toast.error('Add at least one batch to continue.')
           return false
@@ -851,12 +947,31 @@ function Supplies() {
           toast.error('Select a supply status before submitting.')
           return false
         }
+      }
 
+      if (step === 6) {
+        // Supplier sign-off validation
+        if (!supplierSignOff.signatureType) {
+          toast.error('Select a signature type before submitting.')
+          return false
+        }
+        if (!supplierSignOff.signedByName) {
+          toast.error('Enter the signer name before submitting.')
+          return false
+        }
+        if (supplierSignOff.signatureType === 'E_SIGNATURE' && !supplierSignOff.signatureData) {
+          toast.error('Please provide an e-signature before submitting.')
+          return false
+        }
+        if (supplierSignOff.signatureType === 'UPLOADED_DOCUMENT' && !supplierSignOff.documentFile) {
+          toast.error('Please upload a signature document before submitting.')
+          return false
+        }
       }
 
       return true
     },
-    [formData, qualityEntries, qualityParameters],
+    [formData, qualityEntries, qualityParameters, supplyDocuments, vehicleInspection, packagingQuality, supplierSignOff],
   )
 
   const handleStepBack = () => {
@@ -1053,41 +1168,7 @@ function Supplies() {
         }
       }
 
-      let parameterIdLookup = new Map(qualityParameterIdMap)
-
-      const parametersNeedingSeed = qualityParameters.filter(
-        (parameter) => !parameterIdLookup.get(parameter.code),
-      )
-
-      if (parametersNeedingSeed.length > 0) {
-        const { data: seededParameters, error: seedError } = await supabase
-          .from('quality_parameters')
-          .upsert(
-            parametersNeedingSeed.map((parameter) => ({
-              code: parameter.code,
-              name: parameter.name,
-              specification: parameter.specification,
-            })),
-            { onConflict: 'code' },
-          )
-          .select('id, code')
-
-        if (seedError) {
-          throw seedError
-        }
-
-        if (Array.isArray(seededParameters)) {
-          seededParameters.forEach((parameter) => {
-            parameterIdLookup.set(parameter.code, parameter.id)
-          })
-          setQualityParameters((previous) =>
-            previous.map((parameter) => ({
-              ...parameter,
-              id: parameterIdLookup.get(parameter.code) ?? parameter.id ?? null,
-            })),
-          )
-        }
-      }
+      const parameterIdLookup = new Map(qualityParameterIdMap)
 
       const { data: qualityCheckRow, error: qualityCheckError } = await supabase
         .from('supply_quality_checks')
@@ -1121,11 +1202,17 @@ function Supplies() {
             throw new Error(`Quality parameter ${parameter.code} is missing an id.`)
           }
 
+          // Store 4 for N/A, or the numeric score
+          const scoreValue = entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4' 
+            ? 4 
+            : Number(entry.score)
+          
           return {
             quality_check_id: qualityCheckRow.id,
             parameter_id: parameterId,
-            score: Number(entry.score),
+            score: scoreValue,
             remarks: entry.remarks?.trim() ? entry.remarks.trim() : null,
+            results: entry.results?.trim() ? entry.results.trim() : null,
           }
         })
         .filter(Boolean)
@@ -1139,10 +1226,318 @@ function Supplies() {
         }
       }
 
+      // Save supply documents
+      const supplyDocumentsPayload = []
+      
+      // Invoice number
+      if (supplyDocuments.invoiceNumber) {
+        let invoiceDocumentId = null
+        if (supplyDocuments.invoiceFile) {
+          const storagePath = `supplies/${newSupplyId}/documents/invoice_${Date.now()}_${supplyDocuments.invoiceFile.name}`
+          const { error: uploadError } = await supabase.storage
+            .from('documents')
+            .upload(storagePath, supplyDocuments.invoiceFile)
+          
+          if (!uploadError) {
+            const { data: docData, error: docError } = await supabase
+              .from('documents')
+              .insert({
+                owner_type: 'supply',
+                owner_id: newSupplyId,
+                name: supplyDocuments.invoiceFile.name,
+                storage_path: storagePath,
+                doc_type: 'INVOICE',
+                document_type_code: 'INVOICE',
+                uploaded_by: profileId ?? null,
+              })
+              .select('id')
+              .single()
+            
+            if (!docError && docData) {
+              invoiceDocumentId = docData.id
+            }
+          }
+        }
+        
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'INVOICE',
+          value: supplyDocuments.invoiceNumber,
+          date_value: null,
+          boolean_value: null,
+          document_id: invoiceDocumentId,
+        })
+      }
+
+      // Driver license/name
+      if (supplyDocuments.driverLicenseName) {
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'DRIVER_LICENSE',
+          value: supplyDocuments.driverLicenseName,
+          date_value: null,
+          boolean_value: null,
+          document_id: null,
+        })
+      }
+
+      // Batch number
+      if (supplyDocuments.batchNumber) {
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'BATCH_NUMBER',
+          value: supplyDocuments.batchNumber,
+          date_value: null,
+          boolean_value: null,
+          document_id: null,
+        })
+      }
+
+      // Production date
+      if (supplyDocuments.productionDate) {
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'PRODUCTION_DATE',
+          value: null,
+          date_value: supplyDocuments.productionDate,
+          boolean_value: null,
+          document_id: null,
+        })
+      }
+
+      // Expiry date
+      if (supplyDocuments.expiryDate) {
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'EXPIRY_DATE',
+          value: null,
+          date_value: supplyDocuments.expiryDate,
+          boolean_value: null,
+          document_id: null,
+        })
+      }
+
+      // COA available
+      if (supplyDocuments.coaAvailable) {
+        supplyDocumentsPayload.push({
+          supply_id: newSupplyId,
+          document_type_code: 'COA',
+          value: null,
+          date_value: null,
+          boolean_value: supplyDocuments.coaAvailable === 'YES',
+          document_id: null,
+        })
+      }
+
+      if (supplyDocumentsPayload.length > 0) {
+        const { error: documentsError } = await supabase
+          .from('supply_documents')
+          .insert(supplyDocumentsPayload)
+        if (documentsError) {
+          throw documentsError
+        }
+      }
+
+      // Save vehicle inspection
+      if (vehicleInspection.vehicleClean && vehicleInspection.noForeignObjects && vehicleInspection.noPestInfestation) {
+        const { error: vehicleError } = await supabase
+          .from('supply_vehicle_inspections')
+          .insert({
+            supply_id: newSupplyId,
+            vehicle_clean: vehicleInspection.vehicleClean,
+            no_foreign_objects: vehicleInspection.noForeignObjects,
+            no_pest_infestation: vehicleInspection.noPestInfestation,
+            inspected_by: profileId ?? null,
+            remarks: vehicleInspection.remarks?.trim() || null,
+          })
+        if (vehicleError) {
+          throw vehicleError
+        }
+      }
+
+      // Save packaging quality checks
+      if (
+        packagingQuality.inaccurateLabelling &&
+        packagingQuality.visibleDamage &&
+        packagingQuality.specifiedQuantity &&
+        packagingQuality.odor &&
+        packagingQuality.strengthIntegrity
+      ) {
+        const { data: packagingCheckData, error: packagingCheckError } = await supabase
+          .from('supply_packaging_quality_checks')
+          .insert({
+            supply_id: newSupplyId,
+            checked_by: profileId ?? null,
+            remarks: null,
+          })
+          .select('id')
+          .single()
+
+        if (packagingCheckError) {
+          throw packagingCheckError
+        }
+
+        const packagingCheckId = packagingCheckData.id
+
+        // Get packaging parameter IDs
+        const { data: packagingParams, error: paramsError } = await supabase
+          .from('packaging_quality_parameters')
+          .select('id, code')
+        
+        if (paramsError) {
+          throw paramsError
+        }
+
+        const packagingParamsMap = new Map(
+          (packagingParams || []).map((p) => [p.code, p.id])
+        )
+
+        const packagingItemsPayload = [
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: packagingParamsMap.get('INACCURATE_LABELLING'),
+            value: packagingQuality.inaccurateLabelling,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: packagingParamsMap.get('VISIBLE_DAMAGE'),
+            value: packagingQuality.visibleDamage,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: packagingParamsMap.get('SPECIFIED_QUANTITY'),
+            value: null,
+            numeric_value: Number.parseFloat(packagingQuality.specifiedQuantity) || null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: packagingParamsMap.get('ODOR'),
+            value: packagingQuality.odor,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: packagingParamsMap.get('STRENGTH_INTEGRITY'),
+            value: packagingQuality.strengthIntegrity,
+            numeric_value: null,
+          },
+        ].filter((item) => item.parameter_id !== undefined)
+
+        if (packagingItemsPayload.length > 0) {
+          const { error: packagingItemsError } = await supabase
+            .from('supply_packaging_quality_check_items')
+            .insert(packagingItemsPayload)
+          if (packagingItemsError) {
+            throw packagingItemsError
+          }
+        }
+      }
+
+      // Save supplier sign-off
+      console.log('Checking supplier sign-off:', {
+        signatureType: supplierSignOff.signatureType,
+        signedByName: supplierSignOff.signedByName,
+        hasSignatureData: !!supplierSignOff.signatureData,
+        hasDocumentFile: !!supplierSignOff.documentFile,
+      })
+      
+      if (supplierSignOff.signatureType && supplierSignOff.signedByName) {
+        let signOffDocumentId = null
+        
+        if (supplierSignOff.signatureType === 'UPLOADED_DOCUMENT' && supplierSignOff.documentFile) {
+          const storagePath = `supplies/${newSupplyId}/signatures/signature_${Date.now()}_${supplierSignOff.documentFile.name}`
+          const { error: uploadError } = await supabase.storage
+            .from('documents')
+            .upload(storagePath, supplierSignOff.documentFile)
+          
+          if (!uploadError) {
+            const { data: docData, error: docError } = await supabase
+              .from('documents')
+              .insert({
+                owner_type: 'supply',
+                owner_id: newSupplyId,
+                name: supplierSignOff.documentFile.name,
+                storage_path: storagePath,
+                doc_type: 'SIGNATURE',
+                document_type_code: 'SIGNATURE',
+                uploaded_by: profileId ?? null,
+              })
+              .select('id')
+              .single()
+            
+            if (!docError && docData) {
+              signOffDocumentId = docData.id
+            }
+          }
+        }
+
+        const signOffPayload: {
+          supply_id: number
+          signature_type: string
+          signature_data: string | null
+          document_id: number | null
+          signed_by_name: string
+          signed_by_user_id: string | null
+          remarks: string | null
+        } = {
+          supply_id: newSupplyId,
+          signature_type: supplierSignOff.signatureType,
+          signature_data: supplierSignOff.signatureType === 'E_SIGNATURE' ? supplierSignOff.signatureData : null,
+          document_id: signOffDocumentId,
+          signed_by_name: supplierSignOff.signedByName,
+          signed_by_user_id: profileId ? String(profileId) : null,
+          remarks: supplierSignOff.remarks?.trim() || null,
+        }
+
+        const { error: signOffError, data: signOffData } = await supabase
+          .from('supply_supplier_sign_offs')
+          .insert(signOffPayload)
+          .select()
+        
+        if (signOffError) {
+          console.error('Error saving supplier sign-off:', signOffError)
+          console.error('Payload:', signOffPayload)
+          throw signOffError
+        }
+        
+        console.log('Supplier sign-off saved successfully:', signOffData)
+      }
+
       toast.success('Supply captured successfully.')
       await loadSuppliesData()
       setFormData(getInitialFormData())
-      setQualityEntries(createInitialQualityEntries())
+      setQualityEntries(createInitialQualityEntries(qualityParameters))
+      setSupplyDocuments({
+        invoiceNumber: '',
+        driverLicenseName: '',
+        batchNumber: '',
+        productionDate: '',
+        expiryDate: '',
+        coaAvailable: '',
+        invoiceFile: null,
+      })
+      setVehicleInspection({
+        vehicleClean: '',
+        noForeignObjects: '',
+        noPestInfestation: '',
+        remarks: '',
+      })
+      setPackagingQuality({
+        inaccurateLabelling: '',
+        visibleDamage: '',
+        specifiedQuantity: '',
+        odor: '',
+        strengthIntegrity: '',
+      })
+      setSupplierSignOff({
+        signatureType: '',
+        signatureData: null,
+        documentFile: null,
+        signedByName: '',
+        remarks: '',
+      })
       setCurrentStep(0)
       setIsModalOpen(false)
       window.location.reload()
@@ -1158,7 +1553,36 @@ function Supplies() {
   const closeModal = () => {
     setIsModalOpen(false)
     setFormData(getInitialFormData())
-    setQualityEntries(createInitialQualityEntries())
+    setQualityEntries(createInitialQualityEntries(qualityParameters))
+    setSupplyDocuments({
+      invoiceNumber: '',
+      driverLicenseName: '',
+      batchNumber: '',
+      productionDate: '',
+      expiryDate: '',
+      coaAvailable: '',
+      invoiceFile: null,
+    })
+    setVehicleInspection({
+      vehicleClean: '',
+      noForeignObjects: '',
+      noPestInfestation: '',
+      remarks: '',
+    })
+    setPackagingQuality({
+      inaccurateLabelling: '',
+      visibleDamage: '',
+      specifiedQuantity: '',
+      odor: '',
+      strengthIntegrity: '',
+    })
+    setSupplierSignOff({
+      signatureType: '',
+      signatureData: null,
+      documentFile: null,
+      signedByName: '',
+      remarks: '',
+    })
     setCurrentStep(0)
   }
 
@@ -1180,6 +1604,13 @@ function Supplies() {
           parameter_specification: parameter?.specification ?? null,
         }
       })
+    const supplyDocumentsForSupply = fetchedSupplyDocuments.filter((doc) => doc.supply_id === supply.id)
+    const vehicleInspectionForSupply = vehicleInspections.find((insp) => insp.supply_id === supply.id)
+    const packagingCheckForSupply = packagingChecks.find((check) => check.supply_id === supply.id)
+    const packagingItemsForSupply = packagingItems.filter((item) => 
+      packagingCheckForSupply && item.packaging_check_id === packagingCheckForSupply.id
+    )
+    const supplierSignOffForSupply = supplierSignOffs.find((signOff) => signOff.supply_id === supply.id)
     const supplierLookup = Object.fromEntries(supplierLabelMap.entries())
     const warehouseLookup = Object.fromEntries(warehouseLabelMap.entries())
     const productLookup = Object.fromEntries(
@@ -1214,6 +1645,11 @@ function Supplies() {
         supplyQualityChecks: qualityChecksForSupply,
         supplyQualityItems: qualityItemsForSupply,
         qualityParameters,
+        supplyDocuments: supplyDocumentsForSupply,
+        vehicleInspection: vehicleInspectionForSupply,
+        packagingCheck: packagingCheckForSupply,
+        packagingItems: packagingItemsForSupply,
+        supplierSignOff: supplierSignOffForSupply,
         supplierLookup,
         warehouseLookup,
         productLookup,
@@ -1230,10 +1666,39 @@ function Supplies() {
       initialData.warehouse_id = String(warehouses[0]!.id)
     }
     setFormData(initialData)
-    setQualityEntries(createInitialQualityEntries())
+    setQualityEntries(createInitialQualityEntries(qualityParameters))
+    setSupplyDocuments({
+      invoiceNumber: '',
+      driverLicenseName: '',
+      batchNumber: '',
+      productionDate: '',
+      expiryDate: '',
+      coaAvailable: '',
+      invoiceFile: null,
+    })
+    setVehicleInspection({
+      vehicleClean: '',
+      noForeignObjects: '',
+      noPestInfestation: '',
+      remarks: '',
+    })
+    setPackagingQuality({
+      inaccurateLabelling: '',
+      visibleDamage: '',
+      specifiedQuantity: '',
+      odor: '',
+      strengthIntegrity: '',
+    })
+    setSupplierSignOff({
+      signatureType: '',
+      signatureData: null,
+      documentFile: null,
+      signedByName: '',
+      remarks: '',
+    })
     setCurrentStep(0)
     setIsModalOpen(true)
-  }, [getInitialFormData, warehouses])
+  }, [getInitialFormData, warehouses, qualityParameters])
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
@@ -1256,7 +1721,8 @@ function Supplies() {
         if (!next[parameter.code]) {
           next[parameter.code] = {
             score: 3,
-            remarks: parameter.defaultRemarks ?? '',
+            remarks: '',
+            results: '',
           }
           changed = true
         }
@@ -1282,7 +1748,7 @@ function Supplies() {
         qualityParametersResponse,
       ] = await Promise.all([
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku').order('name', { ascending: true }),
+        supabase.from('products').select('id, name, sku, product_type').order('name', { ascending: true }),
         supabase.from('units').select('id, name, symbol').order('name', { ascending: true }),
         supabase.from('quality_parameters').select('id, code, name, specification').order('id', {
           ascending: true,
@@ -1300,19 +1766,20 @@ function Supplies() {
 
       const qualityData = qualityParametersResponse.data ?? []
       if (qualityData.length > 0) {
-        const map = new Map(qualityData.map((entry) => [entry.code, entry]))
-        const merged = SUPPLY_QUALITY_PARAMETERS.map((parameter): QualityParameterWithId => {
-          const match = map.get(parameter.code) as { id?: number; name?: string; specification?: string } | undefined
-          return {
-            ...parameter,
-            id: match?.id ?? null,
-            name: match?.name ?? parameter.name,
-            specification: match?.specification ?? parameter.specification,
-          }
-        })
-        setQualityParameters(merged)
+        const mappedParameters: QualityParameterWithId[] = qualityData.map((entry) => ({
+          id: entry.id ?? null,
+          code: entry.code,
+          name: entry.name,
+          specification: entry.specification ?? '',
+          defaultRemarks: '',
+        }))
+        setQualityParameters(mappedParameters)
+        // Initialize quality entries with fetched parameters
+        setQualityEntries(createInitialQualityEntries(mappedParameters))
       } else {
-        setQualityParameters(SUPPLY_QUALITY_PARAMETERS)
+        setQualityParameters([])
+        setQualityEntries({})
+        toast.warning('No quality parameters found in database. Please configure quality parameters in settings.')
       }
     } catch (error) {
       console.error('Error loading reference data', error)
@@ -1330,6 +1797,11 @@ function Supplies() {
         qualityChecksResponse,
         qualityItemsResponse,
         profilesResponse,
+        supplyDocumentsResponse,
+        vehicleInspectionsResponse,
+        packagingChecksResponse,
+        packagingItemsResponse,
+        supplierSignOffsResponse,
       ] = await Promise.all([
         supabase
           .from('supplies')
@@ -1339,8 +1811,13 @@ function Supplies() {
         supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty'),
         supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, quality_status'),
         supabase.from('supply_quality_checks').select('id, supply_id'),
-        supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id'),
+        supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id, results'),
         supabase.from('user_profiles').select('id, full_name, email'),
+        supabase.from('supply_documents').select('*'),
+        supabase.from('supply_vehicle_inspections').select('*'),
+        supabase.from('supply_packaging_quality_checks').select('*'),
+        supabase.from('supply_packaging_quality_check_items').select('*'),
+        supabase.from('supply_supplier_sign_offs').select('*'),
       ])
 
       if (suppliesResponse.error) throw suppliesResponse.error
@@ -1349,12 +1826,22 @@ function Supplies() {
       if (qualityChecksResponse.error) throw qualityChecksResponse.error
       if (qualityItemsResponse.error) throw qualityItemsResponse.error
       if (profilesResponse.error) throw profilesResponse.error
+      if (supplyDocumentsResponse.error) throw supplyDocumentsResponse.error
+      if (vehicleInspectionsResponse.error) throw vehicleInspectionsResponse.error
+      if (packagingChecksResponse.error) throw packagingChecksResponse.error
+      if (packagingItemsResponse.error) throw packagingItemsResponse.error
+      if (supplierSignOffsResponse.error) throw supplierSignOffsResponse.error
 
       setSupplies((suppliesResponse.data ?? []) as Supply[])
       setSupplyLines((linesResponse.data ?? []) as SupplyLine[])
       setSupplyBatches((batchesResponse.data ?? []) as SupplyBatchData[])
       setSupplyQualityChecks((qualityChecksResponse.data ?? []) as { [key: string]: unknown }[])
       setSupplyQualityItems((qualityItemsResponse.data ?? []) as { [key: string]: unknown }[])
+      setFetchedSupplyDocuments((supplyDocumentsResponse.data ?? []) as { [key: string]: unknown }[])
+      setVehicleInspections((vehicleInspectionsResponse.data ?? []) as { [key: string]: unknown }[])
+      setPackagingChecks((packagingChecksResponse.data ?? []) as { [key: string]: unknown }[])
+      setPackagingItems((packagingItemsResponse.data ?? []) as { [key: string]: unknown }[])
+      setSupplierSignOffs((supplierSignOffsResponse.data ?? []) as { [key: string]: unknown }[])
       setUserProfiles((profilesResponse.data ?? []) as UserProfile[])
     } catch (error) {
       console.error('Error loading supplies data', error)
@@ -1759,6 +2246,63 @@ function Supplies() {
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Supply Documents</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Enter document information and upload required files.
+                        </p>
+                      </div>
+                    </div>
+
+                    <SupplyDocumentsStep
+                      documents={supplyDocuments}
+                      onChange={setSupplyDocuments}
+                      disabled={isSubmitting}
+                    />
+                  </section>
+                )}
+
+                {currentStep === 2 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Vehicle Inspections</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Complete vehicle inspection checklist before receiving supply.
+                        </p>
+                      </div>
+                    </div>
+
+                    <VehicleInspectionsStep
+                      inspection={vehicleInspection}
+                      onChange={setVehicleInspection}
+                      disabled={isSubmitting}
+                    />
+                  </section>
+                )}
+
+                {currentStep === 3 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Packaging Quality Parameters</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Evaluate packaging quality before proceeding to product quality evaluation.
+                        </p>
+                      </div>
+                    </div>
+
+                    <PackagingQualityStep
+                      packaging={packagingQuality}
+                      onChange={setPackagingQuality}
+                      disabled={isSubmitting}
+                    />
+                  </section>
+                )}
+
+                {currentStep === 4 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
                         <h3 className="text-lg font-semibold text-text-dark">Quality evaluation</h3>
                         <p className="text-sm text-text-dark/70">
                           Score each parameter and capture remarks for transparency.
@@ -1775,7 +2319,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 2 && (
+                {currentStep === 5 && (
                   <section className="space-y-6">
                     <div className={sectionCardClass}>
                       <div className="mb-4">
@@ -1917,25 +2461,20 @@ function Supplies() {
 
                             <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-5">
-                                <Label htmlFor={`product_${index}`}>Product *</Label>
-                                <select
+                                <Label htmlFor={`product_${index}`}>Product (Raw Materials Only) *</Label>
+                                <SearchableSelect
                                   id={`product_${index}`}
-                                  required
-                                  className={baseFieldClass}
+                                  options={rawProducts.map((product) => ({
+                                    value: String(product.id),
+                                    label: `${String(product.name)}${product.sku ? ` (${String(product.sku)})` : ''}`,
+                                  }))}
                                   value={batch.product_id}
-                                  onChange={(event) =>
-                                    handleSupplyBatchChange(index, 'product_id', event.target.value)
-                                  }
-                                  disabled={isSubmitting || products.length === 0}
-                                >
-                                  <option value="">Select product</option>
-                                  {products.map((product) => (
-                                    <option key={product.id} value={product.id}>
-                                      {String(product.name)}
-                                      {product.sku ? ` (${String(product.sku)})` : ''}
-                                    </option>
-                                  ))}
-                                </select>
+                                  onChange={(value) => handleSupplyBatchChange(index, 'product_id', value)}
+                                  placeholder="Select raw product"
+                                  disabled={isSubmitting || rawProducts.length === 0}
+                                  required
+                                  emptyMessage="No raw products available"
+                                />
                               </div>
                               <div className="space-y-2 lg:col-span-3">
                                 <Label htmlFor={`unit_${index}`}>Unit *</Label>
@@ -2051,6 +2590,25 @@ function Supplies() {
                         })}
                       </div>
                     </div>
+                  </section>
+                )}
+
+                {currentStep === 6 && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6 flex items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-text-dark">Supplier Sign-Off</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Complete supplier sign-off using e-signature or document upload.
+                        </p>
+                      </div>
+                    </div>
+
+                    <SupplierSignOffStep
+                      signOff={supplierSignOff}
+                      onChange={setSupplierSignOff}
+                      disabled={isSubmitting}
+                    />
                   </section>
                 )}
               </div>

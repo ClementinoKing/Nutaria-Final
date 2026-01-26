@@ -9,8 +9,10 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { useSuppliers } from '@/hooks/useSuppliers'
-
-const CERTIFICATE_DOC_TYPES = new Set(['HALAL', 'ISO9001', 'ISO22000', 'KOSHER', 'OTHER'])
+import { useSupplierTypes } from '@/hooks/useSupplierTypes'
+import { useDocumentTypes } from '@/hooks/useDocumentTypes'
+import { CameraCapture } from '@/components/CameraCapture'
+import { Camera } from 'lucide-react'
 
 type ExistingDocumentFile = {
   id?: unknown
@@ -56,7 +58,7 @@ type FormData = {
   bank: string
   account_number: string
   branch: string
-  documents: Array<{ clientId: string; type: string; expiryDate: string; files: File[] }>
+  documents: Array<{ clientId: string; document_type_code: string; expiryDate: string; files: File[] }>
   proof_of_residence: File[]
   existingDocuments: ExistingDocumentGroup[]
   existingProofOfResidence: ExistingProofOfResidence[]
@@ -82,10 +84,10 @@ const BANK_OPTIONS = [
   { value: 'Access Bank South Africa', label: 'Access Bank South Africa' },
 ]
 
-const hasHalalUploads = (documents: Array<{ type?: string | number; files?: unknown[] }> = []) =>
+const hasHalalUploads = (documents: Array<{ document_type_code?: string | number; files?: unknown[] }> = []) =>
   documents.some((entry) => {
-    const normalizedType = entry.type?.toString().trim().toUpperCase()
-    return normalizedType === 'HALAL' && Array.isArray(entry.files) && entry.files.length > 0
+    const normalizedCode = entry.document_type_code?.toString().trim().toUpperCase()
+    return normalizedCode === 'HALAL' && Array.isArray(entry.files) && entry.files.length > 0
   })
 
 const hasHalalExistingDocuments = (existingDocuments: ExistingDocumentGroup[] = [], markedForRemoval = new Set<string | number>()) =>
@@ -99,9 +101,9 @@ const hasHalalExistingDocuments = (existingDocuments: ExistingDocumentGroup[] = 
 
 const createUniqueId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
-const createDocumentTypeEntry = (): { clientId: string; type: string; expiryDate: string; files: File[] } => ({
+const createDocumentTypeEntry = (): { clientId: string; document_type_code: string; expiryDate: string; files: File[] } => ({
   clientId: createUniqueId('doc'),
-  type: '',
+  document_type_code: '',
   expiryDate: '',
   files: [],
 })
@@ -199,29 +201,13 @@ const SUPPLIER_FORM_STEPS = [
   },
 ]
 
-const DOCUMENT_TYPE_OPTIONS = [
-  { value: '', label: 'Select a type' },
-  { value: 'REGISTRATION', label: 'Registration' },
-  { value: 'COMPLIANCE', label: 'Compliance' },
-  { value: 'CONTRACT', label: 'Contract' },
-  { value: 'OTHER', label: 'Other' },
-  { value: 'HALAL', label: 'Halal Certificate' },
-  { value: 'ISO9001', label: 'ISO 9001' },
-  { value: 'ISO22000', label: 'ISO 22000' },
-  { value: 'KOSHER', label: 'Kosher Certificate' },
-]
-
-const supplierTypeOptions = [
-  { id: 1, label: 'Nut Supplier', value: 'NUT' },
-  { id: 2, label: 'Operational Supplier', value: 'OPERATIONAL' },
-]
-
-const groupDocumentRows = (rows: Array<{ id?: unknown; doc_type?: unknown; name?: unknown; storage_path?: unknown; uploaded_at?: unknown; expiry_date?: unknown; owner_type?: unknown; owner_id?: unknown }> = []): { documents: ExistingDocumentGroup[]; proof: ExistingProofOfResidence[] } => {
+const groupDocumentRows = (rows: Array<{ id?: unknown; doc_type?: unknown; document_type_code?: unknown; name?: unknown; storage_path?: unknown; uploaded_at?: unknown; expiry_date?: unknown; owner_type?: unknown; owner_id?: unknown }> = []): { documents: ExistingDocumentGroup[]; proof: ExistingProofOfResidence[] } => {
   const docMap = new Map<string, ExistingDocumentGroup>()
   const proofList: ExistingProofOfResidence[] = []
 
   rows.forEach((row, index) => {
-    const rawType = row?.doc_type
+    // Check for document_type_code first (new field), then fall back to doc_type for backward compatibility
+    const rawType = row?.document_type_code ?? row?.doc_type
     const normalizedType = rawType ? rawType.toString().toUpperCase() : 'UNSPECIFIED'
 
     if (normalizedType === 'PROOF_OF_RESIDENCE') {
@@ -230,9 +216,12 @@ const groupDocumentRows = (rows: Array<{ id?: unknown; doc_type?: unknown; name?
     }
 
     if (!docMap.has(normalizedType)) {
+      // For existing documents, we can't determine has_expiry_date without document_types lookup
+      // So we'll mark as certificate if it has an expiry_date (heuristic for backward compatibility)
+      const hasExpiry = row?.expiry_date != null
       docMap.set(normalizedType, {
-        id: `${CERTIFICATE_DOC_TYPES.has(normalizedType) ? 'cert' : 'doc'}-${normalizedType.toLowerCase()}-${index}`,
-        isCertificate: CERTIFICATE_DOC_TYPES.has(normalizedType),
+        id: `${hasExpiry ? 'cert' : 'doc'}-${normalizedType.toLowerCase()}-${index}`,
+        isCertificate: hasExpiry,
         type: normalizedType,
         files: [],
       })
@@ -255,7 +244,7 @@ const groupDocumentRows = (rows: Array<{ id?: unknown; doc_type?: unknown; name?
 
 const createFormDataFromSupplier = (supplier: { name?: unknown; supplier_type?: unknown; phone?: unknown; email?: unknown; country?: unknown; address?: unknown; primary_contact_name?: unknown; primary_contact_email?: unknown; primary_contact_phone?: unknown; supplier_age?: unknown; gender?: unknown; number_of_employees?: unknown; number_of_dependants?: unknown; bank?: unknown; account_number?: unknown; branch?: unknown } | null, groupedDocuments: { documents?: ExistingDocumentGroup[]; proof?: ExistingProofOfResidence[] } | null): FormData => ({
   name: String(supplier?.name ?? ''),
-  supplier_type: String(supplier?.supplier_type ?? 'NUT'),
+  supplier_type: String(supplier?.supplier_type ?? ''),
   phone: String(supplier?.phone ?? ''),
   email: String(supplier?.email ?? ''),
   country: String(supplier?.country ?? 'South Africa'),
@@ -287,6 +276,26 @@ function SupplierEdit() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { refresh } = useSuppliers()
+  const { supplierTypes, loading: loadingTypes } = useSupplierTypes()
+  const { documentTypes, loading: loadingDocumentTypes } = useDocumentTypes()
+
+  const supplierTypeOptions = useMemo(
+    () => supplierTypes.map((t) => ({ value: t.code, label: t.name })),
+    [supplierTypes]
+  )
+
+  const documentTypeOptions = useMemo(
+    () => [
+      { value: '', label: 'Select a type' },
+      ...documentTypes.map((t) => ({ value: t.code, label: t.name })),
+    ],
+    [documentTypes]
+  )
+
+  const documentTypeMap = useMemo(
+    () => new Map(documentTypes.map((t) => [t.code, t])),
+    [documentTypes]
+  )
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -296,6 +305,8 @@ function SupplierEdit() {
   const [profileId, setProfileId] = useState(null)
   const [activeStep, setActiveStep] = useState(0)
   const [documentsToDelete, setDocumentsToDelete] = useState<Set<string | number>>(new Set())
+  const [cameraModalOpen, setCameraModalOpen] = useState(false)
+  const [cameraForDocument, setCameraForDocument] = useState<string | null>(null)
 
   const totalSteps = SUPPLIER_FORM_STEPS.length
   const currentStepIndex = Math.min(activeStep, totalSteps - 1)
@@ -428,6 +439,12 @@ function SupplierEdit() {
       ...prev,
       supplier_type: value,
     }))
+    setFormErrors((prev) => {
+      if (!prev.fields.supplier_type) return prev
+      const nextFields = { ...prev.fields }
+      delete nextFields.supplier_type
+      return { ...prev, fields: nextFields }
+    })
   }
 
   const clearDocumentError = (clientId: string) => {
@@ -449,18 +466,22 @@ function SupplierEdit() {
   }
 
   const handleDocumentTypeChange = (clientId: string, value: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      documents: prev.documents.map((entry) =>
-        entry.clientId === clientId
-          ? {
-              ...entry,
-              type: value,
-              expiryDate: CERTIFICATE_DOC_TYPES.has(value?.toString().toUpperCase() ?? '') ? entry.expiryDate : '',
-            }
-          : entry
-      ),
-    }))
+    setFormData((prev) => {
+      const docType = documentTypeMap.get(value)
+      const requiresExpiry = docType?.has_expiry_date ?? false
+      return {
+        ...prev,
+        documents: prev.documents.map((entry) =>
+          entry.clientId === clientId
+            ? {
+                ...entry,
+                document_type_code: value,
+                expiryDate: requiresExpiry ? entry.expiryDate : '',
+              }
+            : entry
+        ),
+      }
+    })
     clearDocumentError(clientId)
   }
 
@@ -501,6 +522,32 @@ function SupplierEdit() {
       }
     })
     clearDocumentError(clientId)
+  }
+
+  const handleOpenCamera = (clientId: string) => {
+    setCameraForDocument(clientId)
+    setCameraModalOpen(true)
+  }
+
+  const handleCameraCapture = (file: File) => {
+    if (!cameraForDocument) return
+
+    setFormData((prev) => ({
+      ...prev,
+      documents: prev.documents.map((entry) =>
+        entry.clientId === cameraForDocument
+          ? { ...entry, files: [...entry.files, file] }
+          : entry
+      ),
+    }))
+    clearDocumentError(cameraForDocument)
+    setCameraModalOpen(false)
+    setCameraForDocument(null)
+  }
+
+  const handleCloseCamera = () => {
+    setCameraModalOpen(false)
+    setCameraForDocument(null)
   }
 
   const handleProofOfResidenceChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -568,20 +615,18 @@ function SupplierEdit() {
     })
 
     data.documents.forEach((entry) => {
-      const trimmedType = entry.type?.trim() ?? ''
-      const normalizedType = trimmedType.toUpperCase()
+      const trimmedCode = entry.document_type_code?.trim() ?? ''
       const hasFiles = entry.files.length > 0
+      const expiry = entry.expiryDate ? entry.expiryDate.toString().trim() : ''
+      const docType = trimmedCode ? documentTypeMap.get(trimmedCode) : null
+      const requiresExpiry = docType?.has_expiry_date ?? false
 
-      if (trimmedType && !hasFiles) {
+      if (trimmedCode && !hasFiles) {
         errors.documents[entry.clientId] = 'Upload at least one file for this type.'
-      } else if (!trimmedType && hasFiles) {
+      } else if (!trimmedCode && hasFiles) {
         errors.documents[entry.clientId] = 'Select a document type for the uploaded files.'
-      } else if (
-        hasFiles &&
-        CERTIFICATE_DOC_TYPES.has(normalizedType) &&
-        !(entry.expiryDate && entry.expiryDate.toString().trim())
-      ) {
-        errors.documents[entry.clientId] = 'Provide an expiry date for this certificate.'
+      } else if (hasFiles && requiresExpiry && !expiry) {
+        errors.documents[entry.clientId] = 'Provide an expiry date for this document type.'
       }
     })
 
@@ -631,32 +676,46 @@ function SupplierEdit() {
       }
 
       const documentRows = formData.documents
-        .filter((entry) => entry.type && entry.files.length > 0)
+        .filter((entry) => entry.document_type_code && entry.files.length > 0)
         .flatMap((entry) => {
-          const normalizedType = entry.type.toString().toUpperCase()
-          const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
+          const docType = documentTypeMap.get(entry.document_type_code)
+          const requiresExpiry = docType?.has_expiry_date ?? false
           return entry.files.map((file) => ({
             owner_type: 'supplier',
             owner_id: supplierRecord.id,
             name: file.name,
-            doc_type: entry.type,
-            storage_path: `suppliers/${supplierRecord.id}/${isCertificate ? 'certificates/' : ''}${file.name}`,
+            document_type_code: entry.document_type_code,
+            doc_type: entry.document_type_code,
+            storage_path: `suppliers/${supplierRecord.id}/${requiresExpiry ? 'certificates/' : ''}${file.name}`,
             expiry_date:
-              isCertificate && entry.expiryDate && entry.expiryDate.toString().trim()
+              requiresExpiry && entry.expiryDate && entry.expiryDate.toString().trim()
                 ? entry.expiryDate
                 : null,
             uploaded_by: profileId ?? null,
           }))
         })
 
-      const proofRows = formData.proof_of_residence.map((file) => ({
-        owner_type: 'supplier',
-        owner_id: supplierRecord.id,
-        name: file.name,
-        doc_type: 'PROOF_OF_RESIDENCE',
-        storage_path: `suppliers/${supplierRecord.id}/proof-of-residence/${file.name}`,
-        uploaded_by: profileId ?? null,
-      }))
+      // For proof of residence, we need a document_type_code that exists in document_types table
+      // Find a document type code for proof of residence, or use the first available one as fallback
+      // Note: document_type_code is required (NOT NULL) and must reference document_types(code)
+      const proofDocTypeCode = documentTypes.find(dt => 
+        dt.code?.toUpperCase() === 'PROOF' || 
+        dt.code?.toUpperCase() === 'PROOF_OF_RESIDENCE' ||
+        dt.name?.toLowerCase().includes('proof') ||
+        dt.name?.toLowerCase().includes('residence')
+      )?.code || documentTypes[0]?.code
+
+      const proofRows = proofDocTypeCode 
+        ? formData.proof_of_residence.map((file) => ({
+            owner_type: 'supplier',
+            owner_id: supplierRecord.id,
+            name: file.name,
+            document_type_code: proofDocTypeCode,
+            doc_type: 'PROOF_OF_RESIDENCE',
+            storage_path: `suppliers/${supplierRecord.id}/proof-of-residence/${file.name}`,
+            uploaded_by: profileId ?? null,
+          }))
+        : [] // Skip if no valid document type code found
 
       const rowsToInsert = [...documentRows, ...proofRows]
 
@@ -851,14 +910,18 @@ function SupplierEdit() {
                       name="supplier_type"
                       value={formData.supplier_type}
                       onChange={handleSupplierTypeChange}
-                      disabled={saving}
+                      disabled={saving || loadingTypes}
                       className={baseFieldClass}
                     >
-                      {supplierTypeOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
+                      {loadingTypes ? (
+                        <option value="">Loading types…</option>
+                      ) : (
+                        supplierTypeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
 
@@ -1286,8 +1349,10 @@ function SupplierEdit() {
                       const documentTypeId = `document-type-${documentType.clientId}`
                       const documentFilesId = `document-files-${documentType.clientId}`
                       const documentExpiryId = `document-expiry-${documentType.clientId}`
-                      const normalizedType = documentType.type?.toString().toUpperCase() ?? ''
-                      const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
+                      const docType = documentType.document_type_code
+                        ? documentTypeMap.get(documentType.document_type_code)
+                        : null
+                      const requiresExpiry = docType?.has_expiry_date ?? false
 
                       return (
                         <div
@@ -1301,23 +1366,27 @@ function SupplierEdit() {
                               <Label htmlFor={documentTypeId}>Document type</Label>
                               <select
                                 id={documentTypeId}
-                                value={documentType.type}
+                                value={documentType.document_type_code}
                                 onChange={(event) =>
                                   handleDocumentTypeChange(documentType.clientId, event.target.value)
                                 }
                                 className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
                                   documentError ? 'border-red-300 focus-visible:ring-red-500' : 'focus-visible:ring-olive'
                                 }`}
-                                disabled={saving}
+                                disabled={saving || loadingDocumentTypes}
                               >
-                                {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
+                                {loadingDocumentTypes ? (
+                                  <option value="">Loading document types…</option>
+                                ) : (
+                                  documentTypeOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))
+                                )}
                               </select>
                             </div>
-                            {isCertificate && (
+                            {requiresExpiry && (
                               <div className="space-y-1.5">
                                 <Label htmlFor={documentExpiryId}>Expiry date</Label>
                                 <Input
@@ -1331,17 +1400,31 @@ function SupplierEdit() {
                                 />
                               </div>
                             )}
-                            <div className={`space-y-1.5 ${isCertificate ? '' : 'sm:col-span-2'}`}>
+                            <div className={`space-y-1.5 ${requiresExpiry ? '' : 'sm:col-span-2'}`}>
                               <Label htmlFor={documentFilesId}>Files</Label>
-                              <Input
-                                id={documentFilesId}
-                                type="file"
-                                multiple
-                                onChange={(event) =>
-                                  handleDocumentFilesChange(documentType.clientId, event.target.files)
-                                }
-                                disabled={saving}
-                              />
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <Input
+                                    id={documentFilesId}
+                                    type="file"
+                                    multiple
+                                    onChange={(event) =>
+                                      handleDocumentFilesChange(documentType.clientId, event.target.files)
+                                    }
+                                    disabled={saving}
+                                  />
+                                </div>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => handleOpenCamera(documentType.clientId)}
+                                  disabled={saving}
+                                  className="shrink-0"
+                                  aria-label="Take photo with camera"
+                                >
+                                  <Camera className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </div>
                           </div>
                           {documentType.files.length === 0 ? (
@@ -1411,6 +1494,12 @@ function SupplierEdit() {
           </div>
         </div>
       </form>
+      <CameraCapture
+        isOpen={cameraModalOpen}
+        onClose={handleCloseCamera}
+        onCapture={handleCameraCapture}
+        disabled={saving}
+      />
     </PageLayout>
   )
 }

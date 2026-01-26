@@ -27,6 +27,10 @@ const UserManagement = lazy(() => import('./pages/users/UserManagement'))
 const RoleManagement = lazy(() => import('./pages/users/RoleManagement'))
 const AuditLogs = lazy(() => import('./pages/audit/AuditLogs'))
 const Help = lazy(() => import('./pages/help/Help'))
+const SupplierTypes = lazy(() => import('./pages/settings/SupplierTypes'))
+const DocumentTypes = lazy(() => import('./pages/settings/DocumentTypes'))
+const QualityParameters = lazy(() => import('./pages/settings/QualityParameters'))
+const ProcessStepNames = lazy(() => import('./pages/settings/ProcessStepNames'))
 
 function LoadingScreen() {
   return (
@@ -152,6 +156,38 @@ function App() {
           element={
             <ProtectedRoute>
               <ProcessDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/supplier-types"
+          element={
+            <ProtectedRoute>
+              <SupplierTypes />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/document-types"
+          element={
+            <ProtectedRoute>
+              <DocumentTypes />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/quality-parameters"
+          element={
+            <ProtectedRoute>
+              <QualityParameters />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/process-step-names"
+          element={
+            <ProtectedRoute>
+              <ProcessStepNames />
             </ProtectedRoute>
           }
         />

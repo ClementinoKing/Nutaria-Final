@@ -116,7 +116,7 @@ export const SUPPLY_QUALITY_SCORE_LEGEND: SupplyQualityScoreLegend[] = [
   },
   {
     score: 2,
-    meaning: 'Needs improvement',
+    meaning: 'Rework',
   },
   {
     score: 1,

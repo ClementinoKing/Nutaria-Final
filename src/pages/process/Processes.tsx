@@ -4,12 +4,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, X, Minus, Eye, Layers, Edit } from 'lucide-react'
+import { Plus, Trash2, X, Minus, Eye, Layers } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
+import { useProcessStepNames, type ProcessStepName } from '@/hooks/useProcessStepNames'
 
 interface Process {
   id: number
@@ -29,15 +31,20 @@ interface Product {
   id: number
   sku: string | null
   name: string
+  product_type: 'RAW' | 'WIP' | 'FINISHED' | null
 }
 
 interface FormStep {
   id: number
   seq: number
   step_code: string
-  step_name: string
+  step_name_id: number | null
   requires_qc: boolean
+  can_be_skipped: boolean
   default_location_id: string
+  duration_hours: string
+  duration_minutes: string
+  qualityParameterIds: number[]
 }
 
 interface FormState {
@@ -48,6 +55,114 @@ interface FormState {
 }
 
 const generateStepCode = (sequence: number): string => `STEP-${String(sequence).padStart(2, '0')}`
+
+function buildIntervalString(hoursValue: number | null | undefined, minutesValue: number | null | undefined): string | null {
+  const hoursNumberRaw = typeof hoursValue === 'number' && Number.isFinite(hoursValue) ? hoursValue : 0
+  const minutesNumberRaw = typeof minutesValue === 'number' && Number.isFinite(minutesValue) ? minutesValue : 0
+  const hoursNumber = Math.max(0, Math.floor(hoursNumberRaw))
+  const minutesNumber = Math.max(0, Math.floor(minutesNumberRaw))
+  
+  if (hoursNumber === 0 && minutesNumber === 0) {
+    return null
+  }
+  
+  const parts: string[] = []
+  if (hoursNumber > 0) {
+    parts.push(`${hoursNumber} hour${hoursNumber !== 1 ? 's' : ''}`)
+  }
+  if (minutesNumber > 0) {
+    parts.push(`${minutesNumber} minute${minutesNumber !== 1 ? 's' : ''}`)
+  }
+  return parts.join(' ')
+}
+
+const findCommonPrefix = (productNames: string[]): string => {
+  if (productNames.length === 0) {
+    return ''
+  }
+  
+  if (productNames.length === 1) {
+    const name = productNames[0]
+    return name ? name.trim() : ''
+  }
+  
+  // Split each product name into words
+  const wordArrays = productNames
+    .map(name => name.trim().split(/\s+/).filter(w => w.length > 0))
+    .filter((arr): arr is string[] => arr.length > 0)
+  
+  if (wordArrays.length === 0) {
+    return ''
+  }
+  
+  const firstArray = wordArrays[0]
+  if (!firstArray || firstArray.length === 0) {
+    return ''
+  }
+  
+  // Find common words from the start
+  const commonWords: string[] = []
+  
+  for (let i = 0; i < firstArray.length; i++) {
+    const word = firstArray[i]
+    if (!word) {
+      break
+    }
+    
+    const isCommon = wordArrays.every(arr => {
+      if (!arr || arr.length <= i) {
+        return false
+      }
+      const arrWord = arr[i]
+      return arrWord !== undefined && arrWord.toLowerCase() === word.toLowerCase()
+    })
+    
+    if (isCommon) {
+      commonWords.push(word)
+    } else {
+      break
+    }
+  }
+  
+  return commonWords.join(' ')
+}
+
+const generateProcessCode = (commonPrefix: string): string => {
+  if (!commonPrefix || !commonPrefix.trim()) {
+    return ''
+  }
+  
+  // Split by spaces
+  const words = commonPrefix.trim().split(/\s+/).filter(w => w.length > 0)
+  
+  if (words.length === 0) {
+    return ''
+  }
+  
+  const firstWord = words[0]
+  if (!firstWord) {
+    return ''
+  }
+  
+  // Take first 3 letters of first word, then first letter of each subsequent word
+  const firstWordAbbr: string = firstWord.toUpperCase().slice(0, 3)
+  const otherLetters = words.slice(1)
+    .map(word => word?.charAt(0).toUpperCase() || '')
+    .filter(letter => letter.length > 0)
+    .join('')
+  
+  const abbreviation = (firstWordAbbr + otherLetters).slice(0, 4) // Limit to 4 characters max
+  
+  return `PROC-${abbreviation}`
+}
+
+const generateProcessName = (commonPrefix: string): string => {
+  if (!commonPrefix || !commonPrefix.trim()) {
+    return ''
+  }
+  
+  return `${commonPrefix.trim()} Processing`
+}
 
 const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
   year: 'numeric',
@@ -84,8 +199,13 @@ function Processes() {
   const [products, setProducts] = useState<Product[]>([])
   const [productsLoading, setProductsLoading] = useState(true)
   const [productsError, setProductsError] = useState<PostgrestError | null>(null)
+  const [productSearchTerm, setProductSearchTerm] = useState('')
+  const [qualityParameterSearchTerms, setQualityParameterSearchTerms] = useState<Record<number, string>>({})
+  const { qualityParameters, loading: qualityParametersLoading } = useQualityParameters()
+  const { processStepNames, loading: processStepNamesLoading } = useProcessStepNames()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [currentStep, setCurrentStep] = useState<1 | 2>(1)
   const [formData, setFormData] = useState<FormState>({
     code: '',
     name: '',
@@ -155,21 +275,48 @@ function Processes() {
     setProductsLoading(true)
     setProductsError(null)
 
-    const { data, error: fetchError } = await supabase
+    // Fetch all raw products
+    const { data: productsData, error: productsError } = await supabase
       .from('products')
-      .select('id, sku, name')
+      .select('id, sku, name, product_type')
+      .eq('product_type', 'RAW')
       .order('name', { ascending: true })
 
-    if (fetchError) {
-      console.error('Error fetching products for processes form', fetchError)
-      toast.error(fetchError.message ?? 'Unable to load products from Supabase.')
+    if (productsError) {
+      console.error('Error fetching products for processes form', productsError)
+      toast.error(productsError.message ?? 'Unable to load products from Supabase.')
       setProducts([])
-      setProductsError(fetchError)
+      setProductsError(productsError)
       setProductsLoading(false)
       return
     }
 
-    setProducts(Array.isArray(data) ? data : [])
+    // Fetch products that already have processes assigned
+    const { data: assignedProductsData, error: assignedError } = await supabase
+      .from('product_processes')
+      .select('product_id')
+
+    if (assignedError) {
+      console.error('Error fetching assigned products', assignedError)
+      // Continue even if this fails - we'll just show all products
+    }
+
+    // Get list of product IDs that are already assigned
+    const assignedProductIds = new Set<number>()
+    if (Array.isArray(assignedProductsData)) {
+      assignedProductsData.forEach((item: { product_id: number }) => {
+        if (item.product_id && Number.isInteger(item.product_id)) {
+          assignedProductIds.add(item.product_id)
+        }
+      })
+    }
+
+    // Filter out products that are already assigned to a process
+    const availableProducts = Array.isArray(productsData)
+      ? productsData.filter((product: Product) => !assignedProductIds.has(product.id))
+      : []
+
+    setProducts(availableProducts)
     setProductsLoading(false)
   }, [])
 
@@ -195,13 +342,29 @@ function Processes() {
     return lookup
   }, [products])
 
+  const filteredProducts = useMemo(() => {
+    if (!productSearchTerm.trim()) {
+      return products
+    }
+    const term = productSearchTerm.toLowerCase()
+    return products.filter(
+      (product: Product) =>
+        product.name.toLowerCase().includes(term) ||
+        (product.sku && product.sku.toLowerCase().includes(term))
+    )
+  }, [products, productSearchTerm])
+
   const handleOpenModal = () => {
+    setCurrentStep(1)
     setIsModalOpen(true)
   }
 
   const handleCloseModal = () => {
     setIsModalOpen(false)
     setIsSubmitting(false)
+    setCurrentStep(1)
+    setProductSearchTerm('')
+    setQualityParameterSearchTerms({})
     setFormData({
       code: '',
       name: '',
@@ -223,9 +386,13 @@ function Processes() {
       id: Date.now(), // temporary ID for React key
       seq: formData.steps.length + 1,
       step_code: generateStepCode(formData.steps.length + 1),
-      step_name: '',
+      step_name_id: null,
       requires_qc: false,
-      default_location_id: ''
+      can_be_skipped: false,
+      default_location_id: '',
+      duration_hours: '',
+      duration_minutes: '',
+      qualityParameterIds: []
     }
     setFormData(prev => ({
       ...prev,
@@ -255,17 +422,67 @@ function Processes() {
       }
 
       const exists = prev.productIds.includes(productIdNumber)
+      const newProductIds = exists
+        ? prev.productIds.filter((id: number) => id !== productIdNumber)
+        : [...prev.productIds, productIdNumber]
+
+      // Auto-generate code and name from selected products
+      let newCode = ''
+      let newName = ''
+      
+      if (newProductIds.length > 0) {
+        // Get all selected product names
+        const selectedProductNames = newProductIds
+          .map(id => products.find((p: Product) => p.id === id))
+          .filter((p): p is Product => p !== undefined)
+          .map(p => p.name)
+          .filter((name): name is string => !!name)
+        
+        if (selectedProductNames.length > 0) {
+          // Find common prefix from all selected products
+          const commonPrefix = findCommonPrefix(selectedProductNames)
+          if (commonPrefix) {
+            newCode = generateProcessCode(commonPrefix)
+            newName = generateProcessName(commonPrefix)
+          }
+        }
+      }
+
       return {
         ...prev,
-        productIds: exists
-          ? prev.productIds.filter((id: number) => id !== productIdNumber)
-          : [...prev.productIds, productIdNumber],
+        productIds: newProductIds,
+        code: newCode,
+        name: newName,
       }
     })
   }
 
-  const handleStepChange = (stepId: number, field: keyof FormStep, value: string | boolean) => {
-    if (field === 'step_code') {
+  const handleToggleStepQualityParameter = (stepId: number, qualityParameterId: number) => {
+    setFormData((prev) => {
+      const qpIdNumber = Number(qualityParameterId)
+      if (!Number.isInteger(qpIdNumber) || qpIdNumber <= 0) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        steps: prev.steps.map((step: FormStep) => {
+          if (step.id !== stepId) return step
+          
+          const exists = step.qualityParameterIds.includes(qpIdNumber)
+          return {
+            ...step,
+            qualityParameterIds: exists
+              ? step.qualityParameterIds.filter((id: number) => id !== qpIdNumber)
+              : [...step.qualityParameterIds, qpIdNumber],
+          }
+        })
+      }
+    })
+  }
+
+  const handleStepChange = (stepId: number, field: keyof FormStep, value: string | boolean | number | null) => {
+    if (field === 'step_code' || field === 'qualityParameterIds') {
       return
     }
     setFormData(prev => ({
@@ -276,29 +493,52 @@ function Processes() {
     }))
   }
 
-  const validateForm = (): boolean => {
-    const trimmedCode = formData.code.trim()
-    const trimmedName = formData.name.trim()
-
-    if (!trimmedCode || !trimmedName) {
-      toast.error('Please fill in all required fields (Code and Name).')
-      return false
-    }
-
+  const validateStep1 = (): boolean => {
     if (!Array.isArray(formData.productIds) || formData.productIds.length === 0) {
       toast.error('Please select at least one product for this process.')
       return false
     }
 
-    const invalidSteps = formData.steps.filter(
-      (step: FormStep) => !(step.step_name ?? '').trim()
-    )
-    if (invalidSteps.length > 0) {
-      toast.error('Please provide a name for each step.')
+    const trimmedCode = formData.code.trim()
+    const trimmedName = formData.name.trim()
+
+    if (!trimmedCode || !trimmedName) {
+      toast.error('Please select a product to generate process code and name.')
       return false
     }
 
     return true
+  }
+
+  const validateStep2 = (): boolean => {
+    if (formData.steps.length === 0) {
+      toast.error('Please add at least one process step.')
+      return false
+    }
+
+    const invalidSteps = formData.steps.filter(
+      (step: FormStep) => !step.step_name_id || step.step_name_id <= 0
+    )
+    if (invalidSteps.length > 0) {
+      toast.error('Please select a step name for each step.')
+      return false
+    }
+
+    return true
+  }
+
+  const handleNextStep = () => {
+    if (currentStep === 1) {
+      if (validateStep1()) {
+        setCurrentStep(2)
+      }
+    }
+  }
+
+  const handleBackStep = () => {
+    if (currentStep === 2) {
+      setCurrentStep(1)
+    }
   }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -307,8 +547,19 @@ function Processes() {
       return
     }
 
-    if (!validateForm()) {
+    // Validate current step before submission
+    if (currentStep === 1) {
+      if (!validateStep1()) {
+        return
+      }
+      handleNextStep()
       return
+    }
+
+    if (currentStep === 2) {
+      if (!validateStep2()) {
+        return
+      }
     }
 
     setIsSubmitting(true)
@@ -353,26 +604,73 @@ function Processes() {
       }
 
       if (Array.isArray(formData.steps) && formData.steps.length > 0 && insertedProcess) {
-        const stepsPayload = formData.steps.map((step: FormStep, index: number) => ({
-          process_id: insertedProcess.id,
-          seq: index + 1,
-          step_code: generateStepCode(index + 1),
-          step_name: (step.step_name ?? '').trim(),
-          description: null,
-          requires_qc: Boolean(step.requires_qc),
-          default_location_id: step.default_location_id ? Number(step.default_location_id) : null,
-          estimated_duration: null,
-        }))
+        const stepsPayload = formData.steps.map((step: FormStep, index: number) => {
+          const hoursInput = (step.duration_hours ?? '').trim()
+          const minutesInput = (step.duration_minutes ?? '').trim()
+          const hoursValue = hoursInput === '' ? null : Number(hoursInput)
+          const minutesValue = minutesInput === '' ? null : Number(minutesInput)
+          const intervalString = buildIntervalString(
+            hoursValue ?? 0,
+            minutesValue ?? 0,
+          )
+          
+          return {
+            process_id: insertedProcess.id,
+            seq: index + 1,
+            step_name_id: step.step_name_id ? Number(step.step_name_id) : null,
+            description: null,
+            requires_qc: Boolean(step.requires_qc),
+            can_be_skipped: Boolean(step.can_be_skipped),
+            default_location_id: step.default_location_id ? Number(step.default_location_id) : null,
+            estimated_duration: intervalString,
+          }
+        })
 
-        const { error: insertStepsError } = await supabase
+        const { data: insertedSteps, error: insertStepsError } = await supabase
           .from('process_steps')
           .insert(stepsPayload)
+          .select('id, seq')
 
         if (insertStepsError) {
           // Attempt to roll back the created process and product mappings for consistency
           await supabase.from('product_processes').delete().eq('process_id', insertedProcess.id)
           await supabase.from('processes').delete().eq('id', insertedProcess.id)
           throw insertStepsError
+        }
+
+        // Insert quality parameters for each step
+        if (insertedSteps && Array.isArray(insertedSteps)) {
+          const stepQualityParametersPayload: Array<{ process_step_id: number; quality_parameter_id: number }> = []
+          
+          formData.steps.forEach((step: FormStep, index: number) => {
+            const insertedStep = insertedSteps[index]
+            if (insertedStep && step.qualityParameterIds && step.qualityParameterIds.length > 0) {
+              const qpIds = step.qualityParameterIds
+                .map((value: number) => Number(value))
+                .filter((value: number) => Number.isInteger(value) && value > 0)
+              
+              qpIds.forEach((qpId: number) => {
+                stepQualityParametersPayload.push({
+                  process_step_id: insertedStep.id,
+                  quality_parameter_id: qpId,
+                })
+              })
+            }
+          })
+
+          if (stepQualityParametersPayload.length > 0) {
+            const { error: insertStepQPsError } = await supabase
+              .from('process_step_quality_parameters')
+              .insert(stepQualityParametersPayload)
+
+            if (insertStepQPsError) {
+              // Roll back everything if step QP insertion fails
+              await supabase.from('process_steps').delete().eq('process_id', insertedProcess.id)
+              await supabase.from('product_processes').delete().eq('process_id', insertedProcess.id)
+              await supabase.from('processes').delete().eq('id', insertedProcess.id)
+              throw insertStepQPsError
+            }
+          }
         }
       }
 
@@ -388,6 +686,8 @@ function Processes() {
         ])
       }
       handleCloseModal()
+      // Refresh products list to exclude newly assigned products
+      await fetchProducts()
     } catch (submitError) {
       console.error('Error creating process', submitError)
       const errorMessage = submitError instanceof Error ? submitError.message : 'Unable to add process.'
@@ -418,17 +718,8 @@ function Processes() {
     [navigate],
   )
 
-  const handleEditProcess = useCallback(
-    (processId: number) => {
-      if (!processId) {
-        return
-      }
-      navigate(`/process/processes/${processId}?edit=true`)
-    },
-    [navigate],
-  )
 
-  if (loading || warehousesLoading || productsLoading) {
+  if (loading || warehousesLoading || productsLoading || qualityParametersLoading || processStepNamesLoading) {
     return (
       <PageLayout
         title="Factory Processes"
@@ -554,15 +845,6 @@ function Processes() {
                         <Eye className="mr-2 h-4 w-4" />
                         View
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-blue-600 hover:bg-blue-50"
-                        onClick={() => handleEditProcess(process.id)}
-                        title="Edit Process"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </Button>
                       <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -581,55 +863,50 @@ function Processes() {
           <div className="flex w-full max-w-3xl max-h-[90vh] flex-col overflow-hidden rounded-lg bg-white shadow-xl">
             {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-olive-light/20 p-4 sm:p-6">
-              <h2 className="text-2xl font-bold text-text-dark">Add New Process</h2>
+              <div>
+                <h2 className="text-2xl font-bold text-text-dark">Add New Process</h2>
+                <p className="text-sm text-text-dark/70 mt-1">Step {currentStep} of 2</p>
+              </div>
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={handleCloseModal}
                 className="text-text-dark hover:bg-olive-light/10"
+                disabled={isSubmitting}
               >
                 <X className="h-6 w-6" />
               </Button>
             </div>
 
+            {/* Progress Indicator */}
+            <div className="border-b border-olive-light/20 px-4 sm:px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-full ${currentStep >= 1 ? 'bg-olive text-white' : 'bg-gray-200 text-gray-600'}`}>
+                    {currentStep > 1 ? '✓' : '1'}
+                  </div>
+                  <span className={`text-sm font-medium ${currentStep >= 1 ? 'text-text-dark' : 'text-text-dark/60'}`}>Basic Information</span>
+                </div>
+                <div className="flex-1 h-0.5 mx-4 bg-olive-light/30">
+                  <div className={`h-full transition-all ${currentStep >= 2 ? 'bg-olive w-full' : 'bg-transparent w-0'}`} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-full ${currentStep >= 2 ? 'bg-olive text-white' : 'bg-gray-200 text-gray-600'}`}>
+                    2
+                  </div>
+                  <span className={`text-sm font-medium ${currentStep >= 2 ? 'text-text-dark' : 'text-text-dark/60'}`}>Process Steps</span>
+                </div>
+              </div>
+            </div>
+
             {/* Modal Content */}
             <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-6">
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="code" className="text-text-dark">
-                    Code <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="code"
-                    name="code"
-                    type="text"
-                    placeholder="e.g., PROC-004"
-                    value={formData.code}
-                    onChange={handleInputChange}
-                    className="bg-white"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="name" className="text-text-dark">
-                    Name <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="name"
-                    name="name"
-                    type="text"
-                    placeholder="e.g., Almond Processing"
-                    value={formData.name}
-                    onChange={handleInputChange}
-                    className="bg-white"
-                    required
-                  />
-                </div>
-
+              {/* Step 1: Basic Information */}
+              {currentStep === 1 && (
+                <div className="space-y-4">
                 <div className="space-y-2">
                   <Label className="text-text-dark">
-                    Products <span className="text-red-500">*</span>
+                    Select Product (Raw Materials Only) <span className="text-red-500">*</span>
                   </Label>
                   {productsLoading ? (
                     <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
@@ -641,33 +918,50 @@ function Processes() {
                     </div>
                   ) : products.length === 0 ? (
                     <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
-                      No products available. Add products before creating processes.
+                      No available raw products. All raw products have been assigned to processes, or no raw products exist. Add new raw products before creating processes.
                     </div>
                   ) : (
-                    <div className="max-h-56 overflow-y-auto rounded-lg border border-olive-light/30 bg-olive-light/5">
-                      <ul className="divide-y divide-olive-light/20">
-                        {products.map((product: Product) => {
-                          const isSelected = formData.productIds.includes(product.id)
-                          return (
-                            <li key={product.id}>
-                              <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
-                                <input
-                                  type="checkbox"
-                                  className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                                  checked={isSelected}
-                                  onChange={() => handleToggleProductSelection(product.id)}
-                                />
-                                <div>
-                                  <p className="font-medium text-text-dark">{product.name}</p>
-                                  <p className="text-xs uppercase tracking-wide text-text-dark/60">
-                                    {product.sku || 'No SKU'}
-                                  </p>
-                                </div>
-                              </label>
-                            </li>
-                          )
-                        })}
-                      </ul>
+                    <div className="rounded-lg border border-olive-light/30 bg-olive-light/5">
+                      <div className="border-b border-olive-light/20 p-2">
+                        <Input
+                          type="text"
+                          placeholder="Search products by name or SKU..."
+                          value={productSearchTerm}
+                          onChange={(e) => setProductSearchTerm(e.target.value)}
+                          className="bg-white text-sm"
+                        />
+                      </div>
+                      <div className="max-h-56 overflow-y-auto">
+                        {filteredProducts.length === 0 ? (
+                          <div className="px-3 py-4 text-center text-sm text-text-dark/60">
+                            No products found matching "{productSearchTerm}"
+                          </div>
+                        ) : (
+                          <ul className="divide-y divide-olive-light/20">
+                            {filteredProducts.map((product: Product) => {
+                              const isSelected = formData.productIds.includes(product.id)
+                              return (
+                                <li key={product.id}>
+                                  <label className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm transition-colors hover:bg-white">
+                                    <input
+                                      type="checkbox"
+                                      className="mt-1 h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                                      checked={isSelected}
+                                      onChange={() => handleToggleProductSelection(product.id)}
+                                    />
+                                    <div>
+                                      <p className="font-medium text-text-dark">{product.name}</p>
+                                      <p className="text-xs uppercase tracking-wide text-text-dark/60">
+                                        {product.sku || 'No SKU'}
+                                      </p>
+                                    </div>
+                                  </label>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                      </div>
                     </div>
                   )}
                   {Array.isArray(formData.productIds) && formData.productIds.length > 0 && (
@@ -677,7 +971,52 @@ function Processes() {
                   )}
                 </div>
 
-                {/* Process Steps Section */}
+                {formData.productIds.length > 0 && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="code" className="text-text-dark">
+                        Process Code <span className="text-red-500">*</span>
+                      </Label>
+                      <Input
+                        id="code"
+                        name="code"
+                        type="text"
+                        value={formData.code}
+                        onChange={handleInputChange}
+                        className="bg-olive-light/10 text-text-dark/80"
+                        required
+                        readOnly
+                      />
+                      <p className="text-xs text-text-dark/60">
+                        Auto-generated from selected product
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="name" className="text-text-dark">
+                        Process Name <span className="text-red-500">*</span>
+                      </Label>
+                      <Input
+                        id="name"
+                        name="name"
+                        type="text"
+                        value={formData.name}
+                        onChange={handleInputChange}
+                        className="bg-white"
+                        required
+                      />
+                      <p className="text-xs text-text-dark/60">
+                        Auto-generated from selected product(s), but can be edited
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+              )}
+
+              {/* Step 2: Process Steps */}
+              {currentStep === 2 && (
+                <div className="space-y-4">
                 <div className="space-y-3 pt-4 border-t border-olive-light/20">
                   <div className="flex items-center justify-between">
                     <Label className="text-text-dark text-base font-semibold">
@@ -740,16 +1079,29 @@ function Processes() {
                               <Label className="text-xs text-text-dark">
                                 Step Name <span className="text-red-500">*</span>
                               </Label>
-                              <Input
-                                type="text"
-                                placeholder="e.g., Receiving & Inspection"
-                                value={step.step_name}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                                  handleStepChange(step.id, 'step_name', e.target.value)
+                              <select
+                                value={step.step_name_id || ''}
+                                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                                  handleStepChange(step.id, 'step_name_id', e.target.value ? Number(e.target.value) : null)
                                 }
-                                className="bg-white text-sm"
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                 required
-                              />
+                              >
+                                <option value="">Select step name</option>
+                                {processStepNames.map((stepName: ProcessStepName) => (
+                                  <option key={stepName.id} value={stepName.id}>
+                                    {stepName.name} ({stepName.code})
+                                  </option>
+                                ))}
+                              </select>
+                              {processStepNamesLoading && (
+                                <p className="text-xs text-text-dark/60 mt-1">Loading step names…</p>
+                              )}
+                              {processStepNames.length === 0 && !processStepNamesLoading && (
+                                <p className="text-xs text-text-dark/60 mt-1">
+                                  No step names available. <a href="/settings/process-step-names" className="text-olive hover:underline">Add step names</a> first.
+                                </p>
+                              )}
                             </div>
                           </div>
 
@@ -777,6 +1129,37 @@ function Processes() {
                               )}
                             </div>
 
+                            <div className="space-y-1">
+                              <Label className="text-xs text-text-dark">
+                                Estimated Duration
+                              </Label>
+                              <div className="grid grid-cols-2 gap-2">
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  placeholder="Hours"
+                                  value={step.duration_hours}
+                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                    handleStepChange(step.id, 'duration_hours', e.target.value)
+                                  }
+                                  className="bg-white text-sm"
+                                />
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  max="59"
+                                  placeholder="Minutes"
+                                  value={step.duration_minutes}
+                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                    handleStepChange(step.id, 'duration_minutes', e.target.value)
+                                  }
+                                  className="bg-white text-sm"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-1 flex items-end">
                               <div className="flex items-center space-x-2">
                                 <input
@@ -797,25 +1180,157 @@ function Processes() {
                               </div>
                             </div>
                           </div>
+
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id={`can_be_skipped_${step.id}`}
+                              checked={step.can_be_skipped}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                handleStepChange(step.id, 'can_be_skipped', e.target.checked)
+                              }
+                              className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                            />
+                            <Label
+                              htmlFor={`can_be_skipped_${step.id}`}
+                              className="text-xs text-text-dark cursor-pointer"
+                            >
+                              Can be Skipped
+                            </Label>
+                          </div>
+
+                          {/* Quality Parameters for this step */}
+                          <div className="space-y-2 pt-2 border-t border-olive-light/20">
+                            <Label className="text-xs text-text-dark font-medium">
+                              Quality Parameters (Optional)
+                            </Label>
+                            {qualityParametersLoading ? (
+                              <p className="text-xs text-text-dark/60">Loading quality parameters…</p>
+                            ) : qualityParameters.length === 0 ? (
+                              <p className="text-xs text-text-dark/60">No quality parameters available.</p>
+                            ) : (
+                              <>
+                                <div className="rounded-lg border border-olive-light/30 bg-olive-light/5">
+                                  <div className="border-b border-olive-light/20 p-2">
+                                    <Input
+                                      type="text"
+                                      placeholder="Search quality parameters..."
+                                      value={qualityParameterSearchTerms[step.id] || ''}
+                                      onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                        setQualityParameterSearchTerms(prev => ({
+                                          ...prev,
+                                          [step.id]: e.target.value
+                                        }))
+                                      }}
+                                      className="bg-white text-xs h-8"
+                                    />
+                                  </div>
+                                  <div className="max-h-40 overflow-y-auto">
+                                    {(() => {
+                                      const searchTerm = (qualityParameterSearchTerms[step.id] || '').toLowerCase()
+                                      const filteredQPs = searchTerm
+                                        ? qualityParameters.filter((qp: QualityParameter) => {
+                                            const name = (qp.name || '').toLowerCase()
+                                            const code = (qp.code || '').toLowerCase()
+                                            const spec = (qp.specification || '').toLowerCase()
+                                            return name.includes(searchTerm) || code.includes(searchTerm) || spec.includes(searchTerm)
+                                          })
+                                        : qualityParameters
+                                      
+                                      // Sort: selected parameters first, then by name
+                                      const sortedQPs = [...filteredQPs].sort((a, b) => {
+                                        const aSelected = step.qualityParameterIds.includes(a.id)
+                                        const bSelected = step.qualityParameterIds.includes(b.id)
+                                        if (aSelected && !bSelected) return -1
+                                        if (!aSelected && bSelected) return 1
+                                        return (a.name || '').localeCompare(b.name || '')
+                                      })
+                                      
+                                      if (sortedQPs.length === 0) {
+                                        return (
+                                          <div className="px-3 py-4 text-center text-xs text-text-dark/60">
+                                            No quality parameters found matching "{qualityParameterSearchTerms[step.id]}"
+                                          </div>
+                                        )
+                                      }
+                                      
+                                      return (
+                                        <ul className="divide-y divide-olive-light/20">
+                                          {sortedQPs.map((qp: QualityParameter) => {
+                                            const isSelected = step.qualityParameterIds.includes(qp.id)
+                                            return (
+                                              <li key={qp.id}>
+                                                <label className="flex cursor-pointer items-start gap-2 px-2 py-1.5 text-xs transition-colors hover:bg-white">
+                                                  <input
+                                                    type="checkbox"
+                                                    className="mt-0.5 h-3.5 w-3.5 rounded border-input text-olive focus:ring-olive"
+                                                    checked={isSelected}
+                                                    onChange={() => handleToggleStepQualityParameter(step.id, qp.id)}
+                                                  />
+                                                  <div className="flex-1">
+                                                    <p className="font-medium text-text-dark">{qp.name}</p>
+                                                    <p className="text-xs text-text-dark/60">{qp.code}</p>
+                                                    {qp.specification && (
+                                                      <p className="text-xs text-text-dark/50 mt-0.5">
+                                                        {qp.specification}
+                                                      </p>
+                                                    )}
+                                                  </div>
+                                                </label>
+                                              </li>
+                                            )
+                                          })}
+                                        </ul>
+                                      )
+                                    })()}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                            {step.qualityParameterIds.length > 0 && (
+                              <p className="text-xs text-text-dark/60">
+                                {step.qualityParameterIds.length} quality parameter{step.qualityParameterIds.length === 1 ? '' : 's'} selected
+                              </p>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
               </div>
+              )}
 
               {/* Modal Footer */}
-              <div className="mt-6 flex flex-col gap-3 border-t border-olive-light/20 pt-6 sm:flex-row sm:justify-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleCloseModal}
-                  className="border-olive-light/30"
+              <div className="mt-6 flex flex-col gap-3 border-t border-olive-light/20 pt-6 sm:flex-row sm:justify-between">
+                <div className="flex gap-3">
+                  {currentStep === 2 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleBackStep}
+                      className="border-olive-light/30"
+                      disabled={isSubmitting}
+                    >
+                      Back
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleCloseModal}
+                    className="border-olive-light/30"
+                    disabled={isSubmitting}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                <Button 
+                  type="submit" 
+                  className="bg-olive hover:bg-olive-dark" 
+                  disabled={isSubmitting}
                 >
-                  Cancel
-                </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                  Add Process
+                  {currentStep === 1 ? 'Next' : isSubmitting ? 'Creating…' : 'Create Process'}
                 </Button>
               </div>
             </form>

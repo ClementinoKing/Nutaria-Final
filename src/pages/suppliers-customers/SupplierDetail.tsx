@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { PostgrestError } from '@supabase/supabase-js'
 import PageLayout from '@/components/layout/PageLayout'
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { useSupplierTypes } from '@/hooks/useSupplierTypes'
 
 function formatEnumLabel(value: string | number | null | undefined): string {
   const label = value ?? ''
@@ -20,10 +21,6 @@ function formatEnumLabel(value: string | number | null | undefined): string {
     .split('_')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
-}
-
-function formatSupplierType(type: string | number | null | undefined): string {
-  return formatEnumLabel(type)
 }
 
 function formatDate(value: string | Date | number | null | undefined): string {
@@ -236,7 +233,7 @@ function createFormStateFromSupplier(supplier: unknown, documentRows: unknown[] 
   return {
     id: (supplierObj?.id as string | number | null | undefined) ?? null,
     name: String(supplierObj?.name ?? ''),
-    supplier_type: String(supplierObj?.supplier_type ?? 'NUT'),
+    supplier_type: String(supplierObj?.supplier_type ?? ''),
     phone: String(supplierObj?.phone ?? ''),
     email: String(supplierObj?.email ?? ''),
     address: String(supplierObj?.address ?? ''),
@@ -257,6 +254,12 @@ function createFormStateFromSupplier(supplier: unknown, documentRows: unknown[] 
 function SupplierDetail() {
   const navigate = useNavigate()
   const { supplierId } = useParams()
+  const { supplierTypes } = useSupplierTypes()
+
+  const typeNameMap = useMemo(
+    () => new Map(supplierTypes.map((t) => [t.code, t.name])),
+    [supplierTypes]
+  )
 
   const [supplierData, setSupplierData] = useState<SupplierFormState | null>(null)
   const [loading, setLoading] = useState(true)
@@ -396,8 +399,11 @@ function SupplierDetail() {
     },
   ]
 
+  const typeDisplay =
+    typeNameMap.get(supplierData.supplier_type ?? '') ?? supplierData.supplier_type ?? 'Not specified'
+
   const companyDetails = [
-    { label: 'Supplier Type', value: formatSupplierType(supplierData.supplier_type) },
+    { label: 'Supplier Type', value: typeDisplay },
     { label: 'Halal Certified', value: supplierData.is_halal_certified ? 'Yes' : 'No' },
     { label: 'Country', value: supplierData.country || 'Not provided' },
     { label: 'Address', value: supplierData.address || 'Not provided' },
@@ -445,7 +451,7 @@ function SupplierDetail() {
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <span className="inline-flex items-center rounded-full border border-olive-light/60 bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
-                {formatSupplierType(supplierData.supplier_type)}
+                {typeDisplay}
               </span>
               <span
                 className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${

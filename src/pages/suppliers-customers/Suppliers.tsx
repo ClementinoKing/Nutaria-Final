@@ -1,17 +1,20 @@
-import { useEffect, useState, ChangeEvent, FormEvent } from 'react'
+import { useEffect, useMemo, useState, ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Edit, Trash2, X } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Camera } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { toast } from 'sonner'
 import { useSuppliers } from '@/hooks/useSuppliers'
+import { useSupplierTypes } from '@/hooks/useSupplierTypes'
+import { useDocumentTypes } from '@/hooks/useDocumentTypes'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui/spinner'
+import { CameraCapture } from '@/components/CameraCapture'
 
 interface Supplier {
   id: string
@@ -24,13 +27,12 @@ interface Supplier {
   primary_contact_name?: string | null
   primary_contact_email?: string | null
   primary_contact_phone?: string | null
-  is_halal_certified?: boolean
   [key: string]: unknown
 }
 
 interface DocumentTypeEntry {
   clientId: string
-  type: string
+  document_type_code: string
   expiryDate: string
   files: File[]
 }
@@ -71,8 +73,6 @@ interface FormStep {
   includeDocuments?: boolean
 }
 
-const CERTIFICATE_DOC_TYPES = new Set(['HALAL', 'ISO9001', 'ISO22000', 'KOSHER', 'OTHER'])
-
 const BANK_OPTIONS = [
   { value: '', label: 'Select a bank' },
   { value: 'Capitec Bank', label: 'Capitec Bank' },
@@ -96,7 +96,7 @@ const createUniqueId = (prefix: string): string => `${prefix}-${Math.random().to
 
 const createDocumentTypeEntry = (): DocumentTypeEntry => ({
   clientId: createUniqueId('doc'),
-  type: '',
+  document_type_code: '',
   expiryDate: '',
   files: [],
 })
@@ -147,7 +147,7 @@ const formatPreviewFileSize = (size: number | null | undefined): string | null =
 
 const createDefaultSupplier = (): SupplierFormData => ({
   name: '',
-  supplier_type: 'NUT',
+  supplier_type: '',
   phone: '',
   email: '',
   country: 'South Africa',
@@ -166,23 +166,6 @@ const createDefaultSupplier = (): SupplierFormData => ({
   documents: [createDocumentTypeEntry()],
 })
 
-const DOCUMENT_TYPE_OPTIONS = [
-  { value: '', label: 'Select a type' },
-  { value: 'REGISTRATION', label: 'Registration' },
-  { value: 'COMPLIANCE', label: 'Compliance' },
-  { value: 'CONTRACT', label: 'Contract' },
-  { value: 'OTHER', label: 'Other' },
-  { value: 'HALAL', label: 'Halal Certificate' },
-  { value: 'ISO9001', label: 'ISO 9001' },
-  { value: 'ISO22000', label: 'ISO 22000' },
-  { value: 'KOSHER', label: 'Kosher Certificate' },
-]
-
-const hasHalalCertificate = (documents: DocumentTypeEntry[] = []): boolean =>
-  documents.some((entry) => {
-    const normalizedType = entry.type?.toString().trim().toUpperCase()
-    return normalizedType === 'HALAL' && Array.isArray(entry.files) && entry.files.length > 0
-  })
 
 const SUPPLIER_FORM_STEPS: FormStep[] = [
   {
@@ -220,6 +203,8 @@ const SUPPLIER_FORM_STEPS: FormStep[] = [
 
 function Suppliers() {
   const { suppliers, setSuppliers, loading: loadingSuppliers, error: suppliersError } = useSuppliers()
+  const { supplierTypes, loading: loadingTypes } = useSupplierTypes()
+  const { documentTypes, loading: loadingDocumentTypes } = useDocumentTypes()
   const { user } = useAuth()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState<SupplierFormData>(createDefaultSupplier())
@@ -228,6 +213,10 @@ function Suppliers() {
   const [deletingSupplierId, setDeletingSupplierId] = useState<string | null>(null)
   const [profileId, setProfileId] = useState<string | null>(null)
   const [activeStep, setActiveStep] = useState(0)
+  const [cameraModalOpen, setCameraModalOpen] = useState(false)
+  const [cameraForDocument, setCameraForDocument] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const totalSteps = SUPPLIER_FORM_STEPS.length
   const currentStepIndex = Math.min(activeStep, totalSteps - 1)
   const currentStep = SUPPLIER_FORM_STEPS[currentStepIndex]
@@ -235,10 +224,27 @@ function Suppliers() {
   const isFirstStep = currentStepIndex === 0
   const navigate = useNavigate()
 
-  const supplierTypeOptions = [
-    { id: 1, label: 'Nut Supplier', value: 'NUT' },
-    { id: 2, label: 'Operational Supplier', value: 'OPERATIONAL' },
-  ]
+  const supplierTypeOptions = useMemo(
+    () => supplierTypes.map((t) => ({ value: t.code, label: t.name })),
+    [supplierTypes]
+  )
+  const typeNameMap = useMemo(
+    () => new Map(supplierTypes.map((t) => [t.code, t.name])),
+    [supplierTypes]
+  )
+
+  const documentTypeOptions = useMemo(
+    () => [
+      { value: '', label: 'Select a type' },
+      ...documentTypes.map((t) => ({ value: t.code, label: t.name })),
+    ],
+    [documentTypes]
+  )
+
+  const documentTypeMap = useMemo(
+    () => new Map(documentTypes.map((t) => [t.code, t])),
+    [documentTypes]
+  )
 
   const genderOptions = [
     { value: '', label: 'Select gender' },
@@ -277,8 +283,8 @@ function Suppliers() {
     loadProfile()
   }, [user?.id])
 
-  const resetFormState = () => {
-    setFormData(createDefaultSupplier())
+  const resetFormState = (overrides?: Partial<SupplierFormData>) => {
+    setFormData({ ...createDefaultSupplier(), ...overrides })
     setFormErrors(createEmptyFormErrors())
     setIsSubmitting(false)
     setActiveStep(0)
@@ -312,7 +318,7 @@ function Suppliers() {
   }
 
   const handleOpenModal = () => {
-    resetFormState()
+    resetFormState({ supplier_type: supplierTypes[0]?.code ?? '' })
     setIsModalOpen(true)
   }
 
@@ -408,20 +414,22 @@ function Suppliers() {
   }
 
   const handleDocumentTypeChange = (clientId: string, value: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      documents: prev.documents.map((entry) =>
-        entry.clientId === clientId
-          ? {
-              ...entry,
-              type: value,
-              expiryDate: CERTIFICATE_DOC_TYPES.has(value?.toString().toUpperCase() ?? '')
-                ? entry.expiryDate
-                : '',
-            }
-          : entry
-      ),
-    }))
+    setFormData((prev) => {
+      const docType = documentTypeMap.get(value)
+      const requiresExpiry = docType?.has_expiry_date ?? false
+      return {
+        ...prev,
+        documents: prev.documents.map((entry) =>
+          entry.clientId === clientId
+            ? {
+                ...entry,
+                document_type_code: value,
+                expiryDate: requiresExpiry ? entry.expiryDate : '',
+              }
+            : entry
+        ),
+      }
+    })
     clearDocumentError(clientId)
   }
 
@@ -462,6 +470,32 @@ function Suppliers() {
       }
     })
     clearDocumentError(clientId)
+  }
+
+  const handleOpenCamera = (clientId: string) => {
+    setCameraForDocument(clientId)
+    setCameraModalOpen(true)
+  }
+
+  const handleCameraCapture = (file: File) => {
+    if (!cameraForDocument) return
+
+    setFormData((prev) => ({
+      ...prev,
+      documents: prev.documents.map((entry) =>
+        entry.clientId === cameraForDocument
+          ? { ...entry, files: [...entry.files, file] }
+          : entry
+      ),
+    }))
+    clearDocumentError(cameraForDocument)
+    setCameraModalOpen(false)
+    setCameraForDocument(null)
+  }
+
+  const handleCloseCamera = () => {
+    setCameraModalOpen(false)
+    setCameraForDocument(null)
   }
 
   const clearProofOfResidenceError = () => {
@@ -532,17 +566,18 @@ function Suppliers() {
     })
 
     data.documents.forEach((entry) => {
-      const trimmedType = entry.type?.trim() ?? ''
-      const normalizedType = trimmedType.toUpperCase()
+      const trimmedCode = entry.document_type_code?.trim() ?? ''
       const hasFiles = entry.files.length > 0
       const expiry = entry.expiryDate ? entry.expiryDate.toString().trim() : ''
+      const docType = trimmedCode ? documentTypeMap.get(trimmedCode) : null
+      const requiresExpiry = docType?.has_expiry_date ?? false
 
-      if (trimmedType && !hasFiles) {
+      if (trimmedCode && !hasFiles) {
         errors.documents[entry.clientId] = 'Upload at least one file for this type.'
-      } else if (!trimmedType && hasFiles) {
+      } else if (!trimmedCode && hasFiles) {
         errors.documents[entry.clientId] = 'Select a document type for the uploaded files.'
-      } else if (hasFiles && CERTIFICATE_DOC_TYPES.has(normalizedType) && !expiry) {
-        errors.documents[entry.clientId] = 'Provide an expiry date for this certificate.'
+      } else if (hasFiles && requiresExpiry && !expiry) {
+        errors.documents[entry.clientId] = 'Provide an expiry date for this document type.'
       }
     })
 
@@ -558,8 +593,6 @@ function Suppliers() {
     setFormErrors(createEmptyFormErrors())
     setIsSubmitting(true)
 
-    const isHalalCertified = hasHalalCertificate(formData.documents)
-
     const payload = {
       name: requiredText(formData.name),
       supplier_type: requiredText(formData.supplier_type),
@@ -568,7 +601,6 @@ function Suppliers() {
       email: optionalText(formData.email),
       country: optionalText(formData.country),
       address: optionalText(formData.address),
-      is_halal_certified: isHalalCertified,
       supplier_age: optionalInteger(formData.supplier_age),
       gender: optionalText(formData.gender),
       number_of_employees: optionalInteger(formData.number_of_employees),
@@ -586,32 +618,46 @@ function Suppliers() {
       }
 
       const documentRows = formData.documents
-        .filter((entry) => entry.type && entry.files.length > 0)
+        .filter((entry) => entry.document_type_code && entry.files.length > 0)
         .flatMap((entry) => {
-          const normalizedType = entry.type.toString().toUpperCase()
-          const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
+          const docType = documentTypeMap.get(entry.document_type_code)
+          const requiresExpiry = docType?.has_expiry_date ?? false
           return entry.files.map((file) => ({
             owner_type: 'supplier',
             owner_id: data.id,
             name: file.name,
-            doc_type: entry.type,
-            storage_path: `suppliers/${data.id}/${isCertificate ? 'certificates/' : ''}${file.name}`,
+            document_type_code: entry.document_type_code,
+            doc_type: entry.document_type_code,
+            storage_path: `suppliers/${data.id}/${requiresExpiry ? 'certificates/' : ''}${file.name}`,
             expiry_date:
-              isCertificate && entry.expiryDate && entry.expiryDate.toString().trim()
+              requiresExpiry && entry.expiryDate && entry.expiryDate.toString().trim()
                 ? entry.expiryDate
                 : null,
             uploaded_by: profileId ?? null,
           }))
         })
 
-      const proofRows = formData.proof_of_residence.map((file) => ({
-        owner_type: 'supplier',
-        owner_id: data.id,
-        name: file.name,
-        doc_type: 'PROOF_OF_RESIDENCE',
-        storage_path: `suppliers/${data.id}/proof-of-residence/${file.name}`,
-        uploaded_by: profileId ?? null
-      }))
+      // For proof of residence, we need a document_type_code that exists in document_types table
+      // Find a document type code for proof of residence, or use the first available one as fallback
+      // Note: document_type_code is required (NOT NULL) and must reference document_types(code)
+      const proofDocTypeCode = documentTypes.find(dt => 
+        dt.code?.toUpperCase() === 'PROOF' || 
+        dt.code?.toUpperCase() === 'PROOF_OF_RESIDENCE' ||
+        dt.name?.toLowerCase().includes('proof') ||
+        dt.name?.toLowerCase().includes('residence')
+      )?.code || documentTypes[0]?.code
+
+      const proofRows = proofDocTypeCode 
+        ? formData.proof_of_residence.map((file) => ({
+            owner_type: 'supplier',
+            owner_id: data.id,
+            name: file.name,
+            document_type_code: proofDocTypeCode,
+            doc_type: 'PROOF_OF_RESIDENCE',
+            storage_path: `suppliers/${data.id}/proof-of-residence/${file.name}`,
+            uploaded_by: profileId ?? null
+          }))
+        : [] // Skip if no valid document type code found
 
       const rowsToInsert = [...documentRows, ...proofRows]
 
@@ -683,6 +729,12 @@ function Suppliers() {
       : 'Save Supplier'
     : 'Next Step'
 
+  // Reset to page 1 when suppliers list changes
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(suppliers.length / pageSize))
+    if (page > totalPages) setPage(totalPages)
+  }, [suppliers.length, pageSize])
+
   const columns = [
     {
       key: 'name',
@@ -693,7 +745,10 @@ function Suppliers() {
     {
       key: 'type',
       header: 'Type',
-      accessor: 'supplier_type',
+      render: (supplier: Supplier) =>
+        typeNameMap.get(supplier.supplier_type ?? '') ?? supplier.supplier_type ?? '—',
+      mobileRender: (supplier: Supplier) =>
+        typeNameMap.get(supplier.supplier_type ?? '') ?? supplier.supplier_type ?? '—',
       cellClassName: 'text-text-dark/70',
       mobileValueClassName: 'text-text-dark',
     },
@@ -728,29 +783,6 @@ function Suppliers() {
       mobileRender: (supplier: Supplier) => supplier.country || '-',
       cellClassName: 'text-text-dark/70',
       mobileValueClassName: 'text-text-dark',
-    },
-    {
-      key: 'halal',
-      header: 'Halal Certified',
-      render: (supplier: Supplier) => (
-        <span
-          className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-            supplier.is_halal_certified ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-          }`}
-        >
-          {supplier.is_halal_certified ? 'Yes' : 'No'}
-        </span>
-      ),
-      mobileRender: (supplier: Supplier) => (
-        <span
-          className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-            supplier.is_halal_certified ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-          }`}
-        >
-          {supplier.is_halal_certified ? 'Yes' : 'No'}
-        </span>
-      ),
-      mobileHeader: 'Halal',
     },
     {
       key: 'actions',
@@ -871,15 +903,61 @@ function Suppliers() {
               </Button>
             </div>
           ) : (
-            <ResponsiveTable 
-              columns={columns as any} 
-              data={suppliers as any} 
-              rowKey="id" 
-              onRowClick={handleSupplierClick as any}
-              tableClassName={undefined as any}
-              mobileCardClassName={undefined as any}
-              getRowClassName={undefined as any}
-            />
+            <>
+              <ResponsiveTable 
+                columns={columns as any} 
+                data={suppliers.slice((page - 1) * pageSize, page * pageSize) as any} 
+                rowKey="id" 
+                onRowClick={handleSupplierClick as any}
+                tableClassName={undefined as any}
+                mobileCardClassName={undefined as any}
+                getRowClassName={undefined as any}
+              />
+              {suppliers.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 mt-4">
+                  <div className="text-sm text-text-dark/70">
+                    Showing {(page - 1) * pageSize + 1}–
+                    {Math.min(page * pageSize, suppliers.length)} of {suppliers.length}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="page-size" className="text-sm text-text-dark/70">
+                      Per page
+                    </label>
+                    <select
+                      id="page-size"
+                      value={pageSize}
+                      onChange={(event) => {
+                        setPageSize(Number(event.target.value))
+                        setPage(1)
+                      }}
+                      className="rounded-md border border-olive-light/60 bg-white px-2 py-1 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                    >
+                      <option value={10}>10</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                    </select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={page <= 1}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPage((p) => p + 1)}
+                      disabled={page * pageSize >= suppliers.length}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -963,18 +1041,22 @@ function Suppliers() {
                             name="supplier_type"
                             value={formData.supplier_type}
                             onChange={handleSupplierTypeChange}
-                            disabled={isSubmitting}
+                            disabled={isSubmitting || loadingTypes}
                             className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
                               formErrors.fields.supplier_type
                                 ? 'border-red-300 focus-visible:ring-red-500'
                                 : 'focus-visible:ring-olive'
                             }`}
                           >
-                            {supplierTypeOptions.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
+                            {loadingTypes ? (
+                              <option value="">Loading types…</option>
+                            ) : (
+                              supplierTypeOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))
+                            )}
                           </select>
                           {formErrors.fields.supplier_type && (
                             <p className="text-xs text-red-600">{formErrors.fields.supplier_type}</p>
@@ -1272,8 +1354,10 @@ function Suppliers() {
                           const documentTypeId = `document-type-${documentType.clientId}`
                           const documentFilesId = `document-files-${documentType.clientId}`
                           const documentExpiryId = `document-expiry-${documentType.clientId}`
-                          const normalizedType = documentType.type?.toString().toUpperCase() ?? ''
-                          const isCertificate = CERTIFICATE_DOC_TYPES.has(normalizedType)
+                          const docType = documentType.document_type_code
+                            ? documentTypeMap.get(documentType.document_type_code)
+                            : null
+                          const requiresExpiry = docType?.has_expiry_date ?? false
 
                           return (
                             <div
@@ -1287,23 +1371,27 @@ function Suppliers() {
                                   <Label htmlFor={documentTypeId}>Document Type</Label>
                                   <select
                                     id={documentTypeId}
-                                    value={documentType.type}
+                                    value={documentType.document_type_code}
                                     onChange={(event) =>
                                       handleDocumentTypeChange(documentType.clientId, event.target.value)
                                     }
                                     className={`h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
                                       documentError ? 'border-red-300 focus-visible:ring-red-500' : 'focus-visible:ring-olive'
                                     }`}
-                                    disabled={isSubmitting}
+                                    disabled={isSubmitting || loadingDocumentTypes}
                                   >
-                                    {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                                      <option key={option.value} value={option.value}>
-                                        {option.label}
-                                      </option>
-                                    ))}
+                                    {loadingDocumentTypes ? (
+                                      <option value="">Loading document types…</option>
+                                    ) : (
+                                      documentTypeOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                          {option.label}
+                                        </option>
+                                      ))
+                                    )}
                                   </select>
                                 </div>
-                                {isCertificate && (
+                                {requiresExpiry && (
                                   <div className="space-y-2">
                                     <Label htmlFor={documentExpiryId}>Expiry Date</Label>
                                     <Input
@@ -1317,17 +1405,31 @@ function Suppliers() {
                                     />
                                   </div>
                                 )}
-                                <div className={`space-y-2 ${isCertificate ? '' : 'sm:col-span-2'}`}>
+                                <div className={`space-y-2 ${requiresExpiry ? '' : 'sm:col-span-2'}`}>
                                   <Label htmlFor={documentFilesId}>Files</Label>
-                                  <Input
-                                    id={documentFilesId}
-                                    type="file"
-                                    multiple
-                                    onChange={(event) =>
-                                      handleDocumentFilesChange(documentType.clientId, event.target.files)
-                                    }
-                                    disabled={isSubmitting}
-                                  />
+                                  <div className="flex gap-2">
+                                    <div className="flex-1">
+                                      <Input
+                                        id={documentFilesId}
+                                        type="file"
+                                        multiple
+                                        onChange={(event) =>
+                                          handleDocumentFilesChange(documentType.clientId, event.target.files)
+                                        }
+                                        disabled={isSubmitting}
+                                      />
+                                    </div>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      onClick={() => handleOpenCamera(documentType.clientId)}
+                                      disabled={isSubmitting}
+                                      className="shrink-0"
+                                      aria-label="Take photo with camera"
+                                    >
+                                      <Camera className="h-4 w-4" />
+                                    </Button>
+                                  </div>
                                 </div>
                               </div>
                               {documentType.files.length === 0 ? (
@@ -1402,6 +1504,12 @@ function Suppliers() {
           </div>
         </div>
       )}
+      <CameraCapture
+        isOpen={cameraModalOpen}
+        onClose={handleCloseCamera}
+        onCapture={handleCameraCapture}
+        disabled={isSubmitting}
+      />
     </PageLayout>
   )
 }
