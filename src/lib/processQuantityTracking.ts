@@ -36,23 +36,92 @@ export async function calculateAvailableQuantity(
 
   const initialQty = (lotRun as any).supply_batches?.current_qty || 0
 
-  // Get all step runs for this lot run, ordered by sequence
-  const { data: stepRuns, error: stepRunsError } = await supabase
+  // Get all step runs for this lot run (no embed: process_step_runs has no seq, and process_steps schema varies)
+  const { data: stepRunsRaw, error: stepRunsError } = await supabase
     .from('process_step_runs')
-    .select(`
-      id,
-      process_step_id,
-      process_steps:process_step_id (
-        seq,
-        step_code
-      )
-    `)
+    .select('id, process_step_id')
     .eq('process_lot_run_id', lotRunId)
-    .order('seq', { ascending: true })
 
   if (stepRunsError) {
     throw stepRunsError
   }
+
+  const stepIds = (stepRunsRaw || [])
+    .map((sr: any) => sr.process_step_id)
+    .filter((id: unknown): id is number => id != null && typeof id === 'number')
+
+  if (stepIds.length === 0) {
+    return {
+      availableQty: initialQty,
+      initialQty,
+      totalWaste: 0,
+      breakdown: {
+        washingWaste: 0,
+        metalRejections: 0,
+        sortingWaste: 0,
+        packagingWaste: 0,
+      },
+    }
+  }
+
+  // Fetch process_steps (id, seq only - columns that exist in all schemas)
+  const { data: stepsData, error: stepsError } = await supabase
+    .from('process_steps')
+    .select('id, seq')
+    .in('id', [...new Set(stepIds)])
+
+  if (stepsError) {
+    throw stepsError
+  }
+
+  const stepsById = new Map<number, number>()
+  ;(stepsData || []).forEach((s: any) => {
+    stepsById.set(s.id, s.seq ?? 0)
+  })
+
+  // Resolve step codes: try step_code column first (processes.sql), else step_name_id + process_step_names
+  const stepCodeByStepId = new Map<number, string>()
+  const { data: stepsWithCode, error: stepCodeError } = await supabase
+    .from('process_steps')
+    .select('id, step_code')
+    .in('id', [...new Set(stepIds)])
+  if (!stepCodeError && stepsWithCode && stepsWithCode.length > 0) {
+    stepsWithCode.forEach((s: any) => {
+      stepCodeByStepId.set(s.id, ((s.step_code ?? '') as string).toUpperCase())
+    })
+  } else {
+    const { data: stepsWithNameId } = await supabase
+      .from('process_steps')
+      .select('id, step_name_id')
+      .in('id', [...new Set(stepIds)])
+    const stepNameIds = (stepsWithNameId || [])
+      .map((s: any) => s.step_name_id)
+      .filter((id: unknown): id is number => id != null && typeof id === 'number')
+    const nameIdToCode = new Map<number, string>()
+    if (stepNameIds.length > 0) {
+      const { data: namesData } = await supabase
+        .from('process_step_names')
+        .select('id, code')
+        .in('id', [...new Set(stepNameIds)])
+      ;(namesData || []).forEach((n: any) => {
+        nameIdToCode.set(n.id, ((n.code ?? '') as string).toUpperCase())
+      })
+    }
+    stepsWithNameId?.forEach((s: any) => {
+      const code = s.step_name_id ? nameIdToCode.get(s.step_name_id) : null
+      if (code) stepCodeByStepId.set(s.id, code)
+    })
+  }
+
+  // Build step runs with seq and step code, sorted by seq
+  const stepRuns = (stepRunsRaw || [])
+    .map((sr: any) => {
+      const seq = stepsById.get(sr.process_step_id) ?? 0
+      const code = stepCodeByStepId.get(sr.process_step_id) ?? ''
+      return { id: sr.id, process_step_id: sr.process_step_id, process_steps: { seq, _code: code } }
+    })
+    .filter((x) => x !== null)
+    .sort((a, b) => a.process_steps.seq - b.process_steps.seq)
 
   // If upToStepRunId is provided, only calculate up to that step
   let stepsToProcess = stepRuns || []
@@ -72,7 +141,7 @@ export async function calculateAvailableQuantity(
 
   // Calculate waste/rejections from each step
   for (const stepRun of stepsToProcess) {
-    const stepCode = (stepRun as any).process_steps?.step_code?.toUpperCase() || ''
+    const stepCode = ((stepRun as any).process_steps?._code as string) || ''
 
     if (stepCode === 'WASH') {
       // Get washing run and its waste

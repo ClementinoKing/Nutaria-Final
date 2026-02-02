@@ -1,10 +1,11 @@
-import { useMemo } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
 import { Button } from '@/components/ui/button'
-import { mockShipments } from '@/data/mockDashboardData'
 import { FileText, MapPin, User2 } from 'lucide-react'
+import { supabase } from '@/lib/supabaseClient'
+import { Spinner } from '@/components/ui/spinner'
 
 interface ShipmentItem {
   id: string
@@ -116,14 +117,127 @@ const hydrateShipment = (shipment: Partial<Shipment> | null | undefined): Shipme
 function ShipmentDetail() {
   const { shipmentId } = useParams()
   const navigate = useNavigate()
-  const location = useLocation()
+  const [shipment, setShipment] = useState<Shipment | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const shipment = useMemo(() => {
-    const passedShipment = location.state?.shipment
-    const fallbackShipment =
-      mockShipments.find((entry) => String(entry.id) === String(shipmentId)) ?? null
-    return hydrateShipment(passedShipment ?? fallbackShipment)
-  }, [location.state, shipmentId])
+  const loadShipment = useCallback(async () => {
+    const id = shipmentId ? Number(shipmentId) : NaN
+    if (!shipmentId || Number.isNaN(id)) {
+      setShipment(null)
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const { data: row, error: shipError } = await supabase
+        .from('shipments')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle()
+
+      if (shipError) {
+        setError(shipError.message)
+        setShipment(null)
+        setLoading(false)
+        return
+      }
+
+      if (!row) {
+        setShipment(null)
+        setLoading(false)
+        return
+      }
+
+      const s = row as {
+        id: number
+        doc_no: string | null
+        customer_id: number | null
+        warehouse_id: number | null
+        carrier_name: string | null
+        carrier_reference: string | null
+        planned_ship_date: string | null
+        shipped_at: string | null
+        expected_delivery: string | null
+        doc_status: string
+        shipping_address: string | null
+        customer_contact_name: string | null
+        customer_contact_email: string | null
+        customer_contact_phone: string | null
+        notes: string | null
+        special_instructions: string | null
+        created_at: string
+      }
+
+      const [itemsRes, customerRes, warehouseRes] = await Promise.all([
+        supabase.from('shipment_items').select('*').eq('shipment_id', s.id).order('id'),
+        s.customer_id
+          ? supabase.from('customers').select('id, name').eq('id', s.customer_id).maybeSingle()
+          : { data: null },
+        s.warehouse_id
+          ? supabase.from('warehouses').select('id, name').eq('id', s.warehouse_id).maybeSingle()
+          : { data: null },
+      ])
+
+      const itemsList = (itemsRes.data ?? []) as Array<{
+        id: number
+        shipment_id: number
+        product_id: number | null
+        sku: string | null
+        description: string | null
+        quantity: number
+        unit: string | null
+      }>
+      const items: ShipmentItem[] = itemsList.map((item) => ({
+        id: `line-${item.id}`,
+        sku: item.sku ?? null,
+        description: item.description ?? null,
+        quantity: item.quantity ?? null,
+        unit: item.unit ?? null,
+      }))
+
+      const customerName: string =
+        s.customer_id != null ? ((customerRes.data as { name?: string } | null)?.name ?? '') : ''
+      const warehouseName: string =
+        s.warehouse_id != null ? ((warehouseRes.data as { name?: string } | null)?.name ?? '') : ''
+
+      setShipment(
+        hydrateShipment({
+          id: s.id,
+          doc_no: s.doc_no ?? '',
+          customer_id: s.customer_id ?? 0,
+          customer_name: customerName,
+          customer_contact_name: s.customer_contact_name ?? null,
+          customer_contact_email: s.customer_contact_email ?? null,
+          customer_contact_phone: s.customer_contact_phone ?? null,
+          shipping_address: s.shipping_address ?? null,
+          warehouse_id: s.warehouse_id ?? 0,
+          warehouse_name: warehouseName,
+          carrier_name: s.carrier_name ?? null,
+          carrier_reference: s.carrier_reference ?? null,
+          planned_ship_date: s.planned_ship_date ?? null,
+          shipped_at: s.shipped_at ?? null,
+          expected_delivery: s.expected_delivery ?? null,
+          doc_status: (s.doc_status as ShipmentStatus) ?? 'PENDING',
+          notes: s.notes ?? null,
+          special_instructions: s.special_instructions ?? null,
+          items,
+          documents: [],
+          created_at: s.created_at ?? new Date().toISOString(),
+        })
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load shipment')
+      setShipment(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [shipmentId])
+
+  useEffect(() => {
+    loadShipment()
+  }, [loadShipment])
 
   const handleBack = () => {
     navigate('/shipments')
@@ -134,6 +248,52 @@ function ShipmentDetail() {
       return
     }
     navigate('/shipments', { state: { editShipmentId: shipment.id, shipment } })
+  }
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="Shipment Detail"
+        activeItem="shipments"
+        actions={
+          <Button variant="outline" onClick={handleBack}>
+            Back to Shipments
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <div className="flex items-center justify-center py-12">
+          <Spinner className="h-8 w-8 text-olive" />
+        </div>
+      </PageLayout>
+    )
+  }
+
+  if (error) {
+    return (
+      <PageLayout
+        title="Shipment Detail"
+        activeItem="shipments"
+        actions={
+          <Button variant="outline" onClick={handleBack}>
+            Back to Shipments
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Card className="border-olive-light/30">
+          <CardHeader>
+            <CardTitle className="text-text-dark">Error loading shipment</CardTitle>
+            <CardDescription>{error}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" onClick={() => loadShipment()}>
+              Try again
+            </Button>
+          </CardContent>
+        </Card>
+      </PageLayout>
+    )
   }
 
   if (!shipment) {

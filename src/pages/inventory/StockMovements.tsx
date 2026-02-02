@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -6,11 +6,13 @@ import { Label } from '@/components/ui/label'
 import { ArrowRight, Plus, ArrowDown, ArrowUp, Filter } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
+import { supabase } from '@/lib/supabaseClient'
+import { Spinner } from '@/components/ui/spinner'
 
-type MovementType = 'IN_RECEIPT' | 'OUT_SHIPMENT' | 'QUALITY_HOLD' | 'TRANSFER_OUT' | 'TRANSFER_IN'
+type MovementType = 'IN_RECEIPT' | 'OUT_SHIPMENT' | 'QUALITY_HOLD' | 'TRANSFER_OUT' | 'TRANSFER_IN' | 'PROCESS_START'
 
 interface StockMovement {
-  id: number
+  id: string
   created_at: string
   movement_type: MovementType
   ref_table: string | null
@@ -32,128 +34,20 @@ interface StockMovement {
   runningBalance?: number
 }
 
-// Mock data for stock movements
-const mockStockMovements: StockMovement[] = [
-  {
-    id: 1,
-    created_at: '2024-01-24T08:00:00Z',
-    movement_type: 'IN_RECEIPT',
-    ref_table: 'purchasing_receipts',
-    ref_id: 5001,
-    product_id: 1,
-    product_name: 'Pecan Wholes',
-    product_sku: 'PEC001',
-    warehouse_id: 1,
-    warehouse_name: 'Mpumalanga Warehouse',
-    batch_id: 'LOT-240124-A',
-    qty: 220,
-    unit: 'Kg',
-    actor: 'Thabo Nkosi',
-    note: 'PO 4500012456 Receipt',
-  },
-  {
-    id: 2,
-    created_at: '2024-01-24T11:30:00Z',
-    movement_type: 'QUALITY_HOLD',
-    ref_table: 'quality_events',
-    ref_id: 302,
-    product_id: 1,
-    product_name: 'Pecan Wholes',
-    product_sku: 'PEC001',
-    warehouse_id: 1,
-    warehouse_name: 'Mpumalanga Warehouse',
-    batch_id: 'LOT-240124-A',
-    qty: 30,
-    unit: 'Kg',
-    actor: 'QA: Lerato M.',
-    note: 'Moisture retest required',
-  },
-  {
-    id: 3,
-    created_at: '2024-01-25T09:45:00Z',
-    movement_type: 'IN_RECEIPT',
-    ref_table: 'production_orders',
-    ref_id: 701,
-    product_id: 3,
-    product_name: 'Mac Halves',
-    product_sku: 'MAC002',
-    warehouse_id: 1,
-    warehouse_name: 'Mpumalanga Warehouse',
-    batch_id: 'FH-20240125-1',
-    qty: 180,
-    unit: 'Kg',
-    actor: 'Production Line 2',
-    note: 'Finished goods receipt',
-  },
-  {
-    id: 4,
-    created_at: '2024-01-26T14:30:00Z',
-    movement_type: 'OUT_SHIPMENT',
-    ref_table: 'shipments',
-    ref_id: 101,
-    product_id: 1,
-    product_name: 'Pecan Wholes',
-    product_sku: 'PEC001',
-    warehouse_id: 1,
-    warehouse_name: 'Mpumalanga Warehouse',
-    batch_id: 'LOT-240124-A',
-    qty: 120,
-    unit: 'Kg',
-    actor: 'Shipping Desk',
-    note: 'Shipment SHIP-2024-001',
-  },
-  {
-    id: 5,
-    created_at: '2024-01-26T16:10:00Z',
-    movement_type: 'TRANSFER_OUT',
-    ref_table: 'transfer_orders',
-    ref_id: 205,
-    product_id: 4,
-    product_name: 'Mac Pieces',
-    product_sku: 'MAC003',
-    warehouse_id: 1,
-    warehouse_name: 'Mpumalanga Warehouse',
-    target_warehouse_id: 3,
-    target_warehouse_name: 'Durban Export Terminal',
-    batch_id: 'MP-240126',
-    qty: 140,
-    unit: 'Kg',
-    actor: 'Warehouse Ops',
-    note: 'Transfer to Durban for export staging',
-  },
-  {
-    id: 6,
-    created_at: '2024-01-27T09:20:00Z',
-    movement_type: 'TRANSFER_IN',
-    ref_table: 'transfer_orders',
-    ref_id: 205,
-    product_id: 4,
-    product_name: 'Mac Pieces',
-    product_sku: 'MAC003',
-    warehouse_id: 3,
-    warehouse_name: 'Durban Export Terminal',
-    source_warehouse_id: 1,
-    source_warehouse_name: 'Mpumalanga Warehouse',
-    batch_id: 'MP-240126',
-    qty: 140,
-    unit: 'Kg',
-    actor: 'Durban Receiving',
-    note: 'Inbound transfer from Mpumalanga',
-  },
-]
-
 const movementTypeLabels: Record<MovementType, string> = {
   IN_RECEIPT: 'Inbound Receipt',
   OUT_SHIPMENT: 'Outbound Shipment',
   QUALITY_HOLD: 'Quality Hold',
   TRANSFER_OUT: 'Transfer Out',
   TRANSFER_IN: 'Transfer In',
+  PROCESS_START: 'Sent to process',
 }
 
 const movementTypeFamilies = [
   { value: 'ALL', label: 'All movements' },
   { value: 'INBOUND', label: 'Inbound' },
   { value: 'OUTBOUND', label: 'Outbound' },
+  { value: 'PROCESS', label: 'Process' },
   { value: 'QUALITY', label: 'Quality' },
   { value: 'TRANSFER', label: 'Transfers' },
 ]
@@ -163,10 +57,167 @@ function StockMovements() {
   const [movementFamily, setMovementFamily] = useState('ALL')
   const [warehouseFilter, setWarehouseFilter] = useState('ALL')
   const [sortDirection, setSortDirection] = useState('desc')
+  const [movements, setMovements] = useState<StockMovement[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const allMovements: StockMovement[] = []
+
+      // 1) Inbound receipts from supply_batches
+      const { data: batchRows, error: batchesError } = await supabase
+        .from('supply_batches')
+        .select('id, supply_id, product_id, unit_id, lot_no, accepted_qty, received_qty, created_at')
+        .order('created_at', { ascending: true })
+
+      if (batchesError) {
+        setError(batchesError.message)
+        setMovements([])
+        setLoading(false)
+        return
+      }
+
+      const batchList = (batchRows ?? []) as Array<{
+        id: number
+        supply_id: number
+        product_id: number
+        unit_id: number | null
+        lot_no: string
+        accepted_qty: number | null
+        received_qty: number | null
+        created_at: string
+      }>
+
+      // Fetch process_lot_runs early so we can include their supply/product ids in the lookup
+      const { data: lotRunRows } = await supabase
+        .from('process_lot_runs')
+        .select('id, supply_batch_id, started_at')
+        .order('started_at', { ascending: true })
+
+      let runBatchesMap = new Map<number, { supply_id: number; product_id: number; unit_id: number | null; lot_no: string; accepted_qty: number | null }>()
+      if (lotRunRows?.length) {
+        const batchIds = (lotRunRows as Array<{ supply_batch_id: number }>).map((r) => r.supply_batch_id).filter(Boolean)
+        const { data: runBatches } = await supabase
+          .from('supply_batches')
+          .select('id, supply_id, product_id, unit_id, lot_no, accepted_qty')
+          .in('id', batchIds)
+        runBatchesMap = new Map(
+          (runBatches ?? []).map((b: any) => [b.id, { supply_id: b.supply_id, product_id: b.product_id, unit_id: b.unit_id ?? null, lot_no: b.lot_no, accepted_qty: b.accepted_qty }])
+        )
+      }
+
+      const supplyIds = [...new Set([
+        ...batchList.map((b) => b.supply_id).filter(Boolean),
+        ...Array.from(runBatchesMap.values()).map((b) => b.supply_id).filter(Boolean),
+      ])]
+      const productIds = [...new Set([
+        ...batchList.map((b) => b.product_id).filter(Boolean),
+        ...Array.from(runBatchesMap.values()).map((b) => b.product_id).filter(Boolean),
+      ])]
+      const unitIds = [...new Set([
+        ...batchList.map((b) => b.unit_id).filter((id): id is number => id != null),
+        ...Array.from(runBatchesMap.values()).map((b) => b.unit_id).filter((id): id is number => id != null),
+      ])]
+
+      const [suppliesRes, productsRes, unitsRes, warehousesRes] = await Promise.all([
+        supplyIds.length > 0 ? supabase.from('supplies').select('id, warehouse_id, received_at, doc_no').in('id', supplyIds) : { data: [] },
+        productIds.length > 0 ? supabase.from('products').select('id, name, sku').in('id', productIds) : { data: [] },
+        unitIds.length > 0 ? supabase.from('units').select('id, symbol, name').in('id', unitIds) : { data: [] },
+        supabase.from('warehouses').select('id, name'),
+      ])
+
+      const suppliesMap = new Map<number, { warehouse_id: number | null; received_at: string | null; doc_no: string | null }>(
+        (suppliesRes.data ?? []).map((s: any) => [s.id, { warehouse_id: s.warehouse_id ?? null, received_at: s.received_at ?? null, doc_no: s.doc_no ?? null }])
+      )
+      const productsMap = new Map<number, { name: string; sku: string }>(
+        (productsRes.data ?? []).map((p: any) => [p.id, { name: p.name ?? 'Unknown', sku: p.sku ?? '' }])
+      )
+      const unitsMap = new Map<number, { symbol: string; name: string }>(
+        (unitsRes.data ?? []).map((u: any) => [u.id, { symbol: u.symbol ?? u.name ?? 'Kg', name: u.name ?? 'Kg' }])
+      )
+      const warehouseMap = new Map<number, string>(
+        (warehousesRes.data ?? []).map((w: any) => [w.id, w.name ?? '—'])
+      )
+
+      for (const b of batchList) {
+        const supply = suppliesMap.get(b.supply_id)
+        const product = productsMap.get(b.product_id)
+        const unit = b.unit_id ? unitsMap.get(b.unit_id) : null
+        const warehouseId = supply?.warehouse_id ?? 0
+        const qty = Number(b.accepted_qty ?? b.received_qty ?? 0)
+        if (qty <= 0 || !product) continue
+        allMovements.push({
+          id: `receipt-${b.id}`,
+          created_at: supply?.received_at ?? b.created_at ?? new Date().toISOString(),
+          movement_type: 'IN_RECEIPT',
+          ref_table: 'supply_batches',
+          ref_id: b.id,
+          product_id: b.product_id,
+          product_name: product.name,
+          product_sku: product.sku,
+          warehouse_id: warehouseId,
+          warehouse_name: warehouseMap.get(warehouseId) ?? '—',
+          batch_id: b.lot_no,
+          qty: Math.round(qty * 100) / 100,
+          unit: unit?.symbol ?? unit?.name ?? 'Kg',
+          actor: supply?.doc_no ? `Supply ${supply.doc_no}` : 'Supply receipt',
+          note: b.lot_no ? `Lot ${b.lot_no}` : null,
+          runningBalance: undefined,
+        })
+      }
+
+      // 2) Sent to process from process_lot_runs (lotRunRows and runBatchesMap already loaded above)
+      if (lotRunRows?.length) {
+        for (const run of lotRunRows as Array<{ id: number; supply_batch_id: number; started_at: string | null }>) {
+          const batch = runBatchesMap.get(run.supply_batch_id)
+          if (!batch) continue
+          const supply = suppliesMap.get(batch.supply_id)
+          const product = productsMap.get(batch.product_id)
+          const unit = batch.unit_id ? unitsMap.get(batch.unit_id) : null
+          const warehouseId = supply?.warehouse_id ?? 0
+          const qty = Number(batch.accepted_qty ?? 0)
+          if (qty <= 0 || !product) continue
+          allMovements.push({
+            id: `process-${run.id}`,
+            created_at: run.started_at ?? new Date().toISOString(),
+            movement_type: 'PROCESS_START',
+            ref_table: 'process_lot_runs',
+            ref_id: run.id,
+            product_id: batch.product_id,
+            product_name: product.name,
+            product_sku: product.sku,
+            warehouse_id: warehouseId,
+            warehouse_name: warehouseMap.get(warehouseId) ?? '—',
+            batch_id: batch.lot_no,
+            qty: Math.round(qty * 100) / 100,
+            unit: unit?.symbol ?? unit?.name ?? 'Kg',
+            actor: 'Process',
+            note: `Lot ${batch.lot_no} sent to process`,
+            runningBalance: undefined,
+          })
+        }
+      }
+
+      allMovements.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      setMovements(allMovements)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load stock movements')
+      setMovements([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   const warehouses = useMemo(
-    () => Array.from(new Set(mockStockMovements.map((movement) => movement.warehouse_name))).sort(),
-    []
+    () => Array.from(new Set(movements.map((m) => m.warehouse_name).filter(Boolean))).sort(),
+    [movements]
   )
 
   const filteredMovements = useMemo(() => {
@@ -174,28 +225,21 @@ function StockMovements() {
 
     const isMovementInFamily = (movement: StockMovement) => {
       if (movementFamily === 'ALL') return true
-      if (movementFamily === 'INBOUND') {
-        return movement.movement_type.startsWith('IN')
-      }
-      if (movementFamily === 'OUTBOUND') {
-        return movement.movement_type.startsWith('OUT')
-      }
-      if (movementFamily === 'QUALITY') {
-        return movement.movement_type.includes('QUALITY')
-      }
-      if (movementFamily === 'TRANSFER') {
-        return movement.movement_type.includes('TRANSFER')
-      }
+      if (movementFamily === 'INBOUND') return movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN'
+      if (movementFamily === 'OUTBOUND') return movement.movement_type.startsWith('OUT') || movement.movement_type === 'TRANSFER_OUT'
+      if (movementFamily === 'PROCESS') return movement.movement_type === 'PROCESS_START'
+      if (movementFamily === 'QUALITY') return movement.movement_type.includes('QUALITY')
+      if (movementFamily === 'TRANSFER') return movement.movement_type.includes('TRANSFER')
       return true
     }
 
-    const sorted = [...mockStockMovements].sort((a, b) => {
+    const sorted = [...movements].sort((a, b) => {
       const aTime = new Date(a.created_at).getTime()
       const bTime = new Date(b.created_at).getTime()
       return aTime - bTime
     })
 
-    const runningBalances = new Map()
+    const runningBalances = new Map<string, number>()
 
     const annotated = sorted
       .filter((movement) => {
@@ -204,7 +248,8 @@ function StockMovements() {
           movement.product_name.toLowerCase().includes(normalisedSearch) ||
           movement.product_sku.toLowerCase().includes(normalisedSearch) ||
           movement.note?.toLowerCase().includes(normalisedSearch) ||
-          movement.movement_type.toLowerCase().includes(normalisedSearch)
+          movement.movement_type.toLowerCase().includes(normalisedSearch) ||
+          movement.batch_id.toLowerCase().includes(normalisedSearch)
 
         const matchesWarehouse = warehouseFilter === 'ALL' || movement.warehouse_name === warehouseFilter
 
@@ -214,7 +259,9 @@ function StockMovements() {
         const key = `${movement.product_id}-${movement.warehouse_id}`
         const previousBalance = runningBalances.get(key) ?? 0
         const delta =
-          movement.movement_type.startsWith('IN') || movement.movement_type === 'TRANSFER_IN' ? movement.qty : -movement.qty
+          movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN'
+            ? movement.qty
+            : -movement.qty
         const newBalance = previousBalance + delta
         runningBalances.set(key, newBalance)
 
@@ -225,36 +272,46 @@ function StockMovements() {
       })
 
     if (sortDirection === 'desc') {
-      return annotated.reverse()
+      return [...annotated].reverse()
     }
 
     return annotated
-  }, [movementFamily, searchTerm, sortDirection, warehouseFilter])
+  }, [movements, movementFamily, searchTerm, sortDirection, warehouseFilter])
 
   const totalInbound = filteredMovements
-    .filter((movement) => movement.movement_type.startsWith('IN'))
+    .filter((movement) => movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN')
     .reduce((accumulator, movement) => accumulator + movement.qty, 0)
 
   const totalOutbound = filteredMovements
-    .filter((movement) => movement.movement_type.startsWith('OUT') || movement.movement_type.includes('TRANSFER_OUT'))
+    .filter(
+      (movement) =>
+        movement.movement_type.startsWith('OUT') ||
+        movement.movement_type.includes('TRANSFER_OUT') ||
+        movement.movement_type === 'PROCESS_START'
+    )
     .reduce((accumulator, movement) => accumulator + movement.qty, 0)
 
   const uniqueProducts = new Set(filteredMovements.map((movement) => movement.product_id)).size
 
   const getMovementIcon = (movementType: MovementType) => {
-    if (movementType.startsWith('IN') || movementType === 'TRANSFER_IN') {
+    if (movementType === 'IN_RECEIPT' || movementType === 'TRANSFER_IN') {
       return <ArrowDown className="h-4 w-4 text-green-600" />
-    } else if (movementType.startsWith('OUT') || movementType === 'TRANSFER_OUT') {
+    }
+    if (movementType.startsWith('OUT') || movementType === 'TRANSFER_OUT' || movementType === 'PROCESS_START') {
       return <ArrowUp className="h-4 w-4 text-red-600" />
     }
     return <ArrowRight className="h-4 w-4 text-gray-600" />
   }
 
   const getMovementBadgeColor = (movementType: MovementType) => {
-    if (movementType.startsWith('IN') || movementType === 'TRANSFER_IN') {
+    if (movementType === 'IN_RECEIPT' || movementType === 'TRANSFER_IN') {
       return 'bg-green-100 text-green-800'
-    } else if (movementType.startsWith('OUT') || movementType === 'TRANSFER_OUT') {
+    }
+    if (movementType.startsWith('OUT') || movementType === 'TRANSFER_OUT') {
       return 'bg-red-100 text-red-800'
+    }
+    if (movementType === 'PROCESS_START') {
+      return 'bg-amber-100 text-amber-800'
     }
     if (movementType.includes('QUALITY')) {
       return 'bg-orange-100 text-orange-800'
@@ -372,18 +429,35 @@ function StockMovements() {
     },
   ]
 
+  if (loading) {
+    return (
+      <PageLayout
+        title="Stock Movements"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading stock movements..." />
+      </PageLayout>
+    )
+  }
+
   return (
     <PageLayout
       title="Stock Movements"
       activeItem="inventory"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark">
+        <Button className="bg-olive hover:bg-olive-dark" disabled>
           <Plus className="mr-2 h-4 w-4" />
           Record Movement
         </Button>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
+      {error ? (
+        <div className="mb-6 rounded-md border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
+          {error}
+        </div>
+      ) : null}
       <div className="grid gap-4 sm:grid-cols-3 mb-6">
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
@@ -472,15 +546,23 @@ function StockMovements() {
             </div>
           </div>
 
-          <ResponsiveTable
-            columns={columns}
-            data={filteredMovements}
-            rowKey="id"
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          {filteredMovements.length === 0 ? (
+            <div className="rounded-md border border-dashed border-olive-light/60 bg-olive-light/10 p-8 text-center text-sm text-text-dark/70">
+              {movements.length === 0
+                ? 'No stock movements yet. Receipts from supplies and batches sent to process will appear here.'
+                : 'No movements match the current filters.'}
+            </div>
+          ) : (
+            <ResponsiveTable
+              columns={columns}
+              data={filteredMovements}
+              rowKey="id"
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          )}
         </CardContent>
       </Card>
     </PageLayout>

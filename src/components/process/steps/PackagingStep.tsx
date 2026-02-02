@@ -2,29 +2,36 @@ import { useState, FormEvent, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, Save, Upload } from 'lucide-react'
+import { SearchableSelect } from '@/components/ui/searchable-select'
+import { Plus, Trash2, Save, Upload, Package as PackageIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
-import { useSortingRun } from '@/hooks/useSortingRun'
+import { supabase } from '@/lib/supabaseClient'
 import type {
   ProcessStepRun,
   PackagingFormData,
   PackagingWeightCheckFormData,
   PackagingWasteFormData,
-  PackagingPackEntryFormData,
-  ProcessSortingOutput,
 } from '@/types/processExecution'
+
+interface SortedWipRow {
+  id: number
+  process_step_run_id: number
+  product_id: number
+  quantity_kg: number
+  product_name: string
+  product_sku: string | null
+}
+
+interface FinishedProductOption {
+  id: number
+  name: string
+  sku: string | null
+}
 
 interface PackagingStepProps {
   stepRun: ProcessStepRun
   loading?: boolean
-  availableQuantity?: {
-    availableQty: number
-    initialQty: number
-    totalWaste: number
-  } | null
-  onQuantityChange?: () => void
-  sortingStepRunId?: number | null // Optional: ID of the sorting step run to fetch sorted WIPs
 }
 
 const YES_NO_NA_OPTIONS = [
@@ -34,76 +41,22 @@ const YES_NO_NA_OPTIONS = [
   { value: 'NA', label: 'N/A' },
 ]
 
-const VISUAL_STATUS_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'Pass', label: 'Pass' },
-  { value: 'Rework', label: 'Rework' },
-  { value: 'Hold', label: 'Hold' },
-]
-
-const PEST_STATUS_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'None', label: 'None' },
-  { value: 'Minor', label: 'Minor' },
-  { value: 'Major', label: 'Major' },
-]
-
-const FOREIGN_OBJECT_STATUS_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'None', label: 'None' },
-  { value: 'Detected', label: 'Detected' },
-]
-
-const MOULD_STATUS_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'None', label: 'None' },
-  { value: 'Present', label: 'Present' },
-]
-
-const PRIMARY_PACKAGING_TYPE_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'Bag', label: 'Bag' },
-  { value: 'Box', label: 'Box' },
-  { value: 'Pouch', label: 'Pouch' },
-  { value: 'Container', label: 'Container' },
-]
-
-const SECONDARY_PACKAGING_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'Carton', label: 'Carton' },
-  { value: 'Pallet', label: 'Pallet' },
-  { value: 'Crate', label: 'Crate' },
-  { value: 'None', label: 'None' },
-]
-
-const ALLERGEN_SWAB_RESULT_OPTIONS = [
-  { value: '', label: 'Select...' },
-  { value: 'Pass', label: 'Pass' },
-  { value: 'Fail', label: 'Fail' },
-  { value: 'Pending', label: 'Pending' },
-]
-
 const REWORK_DESTINATIONS = ['Washing', 'Drying', 'Sorting']
 const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
+const PACKING_TYPES = ['Vacuum packing', 'Bag packing', 'Shop packing'] as const
 const PHOTO_TYPES: Array<{ value: 'product' | 'label' | 'pallet'; label: string }> = [
   { value: 'product', label: 'Product' },
   { value: 'label', label: 'Label' },
   { value: 'pallet', label: 'Pallet' },
 ]
 
-export function PackagingStep({
-  stepRun,
-  loading: externalLoading = false,
-  availableQuantity,
-  onQuantityChange,
-  sortingStepRunId,
-}: PackagingStepProps) {
+export function PackagingStep({ stepRun, loading: externalLoading = false }: PackagingStepProps) {
   const {
     packagingRun,
+    packEntries,
     weightChecks,
     photos,
     waste,
-    packEntries,
     loading,
     savePackagingRun,
     addWeightCheck,
@@ -114,22 +67,116 @@ export function PackagingStep({
     addWaste,
     deleteWaste,
     addPackEntry,
-    updatePackEntry,
     deletePackEntry,
   } = usePackagingRun({
     stepRunId: stepRun.id,
     enabled: true,
   })
 
-  // Use the useSortingRun hook to fetch sorted outputs if sortingStepRunId is provided
-  // This is the best approach as it reuses existing hooks and avoids duplicate queries
-  const {
-    outputs: sortedOutputs,
-    loading: loadingSortedOutputs,
-  } = useSortingRun({
-    stepRunId: sortingStepRunId ?? null,
-    enabled: sortingStepRunId !== null && sortingStepRunId !== undefined,
-  })
+  const [sortedWips, setSortedWips] = useState<SortedWipRow[]>([])
+  const [finishedProducts, setFinishedProducts] = useState<FinishedProductOption[]>([])
+  const [loadingWips, setLoadingWips] = useState(false)
+  const [showPackEntryForm, setShowPackEntryForm] = useState(false)
+  const [packEntryForm, setPackEntryForm] = useState({ sorting_output_id: '', product_id: '', packing_type: '', pack_identifier: '', quantity_kg: '' })
+
+  const loadSortedWips = useCallback(async () => {
+    const lotRunId = stepRun.process_lot_run_id
+    if (!lotRunId) {
+      setSortedWips([])
+      return
+    }
+    setLoadingWips(true)
+    try {
+      const { data: stepRunsData, error: stepRunsError } = await supabase
+        .from('process_step_runs')
+        .select('id, process_step_id')
+        .eq('process_lot_run_id', lotRunId)
+
+      if (stepRunsError || !stepRunsData?.length) {
+        setSortedWips([])
+        setLoadingWips(false)
+        return
+      }
+
+      const stepIds = stepRunsData.map((sr: { process_step_id: number }) => sr.process_step_id).filter(Boolean)
+      const { data: stepsData } = await supabase
+        .from('process_steps')
+        .select('id, step_name_id')
+        .in('id', stepIds)
+
+      const stepNameIds = (stepsData ?? []).map((s: { step_name_id?: number }) => s.step_name_id).filter((id): id is number => id != null)
+      let stepCodeByStepId = new Map<number, string>()
+      if (stepNameIds.length > 0) {
+        const { data: namesData } = await supabase
+          .from('process_step_names')
+          .select('id, code')
+          .in('id', [...new Set(stepNameIds)])
+        stepCodeByStepId = new Map((namesData ?? []).map((n: { id: number; code: string }) => [n.id, (n.code ?? '').toUpperCase()]))
+      }
+
+      const stepsById = new Map((stepsData ?? []).map((s: { id: number; step_name_id?: number }) => [s.id, s.step_name_id]))
+      const sortStepRunIds = stepRunsData
+        .filter((sr: { id: number; process_step_id: number }) => stepCodeByStepId.get(stepsById.get(sr.process_step_id)!) === 'SORT')
+        .map((sr: { id: number }) => sr.id)
+
+      if (sortStepRunIds.length === 0) {
+        setSortedWips([])
+        setLoadingWips(false)
+        return
+      }
+
+      const { data: outputsData, error: outputsError } = await supabase
+        .from('process_sorting_outputs')
+        .select('id, process_step_run_id, product_id, quantity_kg, product:products(id, name, sku)')
+        .in('process_step_run_id', sortStepRunIds)
+        .order('quantity_kg', { ascending: false })
+
+      if (outputsError) {
+        setSortedWips([])
+        setLoadingWips(false)
+        return
+      }
+
+      const rows: SortedWipRow[] = (outputsData ?? []).map((o: { id: number; process_step_run_id: number; product_id: number; quantity_kg: number; product?: { name?: string; sku?: string } }) => ({
+        id: o.id,
+        process_step_run_id: o.process_step_run_id,
+        product_id: o.product_id,
+        quantity_kg: Number(o.quantity_kg) || 0,
+        product_name: o.product?.name ?? 'Unknown',
+        product_sku: o.product?.sku ?? null,
+      }))
+      setSortedWips(rows)
+    } catch {
+      setSortedWips([])
+    } finally {
+      setLoadingWips(false)
+    }
+  }, [stepRun.process_lot_run_id])
+
+  const loadFinishedProducts = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, sku')
+        .eq('product_type', 'FINISHED')
+        .order('name', { ascending: true })
+      if (error) {
+        setFinishedProducts([])
+        return
+      }
+      setFinishedProducts((data as FinishedProductOption[]) ?? [])
+    } catch {
+      setFinishedProducts([])
+    }
+  }, [])
+
+  useEffect(() => {
+    loadSortedWips()
+  }, [loadSortedWips])
+
+  useEffect(() => {
+    loadFinishedProducts()
+  }, [loadFinishedProducts])
 
   const [formData, setFormData] = useState<PackagingFormData>({
     visual_status: '',
@@ -163,15 +210,8 @@ export function PackagingStep({
     quantity_kg: '',
   })
 
-  const [packEntryFormData, setPackEntryFormData] = useState<PackagingPackEntryFormData>({
-    sorting_output_id: '',
-    pack_identifier: '',
-    quantity_kg: '',
-  })
-
   const [showWeightForm, setShowWeightForm] = useState(false)
   const [showWasteForm, setShowWasteForm] = useState(false)
-  const [showPackEntryForm, setShowPackEntryForm] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -199,17 +239,6 @@ export function PackagingStep({
       })
     }
   }, [packagingRun])
-
-  // Calculate available quantities for each sorted output
-  // This is memoized to avoid recalculating on every render
-  const getAvailableQuantity = useCallback((outputId: number) => {
-    const output = sortedOutputs.find((o) => o.id === outputId)
-    if (!output) return 0
-    const usedQuantity = packEntries
-      .filter((e) => e.sorting_output_id === outputId)
-      .reduce((sum, e) => sum + e.quantity_kg, 0)
-    return output.quantity_kg - usedQuantity
-  }, [sortedOutputs, packEntries])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -318,7 +347,6 @@ export function PackagingStep({
       setWasteFormData({ waste_type: '', quantity_kg: '' })
       setShowWasteForm(false)
       toast.success('Waste record added')
-      onQuantityChange?.()
     } catch (error) {
       console.error('Error adding waste:', error)
       toast.error('Failed to add waste record')
@@ -363,7 +391,6 @@ export function PackagingStep({
     try {
       await deleteWaste(wasteId)
       toast.success('Waste record deleted')
-      onQuantityChange?.()
     } catch (error) {
       console.error('Error deleting waste:', error)
       toast.error('Failed to delete waste record')
@@ -389,380 +416,249 @@ export function PackagingStep({
     }
   }
 
+  const showReworkDropdown = formData.visual_status?.toLowerCase().includes('rework')
+
   const handlePackEntrySubmit = async (e: FormEvent) => {
     e.preventDefault()
-
-    if (!packEntryFormData.sorting_output_id.trim()) {
-      toast.error('Please select a sorted WIP')
+    const sortingOutputId = parseInt(packEntryForm.sorting_output_id, 10)
+    const productId = packEntryForm.product_id ? parseInt(packEntryForm.product_id, 10) : null
+    const quantityKg = parseFloat(packEntryForm.quantity_kg)
+    if (!sortingOutputId || isNaN(quantityKg) || quantityKg <= 0 || !packEntryForm.pack_identifier.trim()) {
+      toast.error('Select a WIP, enter pack identifier and valid quantity')
       return
     }
-
-    if (!packEntryFormData.pack_identifier.trim()) {
-      toast.error('Please enter a pack identifier')
+    if (!productId) {
+      toast.error('Select the finished product being packed')
       return
     }
-
-    const quantity = parseFloat(packEntryFormData.quantity_kg)
-    if (isNaN(quantity) || quantity <= 0) {
-      toast.error('Please enter a valid quantity')
+    const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
+    if (selectedWip && quantityKg > selectedWip.quantity_kg) {
+      toast.error(`Quantity cannot exceed available ${selectedWip.quantity_kg} kg for this WIP`)
       return
     }
-
-    // Check if quantity exceeds available quantity for this sorted output
-    const selectedOutput = sortedOutputs.find(
-      (o) => o.id.toString() === packEntryFormData.sorting_output_id
-    )
-    if (selectedOutput) {
-      const usedQuantity = packEntries
-        .filter((e) => e.sorting_output_id === selectedOutput.id)
-        .reduce((sum, e) => sum + e.quantity_kg, 0)
-      const availableQty = selectedOutput.quantity_kg - usedQuantity
-
-      if (quantity > availableQty) {
-        toast.error(
-          `Quantity exceeds available. Available: ${availableQty.toFixed(2)} kg, Attempted: ${quantity.toFixed(2)} kg`
-        )
-        return
-      }
-    }
-
     setSaving(true)
     try {
       await addPackEntry({
-        sorting_output_id: parseInt(packEntryFormData.sorting_output_id, 10),
-        pack_identifier: packEntryFormData.pack_identifier.trim(),
-        quantity_kg: quantity,
+        sorting_output_id: sortingOutputId,
+        product_id: productId,
+        pack_identifier: packEntryForm.pack_identifier.trim(),
+        quantity_kg: quantityKg,
+        packing_type: packEntryForm.packing_type.trim() || null,
       })
-      setPackEntryFormData({ sorting_output_id: '', pack_identifier: '', quantity_kg: '' })
+      setPackEntryForm({ sorting_output_id: '', product_id: '', packing_type: '', pack_identifier: '', quantity_kg: '' })
       setShowPackEntryForm(false)
       toast.success('Pack entry added')
-    } catch (error) {
-      console.error('Error adding pack entry:', error)
+    } catch (err) {
+      console.error('Error adding pack entry:', err)
       toast.error('Failed to add pack entry')
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDeletePackEntry = async (entryId: number) => {
-    if (!confirm('Are you sure you want to delete this pack entry?')) {
-      return
-    }
-
-    setSaving(true)
-    try {
-      await deletePackEntry(entryId)
-      toast.success('Pack entry deleted')
-    } catch (error) {
-      console.error('Error deleting pack entry:', error)
-      toast.error('Failed to delete pack entry')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const showReworkDropdown = formData.visual_status?.toLowerCase().includes('rework')
-  const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
-
   return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      {/* Sorted WIPs Section - at top for quick access */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-semibold text-text-dark">Sorted WIPs Available</h4>
-            <p className="text-xs text-text-dark/60 mt-1">
-              WIPs from the sorting step that can be packaged
-            </p>
-          </div>
-          {sortedOutputs.length > 0 && (
-            <span className="text-xs font-medium text-olive-dark bg-olive-light/20 px-2 py-1 rounded">
-              {sortedOutputs.length} {sortedOutputs.length === 1 ? 'product' : 'products'}
-            </span>
-          )}
-        </div>
-
-        {loadingSortedOutputs ? (
-          <div className="flex items-center justify-center py-8">
-            <div className="flex flex-col items-center gap-2">
-              <div className="h-6 w-6 border-2 border-olive border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-sm text-text-dark/60">Loading sorted WIPs...</p>
-            </div>
-          </div>
-        ) : sortedOutputs.length === 0 ? (
-          <div className="rounded-lg border border-olive-light/30 bg-olive-light/5 p-6 text-center">
-            <p className="text-sm text-text-dark/60 mb-1">No sorted WIPs available</p>
-            <p className="text-xs text-text-dark/50">
-              Please complete the sorting step first to add sorted products here.
-            </p>
-          </div>
+    <div className="space-y-6">
+      {/* Sorted WIPs to be packed */}
+      <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+        <h4 className="text-sm font-semibold text-text-dark mb-2">Sorted WIPs to be packed</h4>
+        <p className="text-xs text-text-dark/60 mb-3">
+          Sorting outputs from this run available for pack entries. Save packaging data first, then add pack entries below.
+        </p>
+        {loadingWips ? (
+          <p className="text-sm text-text-dark/60">Loading sorted WIPs…</p>
+        ) : sortedWips.length === 0 ? (
+          <p className="text-sm text-text-dark/60">
+            No sorted WIPs for this run. Complete the Sorting step and record sorting outputs first.
+          </p>
         ) : (
-          <div className="space-y-3">
-            {sortedOutputs.map((output) => {
-              const availableQty = getAvailableQuantity(output.id)
-              const usedQty = output.quantity_kg - availableQty
-              const isLowStock = availableQty > 0 && availableQty < output.quantity_kg * 0.2
-              return (
-                <div
-                  key={output.id}
-                  className="rounded-lg border border-olive-light/30 bg-white p-4 transition-all hover:shadow-md hover:border-olive-light/50"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-sm font-semibold text-text-dark">
-                          {output.product?.name || `Product #${output.product_id}`}
-                        </span>
-                        {output.product?.sku && (
-                          <span className="text-xs text-text-dark/50 bg-olive-light/10 px-2 py-0.5 rounded">
-                            {output.product.sku}
-                          </span>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-3 gap-3 text-xs">
-                        <div>
-                          <span className="text-text-dark/50 block mb-0.5">Total</span>
-                          <span className="text-sm font-medium text-text-dark">{output.quantity_kg.toFixed(2)} kg</span>
-                        </div>
-                        <div>
-                          <span className="text-text-dark/50 block mb-0.5">Used</span>
-                          <span className={`text-sm font-medium ${usedQty > 0 ? 'text-olive-dark' : 'text-text-dark/50'}`}>
-                            {usedQty.toFixed(2)} kg
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-text-dark/50 block mb-0.5">Available</span>
-                          <span
-                            className={`text-sm font-semibold ${
-                              availableQty > 0
-                                ? isLowStock
-                                  ? 'text-orange-600'
-                                  : 'text-olive-dark'
-                                : availableQty === 0
-                                ? 'text-text-dark/50'
-                                : 'text-red-600'
-                            }`}
-                          >
-                            {availableQty.toFixed(2)} kg
-                          </span>
-                        </div>
-                      </div>
-                      {availableQty === 0 && (
-                        <div className="mt-2 text-xs text-text-dark/50 italic">
-                          All quantity has been allocated to packs
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+          <div className="overflow-x-auto rounded-lg border border-olive-light/30 bg-white">
+            <table className="min-w-full divide-y divide-olive-light/30 text-sm">
+              <thead className="bg-olive-light/10">
+                <tr>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Product</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Quantity (kg)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-olive-light/20">
+                {sortedWips.map((wip) => (
+                  <tr key={wip.id}>
+                    <td className="px-3 py-2">
+                      <span className="font-medium text-text-dark">{wip.product_name}</span>
+                      {wip.product_sku && <span className="ml-1 text-text-dark/60">({wip.product_sku})</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right text-text-dark/80">{wip.quantity_kg.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
-      </div>
 
-      {/* Pack Entries Section - at top for quick access */}
-      <div className="border-t border-olive-light/20 pt-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-semibold text-text-dark">Pack Entries</h4>
-            <p className="text-xs text-text-dark/60 mt-1">
-              Track how much quantity of each sorted WIP went into which packs
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowPackEntryForm(!showPackEntryForm)}
-            disabled={saving || externalLoading || sortedOutputs.length === 0}
-            className="border-olive-light/30 transition-all hover:bg-olive-light/10 hover:border-olive disabled:opacity-50"
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Add Pack Entry
-          </Button>
-        </div>
-
-        {showPackEntryForm && (
-          <form onSubmit={handlePackEntrySubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4 animate-in slide-in-from-top-2 duration-200">
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="pack_entry_sorting_output">Sorted WIP *</Label>
-                <select
-                  id="pack_entry_sorting_output"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={packEntryFormData.sorting_output_id}
-                  onChange={(e) =>
-                    setPackEntryFormData({ ...packEntryFormData, sorting_output_id: e.target.value })
-                  }
-                  required
-                  disabled={saving || externalLoading}
-                >
-                  <option value="">Select sorted WIP</option>
-                  {sortedOutputs.map((output) => {
-                    const availableQty = getAvailableQuantity(output.id)
-                    return (
-                      <option
-                        key={output.id}
-                        value={output.id}
-                        disabled={availableQty <= 0}
-                      >
-                        {output.product?.name || `Product #${output.product_id}`} - Available: {availableQty.toFixed(2)} kg
-                      </option>
-                    )
-                  })}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="pack_entry_identifier">Pack Identifier *</Label>
-                <Input
-                  id="pack_entry_identifier"
-                  type="text"
-                  value={packEntryFormData.pack_identifier}
-                  onChange={(e) =>
-                    setPackEntryFormData({ ...packEntryFormData, pack_identifier: e.target.value })
-                  }
-                  placeholder="e.g., Pack-001, Box-A1"
-                  required
-                  disabled={saving || externalLoading}
-                  className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="pack_entry_quantity">
-                  Quantity (kg) *
-                  {packEntryFormData.sorting_output_id && (
-                    <span className="ml-2 text-xs font-normal text-text-dark/60">
-                      (Max: {getAvailableQuantity(parseInt(packEntryFormData.sorting_output_id, 10)).toFixed(2)} kg)
-                    </span>
-                  )}
-                </Label>
-                <Input
-                  id="pack_entry_quantity"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max={
-                    packEntryFormData.sorting_output_id
-                      ? getAvailableQuantity(parseInt(packEntryFormData.sorting_output_id, 10))
-                      : undefined
-                  }
-                  value={packEntryFormData.quantity_kg}
-                  onChange={(e) =>
-                    setPackEntryFormData({ ...packEntryFormData, quantity_kg: e.target.value })
-                  }
-                  placeholder="0.00"
-                  required
-                  disabled={saving || externalLoading}
-                  className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 mt-4">
+        {sortedWips.length > 0 && (
+          <div className="mt-4 border-t border-olive-light/30 pt-4">
+            <h5 className="text-sm font-semibold text-text-dark mb-2">Pack WIPs into finished products</h5>
+            {!packagingRun ? (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+                Save the packaging data below once (click &quot;Save Packaging Data&quot;) to create this run. Then you can add pack entries here.
+              </p>
+            ) : null}
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs text-text-dark/60">Record which WIP went into which pack and which finished product.</span>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => {
-                  setShowPackEntryForm(false)
-                  setPackEntryFormData({ sorting_output_id: '', pack_identifier: '', quantity_kg: '' })
-                }}
-                disabled={saving || externalLoading}
+                size="sm"
+                onClick={() => setShowPackEntryForm(!showPackEntryForm)}
+                disabled={saving || externalLoading || !packagingRun}
+                className="border-olive-light/30"
               >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
-                Add Pack Entry
+                <PackageIcon className="mr-2 h-4 w-4" />
+                Add pack entry
               </Button>
             </div>
-          </form>
-        )}
-
-        {packEntries.length === 0 ? (
-          <div className="rounded-lg border border-olive-light/30 bg-olive-light/5 p-6 text-center">
-            <p className="text-sm text-text-dark/60">No pack entries recorded yet</p>
-            <p className="text-xs text-text-dark/50 mt-1">
-              Click "Add Pack Entry" to start tracking packs
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {packEntries.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-4 transition-all hover:shadow-md hover:border-olive-light/50"
-              >
-                <div className="flex items-center gap-4 flex-1 min-w-0">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-text-dark">
-                        {entry.sorting_output?.product?.name || `Product #${entry.sorting_output?.product_id || 'N/A'}`}
-                      </span>
-                      <span className="text-xs text-text-dark/40">→</span>
-                      <span className="text-sm font-semibold text-olive-dark bg-olive-light/20 px-2 py-0.5 rounded">
-                        {entry.pack_identifier}
-                      </span>
-                    </div>
-                    <div className="mt-1">
-                      <span className="text-sm text-text-dark/70 font-medium">{entry.quantity_kg.toFixed(2)} kg</span>
-                    </div>
+            {showPackEntryForm && packagingRun && (
+              <form onSubmit={handlePackEntrySubmit} className="rounded-lg border border-olive-light/30 bg-white p-4 mb-4">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label>WIP (sorted output) *</Label>
+                    <select
+                      value={packEntryForm.sorting_output_id}
+                      onChange={(e) => setPackEntryForm({ ...packEntryForm, sorting_output_id: e.target.value })}
+                      required
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="">Select WIP</option>
+                      {sortedWips.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.product_name} — {w.quantity_kg.toFixed(2)} kg
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Finished product being packed *</Label>
+                    <SearchableSelect
+                      options={finishedProducts.map((p) => ({
+                        value: String(p.id),
+                        label: `${p.name}${p.sku ? ` (${p.sku})` : ''}`,
+                      }))}
+                      value={packEntryForm.product_id}
+                      onChange={(value) => setPackEntryForm({ ...packEntryForm, product_id: value })}
+                      placeholder="Select finished product"
+                      required
+                      disabled={saving || externalLoading}
+                      emptyMessage="No finished products found"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Packing type</Label>
+                    <select
+                      value={packEntryForm.packing_type}
+                      onChange={(e) => setPackEntryForm({ ...packEntryForm, packing_type: e.target.value })}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      disabled={saving || externalLoading}
+                    >
+                      <option value="">Select packing type</option>
+                      {PACKING_TYPES.map((pt) => (
+                        <option key={pt} value={pt}>
+                          {pt}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Pack identifier *</Label>
+                    <Input
+                      value={packEntryForm.pack_identifier}
+                      onChange={(e) => setPackEntryForm({ ...packEntryForm, pack_identifier: e.target.value })}
+                      placeholder="e.g. Pallet 1, Box A"
+                      required
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Quantity (kg) *</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={packEntryForm.quantity_kg}
+                      onChange={(e) => setPackEntryForm({ ...packEntryForm, quantity_kg: e.target.value })}
+                      placeholder="0.00"
+                      required
+                      disabled={saving || externalLoading}
+                    />
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDeletePackEntry(entry.id)}
-                  disabled={saving || externalLoading}
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50 transition-all flex-shrink-0"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
+                <div className="flex justify-end gap-2 mt-4">
+                  <Button type="button" variant="outline" onClick={() => setShowPackEntryForm(false)} disabled={saving}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
+                    Add pack entry
+                  </Button>
+                </div>
+              </form>
+            )}
+            {packEntries.length === 0 ? (
+              <p className="text-sm text-text-dark/60">No pack entries yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {packEntries.map((pe) => {
+                  const wip = sortedWips.find((w) => w.id === pe.sorting_output_id)
+                  const finishedProduct = pe.product_id ? finishedProducts.find((p) => p.id === pe.product_id) : null
+                  return (
+                    <li
+                      key={pe.id}
+                      className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white px-3 py-2 text-sm"
+                    >
+                      <span className="text-text-dark">
+                        {wip?.product_name ?? `Output #${pe.sorting_output_id}`} → {finishedProduct?.name ?? (pe.product_id ? `Product #${pe.product_id}` : '—')}
+                        {pe.packing_type ? ` [${pe.packing_type}]` : ''} — {pe.pack_identifier}: {pe.quantity_kg} kg
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          if (!confirm('Remove this pack entry?')) return
+                          try {
+                            await deletePackEntry(pe.id)
+                            toast.success('Pack entry removed')
+                          } catch {
+                            toast.error('Failed to remove pack entry')
+                          }
+                        }}
+                        disabled={saving || externalLoading}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </div>
         )}
       </div>
 
-      {/* Available Quantity Info */}
-      {availableQuantity && (
-        <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4 transition-all hover:shadow-md">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-text-dark/50">Available Quantity</p>
-              <p className="text-base font-semibold text-text-dark">
-                {availableQuantity.availableQty.toFixed(2)} kg
-              </p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-text-dark/50">Waste Recorded</p>
-              <p className="text-base font-semibold text-text-dark">{totalWaste.toFixed(2)} kg</p>
-            </div>
-          </div>
-        </div>
-      )}
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-4">
         {/* Visual Inspection */}
-        <div className="border-b border-olive-light/20 pb-6 transition-all">
+        <div className="border-b border-olive-light/20 pb-4">
           <h4 className="text-sm font-semibold text-text-dark mb-4">Visual Inspection</h4>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="visual_status">Visual Status</Label>
-              <select
+              <Input
                 id="visual_status"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                type="text"
                 value={formData.visual_status}
                 onChange={(e) => setFormData({ ...formData, visual_status: e.target.value })}
+                placeholder="e.g., Pass, Rework, Hold"
                 disabled={saving || externalLoading}
-              >
-                {VISUAL_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                className="bg-white"
+              />
             </div>
 
             {showReworkDropdown && (
@@ -787,53 +683,41 @@ export function PackagingStep({
 
             <div className="space-y-2">
               <Label htmlFor="pest_status">Pest Status</Label>
-                <select
-                  id="pest_status"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={formData.pest_status}
-                  onChange={(e) => setFormData({ ...formData, pest_status: e.target.value })}
-                  disabled={saving || externalLoading}
-                >
-                {PEST_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <Input
+                id="pest_status"
+                type="text"
+                value={formData.pest_status}
+                onChange={(e) => setFormData({ ...formData, pest_status: e.target.value })}
+                placeholder="e.g., None, Minor, Major"
+                disabled={saving || externalLoading}
+                className="bg-white"
+              />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="foreign_object_status">Foreign Object Status</Label>
-                <select
-                  id="foreign_object_status"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={formData.foreign_object_status}
-                  onChange={(e) => setFormData({ ...formData, foreign_object_status: e.target.value })}
-                  disabled={saving || externalLoading}
-                >
-                {FOREIGN_OBJECT_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <Input
+                id="foreign_object_status"
+                type="text"
+                value={formData.foreign_object_status}
+                onChange={(e) => setFormData({ ...formData, foreign_object_status: e.target.value })}
+                placeholder="e.g., None, Detected"
+                disabled={saving || externalLoading}
+                className="bg-white"
+              />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="mould_status">Mould Status</Label>
-                <select
-                  id="mould_status"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={formData.mould_status}
-                  onChange={(e) => setFormData({ ...formData, mould_status: e.target.value })}
-                  disabled={saving || externalLoading}
-                >
-                {MOULD_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <Input
+                id="mould_status"
+                type="text"
+                value={formData.mould_status}
+                onChange={(e) => setFormData({ ...formData, mould_status: e.target.value })}
+                placeholder="e.g., None, Present"
+                disabled={saving || externalLoading}
+                className="bg-white"
+              />
             </div>
           </div>
         </div>
@@ -854,7 +738,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, damaged_kernels_pct: e.target.value })}
                 placeholder="0.00"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
 
@@ -870,7 +754,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, insect_damaged_kernels_pct: e.target.value })}
                 placeholder="0.00"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
           </div>
@@ -891,7 +775,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, nitrogen_used: e.target.value })}
                 placeholder="0.00"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
 
@@ -904,7 +788,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, nitrogen_batch_number: e.target.value })}
                 placeholder="Batch number"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
           </div>
@@ -916,19 +800,15 @@ export function PackagingStep({
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="primary_packaging_type">Primary Packaging Type</Label>
-              <select
+              <Input
                 id="primary_packaging_type"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                type="text"
                 value={formData.primary_packaging_type}
                 onChange={(e) => setFormData({ ...formData, primary_packaging_type: e.target.value })}
+                placeholder="e.g., Bag, Box"
                 disabled={saving || externalLoading}
-              >
-                {PRIMARY_PACKAGING_TYPE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                className="bg-white"
+              />
             </div>
 
             <div className="space-y-2">
@@ -940,25 +820,21 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, primary_packaging_batch: e.target.value })}
                 placeholder="Batch number"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="secondary_packaging">Secondary Packaging</Label>
-              <select
+              <Input
                 id="secondary_packaging"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                type="text"
                 value={formData.secondary_packaging}
                 onChange={(e) => setFormData({ ...formData, secondary_packaging: e.target.value })}
+                placeholder="e.g., Carton, Pallet"
                 disabled={saving || externalLoading}
-              >
-                {SECONDARY_PACKAGING_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                className="bg-white"
+              />
             </div>
 
             <div className="space-y-2">
@@ -970,7 +846,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, secondary_packaging_type: e.target.value })}
                 placeholder="Type"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
 
@@ -983,7 +859,7 @@ export function PackagingStep({
                 onChange={(e) => setFormData({ ...formData, secondary_packaging_batch: e.target.value })}
                 placeholder="Batch number"
                 disabled={saving || externalLoading}
-                className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-white"
               />
             </div>
           </div>
@@ -1052,19 +928,15 @@ export function PackagingStep({
         <div className="border-b border-olive-light/20 pb-4">
           <div className="space-y-2">
             <Label htmlFor="allergen_swab_result">Allergen Swab Result</Label>
-              <select
-                id="allergen_swab_result"
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                value={formData.allergen_swab_result}
-                onChange={(e) => setFormData({ ...formData, allergen_swab_result: e.target.value })}
-                disabled={saving || externalLoading}
-              >
-              {ALLERGEN_SWAB_RESULT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <Input
+              id="allergen_swab_result"
+              type="text"
+              value={formData.allergen_swab_result}
+              onChange={(e) => setFormData({ ...formData, allergen_swab_result: e.target.value })}
+              placeholder="e.g., Pass, Fail, Pending"
+              disabled={saving || externalLoading}
+              className="bg-white"
+            />
           </div>
         </div>
 
@@ -1081,23 +953,10 @@ export function PackagingStep({
           />
         </div>
 
-        <div className="flex justify-end pt-2">
-          <Button 
-            type="submit" 
-            disabled={saving || externalLoading || loading} 
-            className="bg-olive hover:bg-olive-dark transition-all disabled:opacity-50 disabled:cursor-not-allowed min-w-[140px]"
-          >
-            {saving ? (
-              <>
-                <div className="mr-2 h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Saving...
-              </>
-            ) : (
-              <>
-                <Save className="mr-2 h-4 w-4" />
-                Save Packaging Data
-              </>
-            )}
+        <div className="flex justify-end">
+          <Button type="submit" disabled={saving || externalLoading || loading} className="bg-olive hover:bg-olive-dark">
+            <Save className="mr-2 h-4 w-4" />
+            Save Packaging Data
           </Button>
         </div>
       </form>
@@ -1120,7 +979,7 @@ export function PackagingStep({
         </div>
 
         {showWeightForm && (
-          <form onSubmit={handleWeightCheckSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4 animate-in slide-in-from-top-2 duration-200">
+          <form onSubmit={handleWeightCheckSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="check_no">Check Number (1-4) *</Label>
@@ -1135,7 +994,7 @@ export function PackagingStep({
                   }
                   required
                   disabled={saving || externalLoading}
-                  className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="bg-white"
                 />
               </div>
 
@@ -1151,7 +1010,7 @@ export function PackagingStep({
                   placeholder="0.00"
                   required
                   disabled={saving || externalLoading}
-                  className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="bg-white"
                 />
               </div>
             </div>
@@ -1321,7 +1180,7 @@ export function PackagingStep({
                   placeholder="0.00"
                   required
                   disabled={saving || externalLoading}
-                  className="bg-white transition-all hover:border-olive-light focus:border-olive focus:ring-2 focus:ring-olive/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="bg-white"
                 />
               </div>
             </div>

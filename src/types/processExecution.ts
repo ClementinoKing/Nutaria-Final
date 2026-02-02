@@ -377,24 +377,6 @@ export interface PackagingWasteFormData {
   quantity_kg: string
 }
 
-export interface ProcessPackagingPackEntry {
-  id: number
-  packaging_run_id: number
-  sorting_output_id: number
-  pack_identifier: string
-  quantity_kg: number
-  created_at: string
-  updated_at: string
-  // Joined fields
-  sorting_output?: ProcessSortingOutput
-}
-
-export interface PackagingPackEntryFormData {
-  sorting_output_id: string
-  pack_identifier: string
-  quantity_kg: string
-}
-
 // Batch Step Transitions
 export interface BatchStepTransition {
   id: number

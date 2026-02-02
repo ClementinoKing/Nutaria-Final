@@ -82,6 +82,11 @@ export function SortingStep({
       return
     }
 
+    if (!availableQuantity) {
+      toast.error('Available quantity is not set. Cannot add or edit outputs until it is loaded.')
+      return
+    }
+
     setSaving(true)
     try {
       if (editingOutputId) {
@@ -93,10 +98,11 @@ export function SortingStep({
       const currentTotalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
       const totalUsed = newTotalOutput + currentTotalWaste
 
-      if (availableQuantity && totalUsed > availableQuantity.availableQty) {
+      if (totalUsed > availableQuantity.availableQty) {
         toast.error(
           `Total quantity (outputs + waste) cannot exceed available quantity. Available: ${availableQuantity.availableQty.toFixed(2)} kg, Attempted: ${totalUsed.toFixed(2)} kg`
         )
+        setSaving(false)
         return
       }
 
@@ -115,10 +121,11 @@ export function SortingStep({
       const currentTotalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
       const totalUsed = newTotalOutput + currentTotalWaste
 
-      if (availableQuantity && totalUsed > availableQuantity.availableQty) {
+      if (totalUsed > availableQuantity.availableQty) {
         toast.error(
           `Total quantity (outputs + waste) cannot exceed available quantity. Available: ${availableQuantity.availableQty.toFixed(2)} kg, Attempted: ${totalUsed.toFixed(2)} kg`
         )
+        setSaving(false)
         return
       }
 
@@ -162,12 +169,17 @@ export function SortingStep({
       return
     }
 
+    if (!availableQuantity) {
+      toast.error('Available quantity is not set. Cannot add waste until it is loaded.')
+      return
+    }
+
     // Validate total quantity doesn't exceed available
     const currentTotalOutput = outputs.reduce((sum, o) => sum + o.quantity_kg, 0)
     const currentTotalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
     const totalUsed = currentTotalOutput + currentTotalWaste + quantity
 
-    if (availableQuantity && totalUsed > availableQuantity.availableQty) {
+    if (totalUsed > availableQuantity.availableQty) {
       toast.error(
         `Total quantity (outputs + waste) cannot exceed available quantity. Available: ${availableQuantity.availableQty.toFixed(2)} kg, Attempted: ${totalUsed.toFixed(2)} kg`
       )
@@ -256,6 +268,10 @@ export function SortingStep({
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
   const totalUsed = totalOutputQuantity + totalWaste
   const remainingQty = availableQuantity ? availableQuantity.availableQty - totalUsed : null
+  // When adding: max = remainingQty. When editing: max = remainingQty + current row's qty (we're replacing it).
+  const editingOutputQty = editingOutputId ? (outputs.find((o) => o.id === editingOutputId)?.quantity_kg ?? 0) : 0
+  const maxQtyForEntry =
+    availableQuantity && remainingQty !== null ? Math.max(0, remainingQty + editingOutputQty) : null
 
   return (
     <div className="space-y-6">
@@ -300,28 +316,34 @@ export function SortingStep({
 
       {/* Outputs Section */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-semibold text-text-dark">Sorting Outputs</h4>
-            <p className="text-xs text-text-dark/60 mt-1">
-              Total Output: {totalOutputQuantity.toFixed(2)} kg
-            </p>
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-text-dark">Sorting Outputs</h4>
+              <p className="text-xs text-text-dark/60 mt-1">
+                Total Output: {totalOutputQuantity.toFixed(2)} kg
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowOutputForm(!showOutputForm)
+                setEditingOutputId(null)
+                setOutputFormData({ product_id: '', quantity_kg: '', moisture_percent: '', remarks: '' })
+              }}
+              disabled={saving || externalLoading || !availableQuantity}
+              className="border-olive-light/30"
+              title={!availableQuantity ? 'Available quantity is loading…' : undefined}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Add Output
+            </Button>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setShowOutputForm(!showOutputForm)
-              setEditingOutputId(null)
-              setOutputFormData({ product_id: '', quantity_kg: '', moisture_percent: '', remarks: '' })
-            }}
-            disabled={saving || externalLoading}
-            className="border-olive-light/30"
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Add Output
-          </Button>
+          {!availableQuantity && (
+            <p className="text-xs text-text-dark/60 mt-2">Loading available quantity… You cannot add outputs until it is known.</p>
+          )}
         </div>
 
         {showOutputForm && (
@@ -379,9 +401,9 @@ export function SortingStep({
               <div className="space-y-2">
                 <Label htmlFor="output_quantity">
                   Quantity (kg) *
-                  {availableQuantity && remainingQty !== null && (
+                  {maxQtyForEntry !== null && (
                     <span className="ml-2 text-xs font-normal text-text-dark/60">
-                      (Max: {Math.max(0, remainingQty + parseFloat(outputFormData.quantity_kg || '0')).toFixed(2)} kg)
+                      (Max: {maxQtyForEntry.toFixed(2)} kg)
                     </span>
                   )}
                 </Label>
@@ -390,35 +412,32 @@ export function SortingStep({
                   type="number"
                   step="0.01"
                   min="0"
-                  max={availableQuantity && remainingQty !== null ? Math.max(0, remainingQty + parseFloat(outputFormData.quantity_kg || '0')) : undefined}
+                  max={maxQtyForEntry ?? undefined}
                   value={outputFormData.quantity_kg}
                   onChange={(e) => {
-                    const newValue = e.target.value
-                    setOutputFormData({ ...outputFormData, quantity_kg: newValue })
-                    
-                    // Show warning if exceeding remaining quantity
-                    if (availableQuantity && remainingQty !== null && newValue) {
-                      const newQty = parseFloat(newValue)
-                      const currentOutputQty = editingOutputId 
-                        ? outputs.find(o => o.id === editingOutputId)?.quantity_kg || 0
-                        : 0
-                      const adjustedRemaining = remainingQty + currentOutputQty
-                      if (newQty > adjustedRemaining) {
-                        // Warning will be shown in validation
+                    let newValue = e.target.value
+                    if (maxQtyForEntry !== null && newValue !== '') {
+                      const num = parseFloat(newValue)
+                      if (!Number.isNaN(num) && num > maxQtyForEntry) {
+                        newValue = String(maxQtyForEntry)
+                        toast.error(`Quantity cannot exceed available ${maxQtyForEntry.toFixed(2)} kg`)
                       }
                     }
+                    setOutputFormData({ ...outputFormData, quantity_kg: newValue })
                   }}
                   placeholder="0.00"
                   required
                   disabled={saving || externalLoading}
                   className="bg-white"
                 />
-                {availableQuantity && remainingQty !== null && (
+                {maxQtyForEntry !== null && (
                   <p className="text-xs text-text-dark/50">
-                    Remaining after this entry: {(
-                      remainingQty - parseFloat(outputFormData.quantity_kg || '0') + 
-                      (editingOutputId ? (outputs.find(o => o.id === editingOutputId)?.quantity_kg || 0) : 0)
-                    ).toFixed(2)} kg
+                    Remaining after this entry:{' '}
+                    {(
+                      maxQtyForEntry -
+                      parseFloat(outputFormData.quantity_kg || '0')
+                    ).toFixed(2)}{' '}
+                    kg
                   </p>
                 )}
               </div>

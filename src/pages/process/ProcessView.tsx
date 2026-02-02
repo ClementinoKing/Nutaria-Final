@@ -220,7 +220,7 @@ function ProcessView() {
       stepIds.length > 0
         ? supabase
             .from('process_steps')
-            .select('id, seq, step_code, step_name')
+            .select('id, seq, step_name_id')
             .in('id', stepIds)
         : Promise.resolve({ data: [], error: null }),
       locationIds.length > 0
@@ -237,8 +237,35 @@ function ProcessView() {
         : Promise.resolve({ data: [], error: null }),
     ])
 
-    // Create maps for efficient lookup
-    const processStepsMap = new Map((processStepsResult.data || []).map((ps: any) => [ps.id, ps]))
+    // Resolve step names from process_step_names if step_name_id is used
+    const stepNameIds = (processStepsResult.data || [])
+      .map((ps: any) => ps.step_name_id)
+      .filter((id: unknown): id is number => id != null && typeof id === 'number')
+    let stepNamesMap = new Map<number, { code: string; name: string }>()
+    if (stepNameIds.length > 0) {
+      const { data: namesData } = await supabase
+        .from('process_step_names')
+        .select('id, code, name')
+        .in('id', stepNameIds)
+      ;(namesData || []).forEach((n: any) => {
+        stepNamesMap.set(n.id, { code: n.code ?? '', name: n.name ?? '' })
+      })
+    }
+
+    // Create maps for efficient lookup (attach step_code/step_name from process_step_names)
+    const processStepsMap = new Map(
+      (processStepsResult.data || []).map((ps: any) => {
+        const stepName = ps.step_name_id ? stepNamesMap.get(ps.step_name_id) : null
+        return [
+          ps.id,
+          {
+            ...ps,
+            step_code: stepName?.code ?? null,
+            step_name: stepName?.name ?? null,
+          },
+        ]
+      })
+    )
     const warehousesMap = new Map((warehousesResult.data || []).map((wh: any) => [wh.id, wh]))
     const nonConformancesMap = new Map<number, any[]>()
 

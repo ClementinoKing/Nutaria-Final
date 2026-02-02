@@ -6,7 +6,6 @@ import type {
   ProcessPackagingWeightCheck,
   ProcessPackagingPhoto,
   ProcessPackagingWaste,
-  ProcessPackagingPackEntry,
 } from '@/types/processExecution'
 
 interface UsePackagingRunOptions {
@@ -19,7 +18,6 @@ interface UsePackagingRunReturn {
   weightChecks: ProcessPackagingWeightCheck[]
   photos: ProcessPackagingPhoto[]
   waste: ProcessPackagingWaste[]
-  packEntries: ProcessPackagingPackEntry[]
   loading: boolean
   error: PostgrestError | null
   refresh: () => Promise<void>
@@ -31,18 +29,18 @@ interface UsePackagingRunReturn {
   deletePhoto: (photoId: number) => Promise<void>
   addWaste: (wasteData: { waste_type: string; quantity_kg: number }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
-  addPackEntry: (entry: { sorting_output_id: number; pack_identifier: string; quantity_kg: number }) => Promise<void>
-  updatePackEntry: (entryId: number, data: { sorting_output_id?: number; pack_identifier?: string; quantity_kg?: number }) => Promise<void>
-  deletePackEntry: (entryId: number) => Promise<void>
+  packEntries: Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>
+  addPackEntry: (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }) => Promise<void>
+  deletePackEntry: (id: number) => Promise<void>
 }
 
 export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRunReturn {
   const { stepRunId, enabled = true } = options
   const [packagingRun, setPackagingRun] = useState<ProcessPackagingRun | null>(null)
+  const [packEntries, setPackEntries] = useState<Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>>([])
   const [weightChecks, setWeightChecks] = useState<ProcessPackagingWeightCheck[]>([])
   const [photos, setPhotos] = useState<ProcessPackagingPhoto[]>([])
   const [waste, setWaste] = useState<ProcessPackagingWaste[]>([])
-  const [packEntries, setPackEntries] = useState<ProcessPackagingPackEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
 
@@ -70,6 +68,19 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
 
       // Fetch related data if run exists
       if (runData) {
+        // Fetch pack entries
+        const { data: packEntriesData, error: packEntriesError } = await supabase
+          .from('process_packaging_pack_entries')
+          .select('*')
+          .eq('packaging_run_id', runData.id)
+          .order('created_at', { ascending: false })
+
+        if (packEntriesError) {
+          setPackEntries([])
+        } else {
+          setPackEntries((packEntriesData as Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>) || [])
+        }
+
         // Fetch weight checks
         const { data: checksData, error: checksError } = await supabase
           .from('process_packaging_weight_checks')
@@ -111,46 +122,11 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         } else {
           setWaste((wasteData as ProcessPackagingWaste[]) || [])
         }
-
-        // Fetch pack entries with sorting output info
-        const { data: packEntriesData, error: packEntriesError } = await supabase
-          .from('process_packaging_pack_entries')
-          .select(`
-            *,
-            sorting_output:process_sorting_outputs(
-              id,
-              product_id,
-              quantity_kg,
-              moisture_percent,
-              remarks,
-              product:products(id, name, sku)
-            )
-          `)
-          .eq('packaging_run_id', runData.id)
-          .order('created_at', { ascending: false })
-
-        if (packEntriesError) {
-          setError(packEntriesError)
-          setPackEntries([])
-        } else {
-          const formattedEntries = (packEntriesData || []).map((entry: any) => ({
-            ...entry,
-            sorting_output: entry.sorting_output ? {
-              ...entry.sorting_output,
-              product: entry.sorting_output.product ? {
-                id: entry.sorting_output.product.id,
-                name: entry.sorting_output.product.name,
-                sku: entry.sorting_output.product.sku,
-              } : undefined,
-            } : undefined,
-          }))
-          setPackEntries(formattedEntries as ProcessPackagingPackEntry[])
-        }
       } else {
+        setPackEntries([])
         setWeightChecks([])
         setPhotos([])
         setWaste([])
-        setPackEntries([])
       }
     }
 
@@ -326,35 +302,20 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   )
 
   const addPackEntry = useCallback(
-    async (entry: { sorting_output_id: number; pack_identifier: string; quantity_kg: number }) => {
-      if (!stepRunId) {
-        throw new Error('Step run ID is required')
-      }
-
-      let packagingRunId = packagingRun?.id
-
-      // Auto-create packaging run if it doesn't exist (so user can record pack entries without saving the main form first)
-      if (!packagingRunId) {
-        const { data: newRun, error: createError } = await supabase
-          .from('process_packaging_runs')
-          .insert({ process_step_run_id: stepRunId })
-          .select('id')
-          .single()
-
-        if (createError) {
-          throw createError
-        }
-        packagingRunId = newRun?.id
-        if (!packagingRunId) {
-          throw new Error('Failed to create packaging run')
-        }
+    async (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }) => {
+      if (!packagingRun) {
+        throw new Error('Packaging run must be created before adding pack entries')
       }
 
       const { error: insertError } = await supabase
         .from('process_packaging_pack_entries')
         .insert({
-          packaging_run_id: packagingRunId,
-          ...entry,
+          packaging_run_id: packagingRun.id,
+          sorting_output_id: data.sorting_output_id,
+          product_id: data.product_id ?? null,
+          pack_identifier: data.pack_identifier,
+          quantity_kg: data.quantity_kg,
+          packing_type: data.packing_type ?? null,
         })
 
       if (insertError) {
@@ -363,31 +324,15 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
 
       await fetchData()
     },
-    [stepRunId, packagingRun?.id, fetchData]
-  )
-
-  const updatePackEntry = useCallback(
-    async (entryId: number, data: { sorting_output_id?: number; pack_identifier?: string; quantity_kg?: number }) => {
-      const { error: updateError } = await supabase
-        .from('process_packaging_pack_entries')
-        .update(data)
-        .eq('id', entryId)
-
-      if (updateError) {
-        throw updateError
-      }
-
-      await fetchData()
-    },
-    [fetchData]
+    [packagingRun, fetchData]
   )
 
   const deletePackEntry = useCallback(
-    async (entryId: number) => {
+    async (id: number) => {
       const { error: deleteError } = await supabase
         .from('process_packaging_pack_entries')
         .delete()
-        .eq('id', entryId)
+        .eq('id', id)
 
       if (deleteError) {
         throw deleteError
@@ -404,10 +349,10 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
 
   return {
     packagingRun,
+    packEntries,
     weightChecks,
     photos,
     waste,
-    packEntries,
     loading,
     error,
     refresh: fetchData,
@@ -420,7 +365,6 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     addWaste,
     deleteWaste,
     addPackEntry,
-    updatePackEntry,
     deletePackEntry,
   }
 }

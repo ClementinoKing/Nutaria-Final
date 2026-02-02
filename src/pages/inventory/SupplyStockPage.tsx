@@ -62,6 +62,7 @@ interface StockLevel {
   on_hand: number
   allocated: number
   quality_hold: number
+  in_process: number
   in_transit: number
   unit: string
   reorder_point: number | null
@@ -159,6 +160,15 @@ function SupplyStockPage() {
           return
         }
 
+        // Batches currently in process (have an IN_PROGRESS process_lot_run)
+        const { data: inProgressRuns } = await supabase
+          .from('process_lot_runs')
+          .select('supply_batch_id')
+          .eq('status', 'IN_PROGRESS')
+        const inProgressBatchIds = new Set(
+          (inProgressRuns ?? []).map((r: { supply_batch_id: number }) => r.supply_batch_id)
+        )
+
         const productIds = Array.from(
           new Set(batches.map((batch: SupplyBatch) => batch.product_id).filter((value): value is number => value !== null && value !== undefined))
         )
@@ -183,7 +193,7 @@ function SupplyStockPage() {
             ? supabase
                 .from('products')
                 .select(
-                  'id, name, sku, reorder_point, safety_stock, target_stock, base_unit_id, pack_size, status'
+                  'id, name, sku, reorder_point, safety_stock, target_stock, base_unit_id, status'
                 )
                 .in('id', productIds)
             : Promise.resolve({ data: [], error: null }),
@@ -248,6 +258,7 @@ function SupplyStockPage() {
           accepted: number
           rejected: number
           hold: number
+          in_process: number
         }
 
         const aggregated = new Map<string, AggregatedRecord>()
@@ -273,6 +284,7 @@ function SupplyStockPage() {
               accepted: 0,
               rejected: 0,
               hold: 0,
+              in_process: 0,
             })
           }
 
@@ -296,6 +308,12 @@ function SupplyStockPage() {
           } else if (status === 'FAILED') {
             record.hold += Math.max(rejectedQty, 0)
           }
+
+          // Quantity in process: batches with IN_PROGRESS process_lot_run count as committed
+          if (inProgressBatchIds.has(batch.id)) {
+            const batchOnHand = Math.max(acceptedQty + (QUALITY_HOLD_STATUSES.has(status) ? inferredPending : 0) + (status === 'FAILED' ? Math.max(rejectedQty, 0) : 0), 0)
+            record.in_process += batchOnHand
+          }
         })
 
         const rows: StockLevel[] = Array.from(aggregated.values()).map((record: AggregatedRecord) => {
@@ -309,7 +327,8 @@ function SupplyStockPage() {
           const safetyStock = toNullableNumber(product?.safety_stock)
           const onHand = Math.max(record.accepted + record.hold, 0)
           const qualityHold = Math.max(record.hold, 0)
-          const availableSnapshot = Math.max(onHand - qualityHold, 0)
+          const inProcess = roundNumber(record.in_process)
+          const availableSnapshot = Math.max(onHand - qualityHold - inProcess, 0)
 
           let lowStockReason: string | null = null
           if (reorderPoint !== null && availableSnapshot < reorderPoint) {
@@ -328,6 +347,7 @@ function SupplyStockPage() {
             on_hand: roundNumber(onHand),
             allocated: 0,
             quality_hold: roundNumber(qualityHold),
+            in_process: inProcess,
             in_transit: 0,
             unit: unitRecord ? (unitRecord.symbol ?? unitRecord.name ?? '') : '',
             reorder_point: reorderPoint,
@@ -380,7 +400,8 @@ function SupplyStockPage() {
 
   const enrichedStockLevels = useMemo((): EnrichedStockLevel[] => {
     return stockLevels.map((entry: StockLevel): EnrichedStockLevel => {
-      const available = Math.max((entry.on_hand ?? 0) - (entry.quality_hold ?? 0) - (entry.allocated ?? 0), 0)
+      const inProcess = entry.in_process ?? 0
+      const available = Math.max((entry.on_hand ?? 0) - (entry.quality_hold ?? 0) - (entry.allocated ?? 0) - inProcess, 0)
       const reorderTarget = entry.reorder_point ?? 0
       const safetyStock = entry.safety_stock ?? 0
       const isBelowReorder = reorderTarget > 0 && available < reorderTarget
@@ -423,6 +444,7 @@ function SupplyStockPage() {
   const totalAvailable = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + entry.available, 0)
   const totalAllocated = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.allocated ?? 0), 0)
   const totalOnHand = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.on_hand ?? 0), 0)
+  const totalInProcess = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.in_process ?? 0), 0)
   const lowStockCount = filteredStockLevels.filter((entry: EnrichedStockLevel) => entry.isBelowReorder).length
 
   const columns = useMemo(
@@ -486,6 +508,14 @@ function SupplyStockPage() {
         mobileRender: (stock: EnrichedStockLevel) => `${stock.quality_hold ?? 0} ${stock.unit}`,
       },
       {
+        key: 'in_process',
+        header: 'In process',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right text-text-dark/70',
+        render: (stock: EnrichedStockLevel) => `${stock.in_process ?? 0} ${stock.unit}`,
+        mobileRender: (stock: EnrichedStockLevel) => `${stock.in_process ?? 0} ${stock.unit}`,
+      },
+      {
         key: 'available',
         header: 'Available',
         headerClassName: 'text-right',
@@ -495,7 +525,10 @@ function SupplyStockPage() {
             <div className="font-semibold text-text-dark">
               {stock.available} {stock.unit}
             </div>
-            <div className="text-xs text-text-dark/60">In transit: {stock.in_transit ?? 0}</div>
+            <div className="text-xs text-text-dark/60">
+              In transit: {stock.in_transit ?? 0}
+              {(stock.in_process ?? 0) > 0 ? ` · In process: ${stock.in_process} ${stock.unit}` : ''}
+            </div>
           </div>
         ),
         mobileRender: (stock: EnrichedStockLevel) => (
@@ -503,7 +536,10 @@ function SupplyStockPage() {
             <div className="font-semibold text-text-dark">
               {stock.available} {stock.unit}
             </div>
-            <div className="text-xs text-text-dark/60">In transit: {stock.in_transit ?? 0}</div>
+            <div className="text-xs text-text-dark/60">
+              In transit: {stock.in_transit ?? 0}
+              {(stock.in_process ?? 0) > 0 ? ` · In process: ${stock.in_process}` : ''}
+            </div>
           </div>
         ),
       },
@@ -664,6 +700,14 @@ function SupplyStockPage() {
             <CardDescription>Allocated</CardDescription>
             <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
               {totalAllocated.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        <Card className="border-amber-200/60">
+          <CardHeader className="pb-2">
+            <CardDescription>In process</CardDescription>
+            <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
+              {totalInProcess.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
             </CardTitle>
           </CardHeader>
         </Card>
