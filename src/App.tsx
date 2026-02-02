@@ -9,6 +9,9 @@ const Units = lazy(() => import('./pages/inventory/Units'))
 const Warehouses = lazy(() => import('./pages/inventory/Warehouses'))
 const Products = lazy(() => import('./pages/inventory/Products'))
 const StockLevels = lazy(() => import('./pages/inventory/StockLevels'))
+const SupplyStockPage = lazy(() => import('./pages/inventory/SupplyStockPage'))
+const WIPStockPage = lazy(() => import('./pages/inventory/WIPStockPage'))
+const PackedStockPage = lazy(() => import('./pages/inventory/PackedStockPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
@@ -17,6 +20,8 @@ const Processes = lazy(() => import('./pages/process/Processes'))
 const ProcessDetail = lazy(() => import('./pages/process/ProcessDetail'))
 const ProcessSteps = lazy(() => import('./pages/process/ProcessSteps'))
 const ProcessStepsProgress = lazy(() => import('./pages/process/ProcessStepsProgress'))
+const CompletedProcessesList = lazy(() => import('./pages/process/CompletedProcessesList'))
+const CompletedProcessDetail = lazy(() => import('./pages/process/CompletedProcessDetail'))
 const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
 const Suppliers = lazy(() => import('./pages/suppliers-customers/Suppliers'))
 const SupplierDetail = lazy(() => import('./pages/suppliers-customers/SupplierDetail'))
@@ -108,6 +113,30 @@ function App() {
           element={
             <ProtectedRoute>
               <StockLevels />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/supply"
+          element={
+            <ProtectedRoute>
+              <SupplyStockPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/wip"
+          element={
+            <ProtectedRoute>
+              <WIPStockPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/packed"
+          element={
+            <ProtectedRoute>
+              <PackedStockPage />
             </ProtectedRoute>
           }
         />
@@ -204,6 +233,22 @@ function App() {
           element={
             <ProtectedRoute>
               <ProcessStepsProgress />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/completed"
+          element={
+            <ProtectedRoute>
+              <CompletedProcessesList />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/completed/:lotRunId"
+          element={
+            <ProtectedRoute>
+              <CompletedProcessDetail />
             </ProtectedRoute>
           }
         />

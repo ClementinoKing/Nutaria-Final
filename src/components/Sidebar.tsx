@@ -23,6 +23,7 @@ import {
   Building2,
   UserCheck,
   BadgeCheck,
+  CheckCircle2,
   Eye,
   ListChecks,
   Sun,
@@ -95,6 +96,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       submenu: [
         { name: 'Process View', icon: Eye, key: 'process-view', path: '/process/view' },
         { name: 'Process Steps', icon: Layers, key: 'process-steps', path: '/process/process-steps' },
+        { name: 'Completed Processes', icon: CheckCircle2, key: 'completed-processes', path: '/process/completed' },
       ]
     },
     { 

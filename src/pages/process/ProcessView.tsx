@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Eye, Clock, X, CheckCircle, Activity, AlertCircle, Thermometer, Scale, Droplets, MapPin, Shield } from 'lucide-react'
+import { Eye, Clock, X, CheckCircle, Activity, AlertCircle, MapPin, Shield } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { useProcessDefinitions } from '@/hooks/useProcessDefinitions'
 import { PostgrestError } from '@supabase/supabase-js'
-import type { ProcessMeasurement, ProcessNonConformance } from '@/types/processExecution'
+import type { ProcessNonConformance } from '@/types/processExecution'
 
 interface StepProgress {
   step_id: number
@@ -47,7 +47,6 @@ interface ProcessStepRun {
     full_name?: string
     email?: string
   } | null
-  process_measurements?: ProcessMeasurement[]
   process_non_conformances?: ProcessNonConformance[]
 }
 
@@ -120,7 +119,6 @@ interface TimelineItem {
   quantity_in: string | number | undefined
   quantity_out: string | number | undefined
   notes: string | undefined
-  measurements?: ProcessMeasurement[]
   nonConformances?: ProcessNonConformance[]
 }
 
@@ -218,7 +216,7 @@ function ProcessView() {
     const locationIds = (stepRunsData || []).map((sr: any) => sr.location_id).filter(Boolean)
     const stepRunIds = (stepRunsData || []).map((sr: any) => sr.id).filter(Boolean)
 
-    const [processStepsResult, warehousesResult, measurementsResult, nonConformancesResult] = await Promise.all([
+    const [processStepsResult, warehousesResult, nonConformancesResult] = await Promise.all([
       stepIds.length > 0
         ? supabase
             .from('process_steps')
@@ -233,12 +231,6 @@ function ProcessView() {
         : Promise.resolve({ data: [], error: null }),
       stepRunIds.length > 0
         ? supabase
-            .from('process_measurements')
-            .select('id, process_step_run_id, metric, value, unit, recorded_at')
-            .in('process_step_run_id', stepRunIds)
-        : Promise.resolve({ data: [], error: null }),
-      stepRunIds.length > 0
-        ? supabase
             .from('process_non_conformances')
             .select('id, process_step_run_id, nc_type, description, severity, corrective_action, resolved, resolved_at')
             .in('process_step_run_id', stepRunIds)
@@ -248,16 +240,7 @@ function ProcessView() {
     // Create maps for efficient lookup
     const processStepsMap = new Map((processStepsResult.data || []).map((ps: any) => [ps.id, ps]))
     const warehousesMap = new Map((warehousesResult.data || []).map((wh: any) => [wh.id, wh]))
-    const measurementsMap = new Map<number, any[]>()
     const nonConformancesMap = new Map<number, any[]>()
-
-    ;(measurementsResult.data || []).forEach((m: any) => {
-      const stepRunId = m.process_step_run_id
-      if (!measurementsMap.has(stepRunId)) {
-        measurementsMap.set(stepRunId, [])
-      }
-      measurementsMap.get(stepRunId)!.push(m)
-    })
 
     ;(nonConformancesResult.data || []).forEach((nc: any) => {
       const stepRunId = nc.process_step_run_id
@@ -278,7 +261,6 @@ function ProcessView() {
         ...sr,
         process_steps: processStepsMap.get(sr.process_step_id) || null,
         warehouses: sr.location_id ? warehousesMap.get(sr.location_id) || null : null,
-        process_measurements: measurementsMap.get(sr.id) || [],
         process_non_conformances: nonConformancesMap.get(sr.id) || [],
       })
     })
@@ -404,7 +386,7 @@ function ProcessView() {
             quantity_in: undefined,
             quantity_out: undefined,
             notes: stepRun.notes ?? undefined,
-            measurements: stepRun.process_measurements || [],
+            measurements: [],
             nonConformances: stepRun.process_non_conformances || [],
           }
         })
@@ -652,35 +634,6 @@ function ProcessView() {
     }
   }
 
-  const getMeasurementIcon = (metric: ProcessMeasurement['metric']) => {
-    switch (metric) {
-      case 'moisture_in':
-      case 'moisture_out':
-        return <Droplets className="h-4 w-4" />
-      case 'weight':
-        return <Scale className="h-4 w-4" />
-      case 'temp':
-        return <Thermometer className="h-4 w-4" />
-      default:
-        return null
-    }
-  }
-
-  const getMeasurementLabel = (metric: ProcessMeasurement['metric']): string => {
-    switch (metric) {
-      case 'moisture_in':
-        return 'Moisture In'
-      case 'moisture_out':
-        return 'Moisture Out'
-      case 'weight':
-        return 'Weight'
-      case 'temp':
-        return 'Temperature'
-      default:
-        return metric
-    }
-  }
-
   const getSeverityColor = (severity: ProcessNonConformance['severity']): string => {
     switch (severity) {
       case 'LOW':
@@ -853,29 +806,6 @@ function ProcessView() {
                                     : '—'}
                                 </div>
                               </div>
-
-                              {item.measurements && item.measurements.length > 0 && (
-                                <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-4 py-3">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <Scale className="h-4 w-4 text-olive" />
-                                    <span className="text-sm font-semibold text-text-dark">Measurements</span>
-                                  </div>
-                                  <div className="grid gap-2 sm:grid-cols-2">
-                                    {item.measurements.map((measurement) => (
-                                      <div key={measurement.id} className="flex items-center gap-2 text-sm text-text-dark/80">
-                                        {getMeasurementIcon(measurement.metric)}
-                                        <span className="font-medium">{getMeasurementLabel(measurement.metric)}:</span>
-                                        <span>
-                                          {measurement.value} {measurement.unit}
-                                        </span>
-                                        <span className="text-xs text-text-dark/50">
-                                          ({new Date(measurement.recorded_at).toLocaleString()})
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
 
                               {item.nonConformances && item.nonConformances.length > 0 && (
                                 <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3">

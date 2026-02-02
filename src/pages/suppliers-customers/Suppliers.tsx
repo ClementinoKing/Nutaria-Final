@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Edit, Trash2, X, Camera } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Camera, Search } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { toast } from 'sonner'
@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui/spinner'
 import { CameraCapture } from '@/components/CameraCapture'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 
 interface Supplier {
   id: string
@@ -217,6 +218,9 @@ function Suppliers() {
   const [cameraForDocument, setCameraForDocument] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [filterType, setFilterType] = useState<string>('')
+  const [filterCountry, setFilterCountry] = useState<string>('')
   const totalSteps = SUPPLIER_FORM_STEPS.length
   const currentStepIndex = Math.min(activeStep, totalSteps - 1)
   const currentStep = SUPPLIER_FORM_STEPS[currentStepIndex]
@@ -232,6 +236,60 @@ function Suppliers() {
     () => new Map(supplierTypes.map((t) => [t.code, t.name])),
     [supplierTypes]
   )
+
+  // Get unique countries from suppliers
+  const uniqueCountries = useMemo(() => {
+    const countries = new Set<string>()
+    suppliers.forEach((supplier) => {
+      const country = supplier.country
+      if (country && typeof country === 'string' && country.trim()) {
+        countries.add(country.trim())
+      }
+    })
+    return Array.from(countries).sort()
+  }, [suppliers])
+
+  // Filter suppliers based on search query, type, and country
+  const filteredSuppliers = useMemo(() => {
+    return suppliers.filter((supplier) => {
+      // Search filter - check name, email, phone, primary contact name
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim()
+        const name = typeof supplier.name === 'string' ? supplier.name.toLowerCase() : ''
+        const email = typeof supplier.email === 'string' ? supplier.email.toLowerCase() : ''
+        const phone = typeof supplier.phone === 'string' ? supplier.phone.toLowerCase() : ''
+        const primaryContactName = typeof supplier.primary_contact_name === 'string' ? supplier.primary_contact_name.toLowerCase() : ''
+        const primaryContactEmail = typeof supplier.primary_contact_email === 'string' ? supplier.primary_contact_email.toLowerCase() : ''
+        const primaryContactPhone = typeof supplier.primary_contact_phone === 'string' ? supplier.primary_contact_phone.toLowerCase() : ''
+        const address = typeof supplier.address === 'string' ? supplier.address.toLowerCase() : ''
+        
+        const matchesSearch =
+          name.includes(query) ||
+          email.includes(query) ||
+          phone.includes(query) ||
+          primaryContactName.includes(query) ||
+          primaryContactEmail.includes(query) ||
+          primaryContactPhone.includes(query) ||
+          address.includes(query)
+        if (!matchesSearch) return false
+      }
+
+      // Type filter
+      if (filterType && supplier.supplier_type !== filterType) {
+        return false
+      }
+
+      // Country filter
+      if (filterCountry) {
+        const supplierCountry = typeof supplier.country === 'string' ? supplier.country.trim() : ''
+        if (supplierCountry !== filterCountry) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [suppliers, searchQuery, filterType, filterCountry])
 
   const documentTypeOptions = useMemo(
     () => [
@@ -729,11 +787,16 @@ function Suppliers() {
       : 'Save Supplier'
     : 'Next Step'
 
+  // Reset to page 1 when filters or suppliers list changes
+  useEffect(() => {
+    setPage(1)
+  }, [searchQuery, filterType, filterCountry])
+
   // Reset to page 1 when suppliers list changes
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(suppliers.length / pageSize))
+    const totalPages = Math.max(1, Math.ceil(filteredSuppliers.length / pageSize))
     if (page > totalPages) setPage(totalPages)
-  }, [suppliers.length, pageSize])
+  }, [filteredSuppliers.length, pageSize])
 
   const columns = [
     {
@@ -904,58 +967,201 @@ function Suppliers() {
             </div>
           ) : (
             <>
-              <ResponsiveTable 
-                columns={columns as any} 
-                data={suppliers.slice((page - 1) * pageSize, page * pageSize) as any} 
-                rowKey="id" 
-                onRowClick={handleSupplierClick as any}
-                tableClassName={undefined as any}
-                mobileCardClassName={undefined as any}
-                getRowClassName={undefined as any}
-              />
-              {suppliers.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 mt-4">
-                  <div className="text-sm text-text-dark/70">
-                    Showing {(page - 1) * pageSize + 1}–
-                    {Math.min(page * pageSize, suppliers.length)} of {suppliers.length}
+              {/* Search and Filter Section */}
+              <div className="mb-6 space-y-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  {/* Search Input */}
+                  <div className="space-y-2 sm:col-span-3 lg:col-span-1">
+                    <Label htmlFor="search-suppliers" className="text-sm font-medium text-text-dark">
+                      Search
+                    </Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
+                      <Input
+                        id="search-suppliers"
+                        type="text"
+                        placeholder="Search by name, email, phone..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-9 border-olive-light/60 focus-visible:ring-olive"
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="page-size" className="text-sm text-text-dark/70">
-                      Per page
-                    </label>
-                    <select
-                      id="page-size"
-                      value={pageSize}
-                      onChange={(event) => {
-                        setPageSize(Number(event.target.value))
-                        setPage(1)
-                      }}
-                      className="rounded-md border border-olive-light/60 bg-white px-2 py-1 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
-                    >
-                      <option value={10}>10</option>
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                    </select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={page <= 1}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage((p) => p + 1)}
-                      disabled={page * pageSize >= suppliers.length}
-                    >
-                      Next
-                    </Button>
+
+                  {/* Type Filter */}
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-type" className="text-sm font-medium text-text-dark">
+                      Type
+                    </Label>
+                    <SearchableSelect
+                      id="filter-type"
+                      options={[
+                        { value: '', label: 'All Types' },
+                        ...supplierTypeOptions,
+                      ]}
+                      value={filterType}
+                      onChange={(value) => setFilterType(value)}
+                      placeholder="Select type"
+                      disabled={loadingTypes}
+                    />
+                  </div>
+
+                  {/* Country Filter */}
+                  <div className="space-y-2">
+                    <Label htmlFor="filter-country" className="text-sm font-medium text-text-dark">
+                      Country
+                    </Label>
+                    <SearchableSelect
+                      id="filter-country"
+                      options={[
+                        { value: '', label: 'All Countries' },
+                        ...uniqueCountries.map((country) => ({ value: country, label: country })),
+                      ]}
+                      value={filterCountry}
+                      onChange={(value) => setFilterCountry(value)}
+                      placeholder="Select country"
+                    />
                   </div>
                 </div>
+
+                {/* Active Filters Display */}
+                {(searchQuery || filterType || filterCountry) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-text-dark/60">Active filters:</span>
+                    {searchQuery && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-olive-light/30 px-2 py-1 text-xs text-text-dark">
+                        Search: {searchQuery}
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          className="hover:text-red-600"
+                          aria-label="Clear search"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    )}
+                    {filterType && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-olive-light/30 px-2 py-1 text-xs text-text-dark">
+                        Type: {typeNameMap.get(filterType) || filterType}
+                        <button
+                          type="button"
+                          onClick={() => setFilterType('')}
+                          className="hover:text-red-600"
+                          aria-label="Clear type filter"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    )}
+                    {filterCountry && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-olive-light/30 px-2 py-1 text-xs text-text-dark">
+                        Country: {filterCountry}
+                        <button
+                          type="button"
+                          onClick={() => setFilterCountry('')}
+                          className="hover:text-red-600"
+                          aria-label="Clear country filter"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setSearchQuery('')
+                        setFilterType('')
+                        setFilterCountry('')
+                      }}
+                      className="h-6 text-xs text-text-dark/60 hover:text-text-dark"
+                    >
+                      Clear all
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {filteredSuppliers.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                  <p className="text-sm font-medium text-text-dark">No suppliers match your filters.</p>
+                  <p className="text-sm text-text-dark/60">
+                    Try adjusting your search criteria or clear filters to see all suppliers.
+                  </p>
+                  {(searchQuery || filterType || filterCountry) && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setSearchQuery('')
+                        setFilterType('')
+                        setFilterCountry('')
+                      }}
+                    >
+                      Clear Filters
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <ResponsiveTable 
+                    columns={columns as any} 
+                    data={filteredSuppliers.slice((page - 1) * pageSize, page * pageSize) as any} 
+                    rowKey="id" 
+                    onRowClick={handleSupplierClick as any}
+                    tableClassName={undefined as any}
+                    mobileCardClassName={undefined as any}
+                    getRowClassName={undefined as any}
+                  />
+                  {filteredSuppliers.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 mt-4">
+                      <div className="text-sm text-text-dark/70">
+                        Showing {(page - 1) * pageSize + 1}–
+                        {Math.min(page * pageSize, filteredSuppliers.length)} of {filteredSuppliers.length}
+                        {filteredSuppliers.length !== suppliers.length && (
+                          <span className="text-text-dark/50"> (filtered from {suppliers.length} total)</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label htmlFor="page-size" className="text-sm text-text-dark/70">
+                          Per page
+                        </label>
+                        <select
+                          id="page-size"
+                          value={pageSize}
+                          onChange={(event) => {
+                            setPageSize(Number(event.target.value))
+                            setPage(1)
+                          }}
+                          className="rounded-md border border-olive-light/60 bg-white px-2 py-1 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                        >
+                          <option value={10}>10</option>
+                          <option value={25}>25</option>
+                          <option value={50}>50</option>
+                        </select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          disabled={page <= 1}
+                        >
+                          Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage((p) => p + 1)}
+                          disabled={page * pageSize >= filteredSuppliers.length}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}

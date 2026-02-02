@@ -2,10 +2,10 @@ import { supabase } from './supabaseClient'
 import type {
   ProcessLotRun,
   ProcessStepRun,
-  ProcessMeasurement,
   ProcessNonConformance,
   ProcessSignoff,
   ProductionBatch,
+  BatchStepTransition,
 } from '@/types/processExecution'
 
 /**
@@ -225,37 +225,6 @@ export async function updateProcessStepRun(
   }
 
   return data as ProcessStepRun
-}
-
-/**
- * Create a process measurement
- */
-export async function createProcessMeasurement(
-  stepRunId: number,
-  measurement: {
-    metric: ProcessMeasurement['metric']
-    value: number
-    unit: string
-    recorded_at?: string
-  }
-): Promise<ProcessMeasurement> {
-  const { data, error } = await supabase
-    .from('process_measurements')
-    .insert({
-      process_step_run_id: stepRunId,
-      metric: measurement.metric,
-      value: measurement.value,
-      unit: measurement.unit,
-      recorded_at: measurement.recorded_at || new Date().toISOString(),
-    })
-    .select()
-    .single()
-
-  if (error) {
-    throw error
-  }
-
-  return data as ProcessMeasurement
 }
 
 /**
@@ -501,5 +470,243 @@ export async function completeProcessLotRun(lotRunId: number): Promise<{
   return {
     lotRun: updatedLotRun as ProcessLotRun,
     productionBatch,
+  }
+}
+
+/**
+ * Create a batch step transition record
+ * Records movement of a batch between steps (forward, backward, or held)
+ */
+export async function createBatchStepTransition(
+  manufacturingBatchId: number,
+  fromStep: string | null,
+  toStep: string,
+  reason: string | null,
+  createdBy: string,
+): Promise<BatchStepTransition> {
+  const { data, error } = await supabase
+    .from('batch_step_transitions')
+    .insert({
+      manufacturing_batch_id: manufacturingBatchId,
+      from_step: fromStep,
+      to_step: toStep,
+      reason: reason,
+      created_by: createdBy,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data as BatchStepTransition
+}
+
+/**
+ * Save process step quality check data
+ * Creates or updates a quality check record and its items
+ */
+export async function saveProcessStepQualityCheck(
+  stepRunId: number,
+  qualityCheckData: {
+    scores: Record<string, number>
+    results: Record<string, string>
+    remarks: Record<string, string>
+    qualityParameters: Array<{ id: number; code: string }>
+    evaluatedBy?: string | null
+  }
+): Promise<void> {
+  const { scores, results, remarks, qualityParameters, evaluatedBy } = qualityCheckData
+
+  // Calculate overall score (average of all scores, excluding N/A which is 4)
+  const validScores = Object.values(scores).filter((score) => score > 0 && score !== 4)
+  const overallScore =
+    validScores.length > 0 ? validScores.reduce((sum, score) => sum + score, 0) / validScores.length : null
+
+  // Determine status based on scores
+  const hasFailures = Object.values(scores).some((score) => score > 0 && score < 3 && score !== 4)
+  const status = hasFailures ? 'FAIL' : 'PASS'
+
+  // Check if quality check already exists for this step run
+  const { data: existingCheck, error: checkError } = await supabase
+    .from('process_step_quality_checks')
+    .select('id')
+    .eq('process_step_run_id', stepRunId)
+    .maybeSingle()
+
+  // If table doesn't exist, provide helpful error
+  if (checkError) {
+    const errorMessage = checkError.message || ''
+    const errorCode = (checkError as any).code || ''
+    
+    // Check for table not found errors (PGRST205, PGRST116, 404, etc.)
+    if (
+      errorCode === 'PGRST205' ||
+      errorCode === 'PGRST116' ||
+      errorMessage.includes('Could not find the table') ||
+      errorMessage.includes('relation') ||
+      errorMessage.includes('does not exist') ||
+      checkError.status === 404
+    ) {
+      throw new Error(
+        'Database tables for process step quality checks do not exist. Please run the migration file: supabase/ddl/migrations/20250202_create_process_step_quality_checks.sql in your Supabase SQL editor.'
+      )
+    }
+    
+    throw checkError
+  }
+
+  let qualityCheckId: number
+
+  if (existingCheck) {
+    // Update existing check
+    const { data: updatedCheck, error: updateError } = await supabase
+      .from('process_step_quality_checks')
+      .update({
+        status,
+        overall_score: overallScore,
+        evaluated_by: evaluatedBy || null,
+        evaluated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existingCheck.id)
+      .select('id')
+      .single()
+
+    if (updateError) {
+      throw updateError
+    }
+
+    qualityCheckId = updatedCheck.id
+
+    // Delete existing items
+    await supabase.from('process_step_quality_check_items').delete().eq('quality_check_id', qualityCheckId)
+  } else {
+    // Create new check
+    const { data: newCheck, error: createError } = await supabase
+      .from('process_step_quality_checks')
+      .insert({
+        process_step_run_id: stepRunId,
+        status,
+        overall_score: overallScore,
+        evaluated_by: evaluatedBy || null,
+        evaluated_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+
+    if (createError) {
+      throw createError
+    }
+
+    qualityCheckId = newCheck.id
+  }
+
+  // Create quality check items
+  const itemsPayload = qualityParameters
+    .map((param) => {
+      const score = scores[param.code]
+      if (!score || score === 0) {
+        return null
+      }
+
+      return {
+        quality_check_id: qualityCheckId,
+        parameter_id: param.id,
+        score: score,
+        remarks: remarks[param.code]?.trim() || null,
+        results: results[param.code]?.trim() || null,
+      }
+    })
+    .filter(Boolean)
+
+  if (itemsPayload.length > 0) {
+    const { error: itemsError } = await supabase.from('process_step_quality_check_items').insert(itemsPayload)
+
+    if (itemsError) {
+      throw itemsError
+    }
+  }
+}
+
+/**
+ * Get process step quality check data
+ * Returns the quality check record and its items
+ */
+export async function getProcessStepQualityCheck(stepRunId: number): Promise<{
+  qualityCheck: {
+    id: number
+    status: string
+    overall_score: number | null
+    remarks: string | null
+    evaluated_by: string | null
+    evaluated_at: string | null
+  } | null
+  items: Array<{
+    id: number
+    parameter_id: number
+    score: number
+    remarks: string | null
+    results: string | null
+    quality_parameter: {
+      id: number
+      code: string
+      name: string
+    }
+  }>
+}> {
+  // Fetch quality check
+  const { data: qualityCheck, error: checkError } = await supabase
+    .from('process_step_quality_checks')
+    .select('id, status, overall_score, remarks, evaluated_by, evaluated_at')
+    .eq('process_step_run_id', stepRunId)
+    .maybeSingle()
+
+  if (checkError && checkError.code !== 'PGRST205' && checkError.code !== 'PGRST116') {
+    throw checkError
+  }
+
+  if (!qualityCheck) {
+    return { qualityCheck: null, items: [] }
+  }
+
+  // Fetch quality check items with parameter details
+  const { data: items, error: itemsError } = await supabase
+    .from('process_step_quality_check_items')
+    .select(`
+      id,
+      parameter_id,
+      score,
+      remarks,
+      results,
+      quality_parameters:parameter_id (
+        id,
+        code,
+        name
+      )
+    `)
+    .eq('quality_check_id', qualityCheck.id)
+    .order('parameter_id')
+
+  if (itemsError) {
+    throw itemsError
+  }
+
+  // Transform the data to flatten the nested quality_parameters
+  const transformedItems = (items || []).map((item: any) => ({
+    id: item.id,
+    parameter_id: item.parameter_id,
+    score: item.score,
+    remarks: item.remarks,
+    results: item.results,
+    quality_parameter: Array.isArray(item.quality_parameters)
+      ? item.quality_parameters[0]
+      : item.quality_parameters,
+  }))
+
+  return {
+    qualityCheck,
+    items: transformedItems,
   }
 }

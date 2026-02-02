@@ -1482,19 +1482,21 @@ function ProcessDetail() {
                   <div className="space-y-3 pt-4 border-t border-olive-light/20">
                     <div className="flex items-center justify-between">
                       <Label className="text-base font-semibold text-text-dark">Process Steps</Label>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={handleAddStep}
-                        className="border-olive-light/30"
-                      >
-                        Add Step
-                      </Button>
                     </div>
 
                 {formState.steps.length === 0 ? (
-                  <p className="py-2 text-sm italic text-text-dark/60">No steps configured. Click "Add Step" to begin.</p>
+                  <div className="space-y-3">
+                    <p className="py-2 text-sm italic text-text-dark/60">No steps configured. Click "Add Step" to begin.</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleAddStep}
+                      className="border-olive-light/30"
+                    >
+                      Add Step
+                    </Button>
+                  </div>
                 ) : (
                   <div className="space-y-4">
                     {formState.steps.map((step, index) => (
@@ -1748,6 +1750,17 @@ function ProcessDetail() {
                         </div>
                       </div>
                     ))}
+                    <div className="pt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleAddStep}
+                        className="border-olive-light/30"
+                      >
+                        Add Step
+                      </Button>
+                    </div>
                   </div>
                 )}
                   </div>
