@@ -13,6 +13,7 @@ const SupplyStockPage = lazy(() => import('./pages/inventory/SupplyStockPage'))
 const WIPStockPage = lazy(() => import('./pages/inventory/WIPStockPage'))
 const WIPProductDetailPage = lazy(() => import('./pages/inventory/WIPProductDetailPage'))
 const PackedStockPage = lazy(() => import('./pages/inventory/PackedStockPage'))
+const PackedProductDetailPage = lazy(() => import('./pages/inventory/PackedProductDetailPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
@@ -152,6 +153,14 @@ function App() {
           element={
             <ProtectedRoute>
               <PackedStockPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/packed/:productId"
+          element={
+            <ProtectedRoute>
+              <PackedProductDetailPage />
             </ProtectedRoute>
           }
         />

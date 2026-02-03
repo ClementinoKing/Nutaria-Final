@@ -15,6 +15,17 @@ interface ShipmentItem {
   unit?: string | null
 }
 
+interface ShipmentPackItem {
+  id: string
+  product_name: string | null
+  product_sku: string | null
+  pack_identifier: string | null
+  pack_size_kg: number | null
+  pack_count: number | null
+  box_count: number | null
+  box_label: string | null
+}
+
 interface ShipmentDocument {
   id: string
   name: string
@@ -44,6 +55,7 @@ interface Shipment {
   notes?: string | null
   special_instructions?: string | null
   items: ShipmentItem[]
+  pack_items: ShipmentPackItem[]
   documents: ShipmentDocument[]
   created_at: string
 }
@@ -109,6 +121,7 @@ const hydrateShipment = (shipment: Partial<Shipment> | null | undefined): Shipme
     notes: shipment.notes ?? null,
     special_instructions: shipment.special_instructions ?? null,
     items: Array.isArray(shipment.items) ? shipment.items : [],
+    pack_items: Array.isArray(shipment.pack_items) ? shipment.pack_items : [],
     documents: Array.isArray(shipment.documents) ? shipment.documents : [],
     created_at: shipment.created_at ?? new Date().toISOString(),
   }
@@ -170,8 +183,25 @@ function ShipmentDetail() {
         created_at: string
       }
 
-      const [itemsRes, customerRes, warehouseRes] = await Promise.all([
+      const [itemsRes, packItemsRes, customerRes, warehouseRes] = await Promise.all([
         supabase.from('shipment_items').select('*').eq('shipment_id', s.id).order('id'),
+        supabase
+          .from('shipment_pack_items')
+          .select(`
+            id,
+            pack_count,
+            box_count,
+            box_label,
+            pack_entry:process_packaging_pack_entries(
+              pack_identifier,
+              pack_size_kg,
+              sorting_output:process_sorting_outputs(
+                product:products(name, sku)
+              )
+            )
+          `)
+          .eq('shipment_id', s.id)
+          .order('id'),
         s.customer_id
           ? supabase.from('customers').select('id, name').eq('id', s.customer_id).maybeSingle()
           : { data: null },
@@ -195,6 +225,28 @@ function ShipmentDetail() {
         description: item.description ?? null,
         quantity: item.quantity ?? null,
         unit: item.unit ?? null,
+      }))
+
+      const packItemsList = (packItemsRes.data ?? []) as Array<{
+        id: number
+        pack_count: number | null
+        box_count: number | null
+        box_label: string | null
+        pack_entry: {
+          pack_identifier?: string | null
+          pack_size_kg?: number | null
+          sorting_output?: { product?: { name?: string | null; sku?: string | null } | null } | null
+        } | null
+      }>
+      const packItems: ShipmentPackItem[] = packItemsList.map((item) => ({
+        id: `pack-${item.id}`,
+        product_name: item.pack_entry?.sorting_output?.product?.name ?? null,
+        product_sku: item.pack_entry?.sorting_output?.product?.sku ?? null,
+        pack_identifier: item.pack_entry?.pack_identifier ?? null,
+        pack_size_kg: item.pack_entry?.pack_size_kg ?? null,
+        pack_count: item.pack_count ?? null,
+        box_count: item.box_count ?? null,
+        box_label: item.box_label ?? null,
       }))
 
       const customerName: string =
@@ -223,6 +275,7 @@ function ShipmentDetail() {
           notes: s.notes ?? null,
           special_instructions: s.special_instructions ?? null,
           items,
+          pack_items: packItems,
           documents: [],
           created_at: s.created_at ?? new Date().toISOString(),
         })
@@ -325,6 +378,7 @@ function ShipmentDetail() {
   }
 
   const totalItems = shipment.items.reduce((count: number, item: ShipmentItem) => count + (item.quantity ?? 0), 0)
+  const totalPackBoxes = shipment.pack_items.reduce((count, item) => count + (item.box_count ?? 0), 0)
 
   return (
     <PageLayout
@@ -414,6 +468,10 @@ function ShipmentDetail() {
               <p className="text-sm font-medium text-text-dark">
                 {shipment.items.length} item{shipment.items.length === 1 ? '' : 's'} · {totalItems} units
               </p>
+              <p className="text-xs text-text-dark/60">Packed boxes</p>
+              <p className="text-sm font-medium text-text-dark">
+                {shipment.pack_items.length} box{shipment.pack_items.length === 1 ? '' : 'es'} · {totalPackBoxes} boxes
+              </p>
               <p className="text-xs text-text-dark/60">Warehouse</p>
               <p className="text-sm font-medium text-text-dark">{shipment.warehouse_name || 'Not specified'}</p>
             </CardContent>
@@ -495,6 +553,65 @@ function ShipmentDetail() {
 
         <Card className="border-olive-light/30 bg-white">
           <CardHeader>
+            <CardTitle className="text-text-dark">Packed Boxes</CardTitle>
+            <CardDescription>Pack entries allocated to this shipment</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {shipment.pack_items.length === 0 ? (
+              <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 text-sm text-text-dark/70">
+                No packed boxes recorded for this shipment yet.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-olive-light/40">
+                <table className="min-w-full divide-y divide-olive-light/30">
+                  <thead className="bg-olive-light/10">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Product
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Pack size
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Boxes
+                      </th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Packs
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                        Box
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-olive-light/20">
+                    {shipment.pack_items.map((item) => (
+                      <tr key={item.id}>
+                        <td className="px-4 py-3 text-sm text-text-dark/80">
+                          {item.product_name || '—'}
+                          {item.product_sku ? ` (${item.product_sku})` : ''}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-text-dark/80">
+                          {item.pack_identifier || '—'}
+                          {item.pack_size_kg ? ` (${item.pack_size_kg} kg)` : ''}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-text-dark/80">
+                          {item.box_count ?? '-'}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-text-dark/80">
+                          {item.pack_count ?? '-'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-text-dark/80">{item.box_label || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-olive-light/30 bg-white">
+          <CardHeader>
             <CardTitle className="text-text-dark">Line Items</CardTitle>
             <CardDescription>Products allocated to this shipment</CardDescription>
           </CardHeader>
@@ -545,5 +662,3 @@ function ShipmentDetail() {
 }
 
 export default ShipmentDetail
-
-

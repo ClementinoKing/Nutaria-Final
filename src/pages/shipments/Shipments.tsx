@@ -20,6 +20,20 @@ interface ShipmentItem {
   unit: string
 }
 
+interface ShipmentPackItemForm {
+  id: string
+  pack_entry_id: string
+  box_count: string
+  pack_count: string
+  box_label: string
+}
+
+interface ShipmentAllocationForm {
+  id: string
+  pack_entry_id: string
+  pack_count: string
+}
+
 interface ShipmentDocument {
   id: string
   name: string
@@ -62,11 +76,16 @@ interface ShipmentFormItem {
   unit: string
 }
 
-interface PackedProduct {
+interface PackedEntryOption {
+  id: number
   product_id: number
   product_name: string
   product_sku: string
-  total_quantity_kg: number
+  pack_identifier: string
+  pack_size_kg: number | null
+  pack_count: number | null
+  lot_no: string | null
+  created_at: string | null
 }
 
 interface ShipmentFormData {
@@ -89,6 +108,8 @@ interface ShipmentFormData {
   notes: string
   special_instructions: string
   items: ShipmentFormItem[]
+  allocations: ShipmentAllocationForm[]
+  pack_items: ShipmentPackItemForm[]
   documents: ShipmentDocument[]
 }
 
@@ -102,10 +123,9 @@ const statusOptions = [
 
 const SHIPMENT_FORM_STEPS = [
   { key: 1, label: 'Details', icon: FileText },
-  { key: 2, label: 'Customer', icon: User },
-  { key: 3, label: 'Warehouse & Carrier', icon: Truck },
-  { key: 4, label: 'Line Items', icon: Package },
-  { key: 5, label: 'Notes', icon: MessageSquare },
+  { key: 2, label: 'Warehouse & Carrier', icon: Truck },
+  { key: 3, label: 'Allocation', icon: Package },
+  { key: 4, label: 'Boxing & Review', icon: MessageSquare },
 ] as const
 const TOTAL_STEPS = SHIPMENT_FORM_STEPS.length
 
@@ -116,6 +136,20 @@ const createEmptyItem = (): ShipmentFormItem => ({
   description: '',
   quantity: '',
   unit: '',
+})
+
+const createEmptyPackItem = (): ShipmentPackItemForm => ({
+  id: `pack-${Math.random().toString(36).slice(2, 8)}`,
+  pack_entry_id: '',
+  box_count: '',
+  pack_count: '',
+  box_label: '',
+})
+
+const createEmptyAllocation = (): ShipmentAllocationForm => ({
+  id: `alloc-${Math.random().toString(36).slice(2, 8)}`,
+  pack_entry_id: '',
+  pack_count: '',
 })
 
 const createEmptyShipment = (): ShipmentFormData => ({
@@ -138,6 +172,8 @@ const createEmptyShipment = (): ShipmentFormData => ({
   notes: '',
   special_instructions: '',
   items: [createEmptyItem()],
+  allocations: [createEmptyAllocation()],
+  pack_items: [createEmptyPackItem()],
   documents: [],
 })
 
@@ -175,6 +211,16 @@ const getStatusBadgeColor = (status: ShipmentStatus | string): string => {
   return colors[status as ShipmentStatus] || 'bg-gray-100 text-gray-800'
 }
 
+const getPacksPerStandardCarton = (packSizeKg: number | null | undefined): number | null => {
+  if (!packSizeKg) return null
+  const rounded = Math.round(packSizeKg * 1000)
+  if (rounded === 250) return 40
+  if (rounded === 500) return 20
+  if (rounded === 1000) return 10
+  if (rounded === 2000) return 5
+  return null
+}
+
 function Shipments() {
   const [shipments, setShipments] = useState<Shipment[]>([])
   const [loading, setLoading] = useState(true)
@@ -186,8 +232,8 @@ function Shipments() {
   const [customers, setCustomers] = useState<Array<{ id: number; name: string }>>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
   const [formStep, setFormStep] = useState(1)
-  const [packedProducts, setPackedProducts] = useState<PackedProduct[]>([])
-  const [loadingPacked, setLoadingPacked] = useState(false)
+  const [packedEntries, setPackedEntries] = useState<PackedEntryOption[]>([])
+  const [loadingPackedEntries, setLoadingPackedEntries] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 20
   const location = useLocation()
@@ -317,66 +363,168 @@ function Shipments() {
     loadLookups()
   }, [loadLookups])
 
-  const loadPackedProducts = useCallback(async () => {
-    setLoadingPacked(true)
+  const packEntryMap = useMemo(() => {
+    return new Map(packedEntries.map((entry) => [entry.id, entry]))
+  }, [packedEntries])
+
+  const allocationTotals = useMemo(() => {
+    const byEntry = new Map<number, number>()
+    let totalPacks = 0
+    let totalKg = 0
+    formData.allocations.forEach((alloc) => {
+      const entryId = Number(alloc.pack_entry_id)
+      const count = Number(alloc.pack_count) || 0
+      if (!entryId || count <= 0) return
+      const entry = packEntryMap.get(entryId)
+      byEntry.set(entryId, (byEntry.get(entryId) ?? 0) + count)
+      totalPacks += count
+      if (entry?.pack_size_kg) {
+        totalKg += count * entry.pack_size_kg
+      }
+    })
+    return { byEntry, totalPacks, totalKg }
+  }, [formData.allocations, packEntryMap])
+
+  const boxingTotals = useMemo(() => {
+    const byEntry = new Map<number, number>()
+    const boxesByEntry = new Map<number, number>()
+    let totalPacks = 0
+    let totalKg = 0
+    formData.pack_items.forEach((box) => {
+      const entryId = Number(box.pack_entry_id)
+      const entry = packEntryMap.get(entryId)
+      const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
+      const boxCount = Number(box.box_count) || 0
+      const remainderPacks = Number(box.pack_count) || 0
+      const count =
+        packsPerBox != null ? boxCount * packsPerBox + remainderPacks : remainderPacks
+      if (!entryId || count <= 0) return
+      byEntry.set(entryId, (byEntry.get(entryId) ?? 0) + count)
+      boxesByEntry.set(entryId, (boxesByEntry.get(entryId) ?? 0) + (boxCount > 0 ? boxCount : 0))
+      totalPacks += count
+      if (entry?.pack_size_kg) {
+        totalKg += count * entry.pack_size_kg
+      }
+    })
+    return { byEntry, boxesByEntry, totalPacks, totalKg }
+  }, [formData.pack_items, packEntryMap])
+
+  useEffect(() => {
+    if (packedEntries.length === 0) return
+    setFormData((prev) => {
+      if (!isModalOpen) return prev
+      const nextPackItems: ShipmentPackItemForm[] = []
+      prev.allocations.forEach((allocation) => {
+        const entryId = Number(allocation.pack_entry_id)
+        const allocated = Number(allocation.pack_count) || 0
+        if (!entryId || allocated <= 0) return
+        const entry = packEntryMap.get(entryId)
+        const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
+        const fullBoxes = packsPerBox ? Math.floor(allocated / packsPerBox) : 0
+        const remainder = packsPerBox ? allocated - fullBoxes * packsPerBox : allocated
+        const existing = prev.pack_items.find((item) => Number(item.pack_entry_id) === entryId)
+        nextPackItems.push({
+          id: existing?.id ?? `pack-${entryId}`,
+          pack_entry_id: String(entryId),
+          box_count: packsPerBox && fullBoxes > 0 ? String(fullBoxes) : '',
+          pack_count: remainder > 0 ? String(remainder) : '',
+          box_label: existing?.box_label ?? '',
+        })
+      })
+      if (nextPackItems.length === 0) {
+        nextPackItems.push(createEmptyPackItem())
+      }
+      return { ...prev, pack_items: nextPackItems }
+    })
+  }, [formData.allocations, packEntryMap, packedEntries.length, isModalOpen])
+
+  const loadPackedEntries = useCallback(async () => {
+    setLoadingPackedEntries(true)
     try {
       const { data: entries, error: entriesError } = await supabase
         .from('process_packaging_pack_entries')
         .select(`
           id,
-          quantity_kg,
+          pack_identifier,
+          pack_size_kg,
+          pack_count,
+          created_at,
           sorting_output:process_sorting_outputs(
             product_id,
             product:products(id, name, sku)
+          ),
+          packaging_run:process_packaging_runs(
+            process_step_runs(
+              process_lot_runs(
+                supply_batches(lot_no)
+              )
+            )
           )
         `)
         .order('created_at', { ascending: false })
 
       if (entriesError) {
-        setPackedProducts([])
-        setLoadingPacked(false)
+        setPackedEntries([])
+        setLoadingPackedEntries(false)
         return
       }
 
       const list = (entries ?? []) as Array<{
         id: number
-        quantity_kg: number
-        sorting_output: unknown
+        pack_identifier: string
+        pack_size_kg: number | null
+        pack_count: number | null
+        created_at: string | null
+        sorting_output: {
+          product_id?: number
+          product?: { name?: string | null; sku?: string | null }
+        } | null
+        packaging_run: {
+          process_step_runs?: {
+            process_lot_runs?: {
+              supply_batches?: { lot_no?: string | null } | null
+            } | null
+          } | { process_lot_runs?: { supply_batches?: { lot_no?: string | null } | null } | null }[] | null
+        } | null
       }>
 
-      const byProduct = new Map<number, { quantity: number; name: string; sku: string }>()
-      for (const e of list) {
-        const so = e.sorting_output as { product_id?: number; product?: { name?: string | null; sku?: string | null } } | null
-        const productId = so?.product_id
-        if (productId == null) continue
-        const name = so?.product?.name ?? 'Unknown'
-        const sku = so?.product?.sku ?? ''
-        const qty = Number(e.quantity_kg) || 0
-        if (!byProduct.has(productId)) {
-          byProduct.set(productId, { quantity: 0, name, sku })
-        }
-        const agg = byProduct.get(productId)!
-        agg.quantity += qty
-      }
+      const unwrap = <T,>(value: T | T[] | null | undefined): T | null =>
+        Array.isArray(value) ? value[0] ?? null : value ?? null
 
-      const result: PackedProduct[] = Array.from(byProduct.entries()).map(([product_id, agg]) => ({
-        product_id,
-        product_name: agg.name,
-        product_sku: agg.sku,
-        total_quantity_kg: Math.round(agg.quantity * 100) / 100,
-      }))
-      result.sort((a, b) => a.product_name.localeCompare(b.product_name))
-      setPackedProducts(result)
+      const result = list
+        .map((entry) => {
+          const productId = entry.sorting_output?.product_id
+          if (!productId) return null
+          if (entry.pack_count == null || entry.pack_count <= 0) return null
+          const productName = entry.sorting_output?.product?.name ?? 'Unknown'
+          const productSku = entry.sorting_output?.product?.sku ?? ''
+          const stepRun = unwrap(entry.packaging_run?.process_step_runs)
+          const lotNo = (stepRun as any)?.process_lot_runs?.supply_batches?.lot_no ?? null
+          return {
+            id: entry.id,
+            product_id: productId,
+            product_name: productName,
+            product_sku: productSku,
+            pack_identifier: entry.pack_identifier,
+            pack_size_kg: entry.pack_size_kg ?? null,
+            pack_count: entry.pack_count ?? null,
+            lot_no: lotNo,
+            created_at: entry.created_at ?? null,
+          } as PackedEntryOption
+        })
+        .filter((entry): entry is PackedEntryOption => entry !== null)
+
+      setPackedEntries(result)
     } catch {
-      setPackedProducts([])
+      setPackedEntries([])
     } finally {
-      setLoadingPacked(false)
+      setLoadingPackedEntries(false)
     }
   }, [])
 
   useEffect(() => {
-    loadPackedProducts()
-  }, [loadPackedProducts])
+    loadPackedEntries()
+  }, [loadPackedEntries])
 
   const totalPages = Math.max(1, Math.ceil(shipments.length / pageSize))
   const paginatedShipments = useMemo(() => {
@@ -400,7 +548,58 @@ function Shipments() {
     }
   }, [isModalOpen, editingShipmentId, warehouses, formData.warehouse_id])
 
-  const openEditModal = useCallback((shipment: Shipment) => {
+  const loadShipmentPackItems = useCallback(async (shipmentId: number) => {
+    const { data } = await supabase
+      .from('shipment_pack_items')
+      .select('id, pack_entry_id, pack_count, box_count, box_label, pack_entry:process_packaging_pack_entries(pack_size_kg)')
+      .eq('shipment_id', shipmentId)
+      .order('id')
+
+    const items = (data ?? []) as Array<{
+      id: number
+      pack_entry_id: number
+      pack_count: number
+      box_count: number | null
+      box_label: string | null
+      pack_entry: { pack_size_kg?: number | null } | null
+    }>
+    const allocationMap = new Map<number, number>()
+    items.forEach((item) => {
+      if (!item.pack_entry_id) return
+      const current = allocationMap.get(item.pack_entry_id) ?? 0
+      allocationMap.set(item.pack_entry_id, current + (item.pack_count ?? 0))
+    })
+    setFormData((prev) => ({
+      ...prev,
+      pack_items:
+        items.length > 0
+          ? items.map((item) => ({
+              id: `pack-${item.id}`,
+              pack_entry_id: String(item.pack_entry_id),
+              box_count:
+                item.box_count != null
+                  ? String(item.box_count)
+                  : (() => {
+                      const packsPerBox = getPacksPerStandardCarton(item.pack_entry?.pack_size_kg ?? null)
+                      if (!packsPerBox || !item.pack_count) return ''
+                      return String(Math.floor(item.pack_count / packsPerBox))
+                    })(),
+              pack_count: item.pack_count ? String(item.pack_count) : '',
+              box_label: item.box_label ?? '',
+            }))
+          : [createEmptyPackItem()],
+      allocations:
+        allocationMap.size > 0
+          ? Array.from(allocationMap.entries()).map(([pack_entry_id, pack_count]) => ({
+              id: `alloc-${pack_entry_id}`,
+              pack_entry_id: String(pack_entry_id),
+              pack_count: pack_count ? String(pack_count) : '',
+            }))
+          : [createEmptyAllocation()],
+    }))
+  }, [])
+
+  const openEditModal = useCallback(async (shipment: Shipment) => {
     setFormStep(1)
     setFormData({
       ...shipment,
@@ -431,25 +630,30 @@ function Shipments() {
               unit: item.unit ?? '',
             }))
           : [createEmptyItem()],
+      allocations: [createEmptyAllocation()],
+      pack_items: [createEmptyPackItem()],
       documents: shipment.documents ?? [],
     })
     setEditingShipmentId(shipment.id)
     setIsModalOpen(true)
-  }, [])
+    await loadShipmentPackItems(shipment.id)
+  }, [loadShipmentPackItems])
 
   useEffect(() => {
     const { editShipmentId, shipment } = (location.state as { editShipmentId?: number; shipment?: Shipment }) || {}
     if (editShipmentId) {
       const existingShipment =
-        shipments.find((entry) => entry.id === editShipmentId) ||
-        (shipment ? { ...shipment } : null)
+        shipments.find((entry) => entry.id === editShipmentId) || (shipment ? { ...shipment } : null)
 
       if (existingShipment) {
-        openEditModal({
-          ...existingShipment,
-          items: Array.isArray(existingShipment.items) ? existingShipment.items : [],
-          documents: Array.isArray(existingShipment.documents) ? existingShipment.documents : [],
-        })
+        const open = async () => {
+          await openEditModal({
+            ...existingShipment,
+            items: Array.isArray(existingShipment.items) ? existingShipment.items : [],
+            documents: Array.isArray(existingShipment.documents) ? existingShipment.documents : [],
+          })
+        }
+        open()
       }
 
       navigate(location.pathname, { replace: true })
@@ -525,44 +729,146 @@ function Shipments() {
     }))
   }
 
-  const handleItemChange = (itemId: string, field: keyof ShipmentFormItem, value: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      items: prev.items.map((item) => (item.id === itemId ? { ...item, [field]: value } : item)),
-    }))
-  }
-
-  const handleAddItem = () => {
-    setFormData((prev) => ({
-      ...prev,
-      items: [...prev.items, createEmptyItem()],
-    }))
-  }
-
-  const handleRemoveItem = (itemId: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      items: prev.items.length === 1 ? prev.items : prev.items.filter((item) => item.id !== itemId),
-    }))
-  }
-
-  const handlePackedProductSelect = (itemId: string, productIdStr: string) => {
-    const productId = productIdStr ? Number(productIdStr) : null
-    const packed = productId ? packedProducts.find((p) => p.product_id === productId) : null
-    setFormData((prev) => ({
-      ...prev,
-      items: prev.items.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              product_id: productIdStr,
-              sku: packed?.product_sku ?? '',
-              description: packed?.product_name ?? '',
-              unit: packed ? 'kg' : item.unit,
-              quantity: packed && item.quantity ? item.quantity : packed ? '' : item.quantity,
+  const handlePackItemChange = (itemId: string, field: keyof ShipmentPackItemForm, value: string) => {
+    setFormData((prev) => {
+      const nextPackItems = prev.pack_items.map((item) => {
+        if (item.id !== itemId) return item
+        if (field === 'pack_entry_id') {
+          const entryId = Number(value)
+          if (!entryId) {
+            return { ...item, pack_entry_id: value, box_count: '', pack_count: '' }
+          }
+          const entry = packEntryMap.get(entryId)
+          const packSize = entry?.pack_size_kg ?? null
+          const packsPerBox = getPacksPerStandardCarton(packSize)
+          const allocated = prev.allocations.reduce((sum, alloc) => {
+            if (Number(alloc.pack_entry_id) !== entryId) return sum
+            return sum + (Number(alloc.pack_count) || 0)
+          }, 0)
+          const boxedOther = prev.pack_items.reduce((sum, row) => {
+            if (row.id === itemId) return sum
+            if (Number(row.pack_entry_id) !== entryId) return sum
+            const rowEntry = packEntryMap.get(entryId)
+            const rowPacksPerBox = getPacksPerStandardCarton(rowEntry?.pack_size_kg ?? null)
+            if (rowPacksPerBox != null) {
+              return sum + (Number(row.box_count) || 0) * rowPacksPerBox + (Number(row.pack_count) || 0)
             }
-          : item
-      ),
+            return sum + (Number(row.pack_count) || 0)
+          }, 0)
+          const remaining = Math.max(0, allocated - boxedOther)
+          const suggestedBoxes =
+            packsPerBox && remaining > 0 ? Math.max(1, Math.floor(remaining / packsPerBox)) : 0
+          return {
+            ...item,
+            pack_entry_id: value,
+            box_count: suggestedBoxes > 0 ? String(suggestedBoxes) : '',
+            pack_count: '',
+          }
+        }
+        if (field === 'box_count' || field === 'pack_count') {
+          const entryId = Number(item.pack_entry_id)
+          if (!entryId) return { ...item, [field]: value }
+          const allocated = prev.allocations.reduce((sum, alloc) => {
+            if (Number(alloc.pack_entry_id) !== entryId) return sum
+            return sum + (Number(alloc.pack_count) || 0)
+          }, 0)
+          const boxedOther = prev.pack_items.reduce((sum, row) => {
+            if (row.id === itemId) return sum
+            if (Number(row.pack_entry_id) !== entryId) return sum
+            const rowEntry = packEntryMap.get(entryId)
+            const rowPacksPerBox = getPacksPerStandardCarton(rowEntry?.pack_size_kg ?? null)
+            if (rowPacksPerBox != null) {
+              return sum + (Number(row.box_count) || 0) * rowPacksPerBox
+            }
+            return sum + (Number(row.pack_count) || 0)
+          }, 0)
+          const remaining = Math.max(0, allocated - boxedOther)
+          const packsPerBox = getPacksPerStandardCarton(packEntryMap.get(entryId)?.pack_size_kg ?? null)
+          if (field === 'box_count' && packsPerBox != null) {
+            const maxBoxes = packsPerBox > 0 ? Math.floor(remaining / packsPerBox) : 0
+            const numeric = Math.max(0, Math.min(Number(value) || 0, maxBoxes))
+            return { ...item, box_count: value === '' ? '' : String(numeric) }
+          }
+          if (field === 'pack_count') {
+            const boxedHere = packsPerBox != null ? (Number(item.box_count) || 0) * packsPerBox : 0
+            const availableForRemainder = Math.max(0, remaining - boxedHere)
+            const numeric = Math.max(0, Math.min(Number(value) || 0, availableForRemainder))
+            return { ...item, pack_count: value === '' ? '' : String(numeric) }
+          }
+          return item
+        }
+        return { ...item, [field]: value }
+      })
+      return { ...prev, pack_items: nextPackItems }
+    })
+  }
+
+  const handleAllocationChange = (itemId: string, field: keyof ShipmentAllocationForm, value: string) => {
+    setFormData((prev) => {
+      const nextAllocations = prev.allocations.map((item) => {
+        if (item.id !== itemId) return item
+        if (field === 'pack_entry_id') {
+          const entryId = Number(value)
+          if (!entryId) {
+            return { ...item, pack_entry_id: value, pack_count: '' }
+          }
+          const entry = packEntryMap.get(entryId)
+          const available = entry?.pack_count ?? 0
+          const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
+          const suggested = packsPerBox ? Math.min(packsPerBox, available) : 0
+          return {
+            ...item,
+            pack_entry_id: value,
+            pack_count: suggested > 0 ? String(suggested) : '',
+          }
+        }
+        if (field === 'pack_count') {
+          const entryId = Number(item.pack_entry_id)
+          if (!entryId) return { ...item, pack_count: value }
+          const entry = packEntryMap.get(entryId)
+          const available = entry?.pack_count ?? 0
+          const allocatedOther = prev.allocations.reduce((sum, row) => {
+            if (row.id === itemId) return sum
+            if (Number(row.pack_entry_id) !== entryId) return sum
+            return sum + (Number(row.pack_count) || 0)
+          }, 0)
+          const remaining = Math.max(0, available - allocatedOther)
+          const numeric = Math.max(0, Math.min(Number(value) || 0, remaining))
+          return { ...item, pack_count: value === '' ? '' : String(numeric) }
+        }
+        return { ...item, [field]: value }
+      })
+      return { ...prev, allocations: nextAllocations }
+    })
+  }
+
+  const handleAddAllocation = () => {
+    setFormData((prev) => ({
+      ...prev,
+      allocations: [...prev.allocations, createEmptyAllocation()],
+    }))
+  }
+
+  const handleRemoveAllocation = (itemId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      allocations:
+        prev.allocations.length === 1 ? prev.allocations : prev.allocations.filter((item) => item.id !== itemId),
+    }))
+  }
+
+  const handleAddPackItem = () => {
+    setFormData((prev) => ({
+      ...prev,
+      pack_items: [...prev.pack_items, createEmptyPackItem()],
+    }))
+  }
+
+  const handleRemovePackItem = (itemId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      pack_items:
+        prev.pack_items.length === 1 ? prev.pack_items : prev.pack_items.filter((item) => item.id !== itemId),
     }))
   }
 
@@ -592,6 +898,43 @@ function Shipments() {
       return
     }
 
+    const normalizedAllocations = formData.allocations
+      .filter((item) => item.pack_entry_id || item.pack_count)
+      .map((item) => ({
+        pack_entry_id: Number(item.pack_entry_id),
+        pack_count: Number(item.pack_count) || 0,
+      }))
+
+    const invalidAllocation = normalizedAllocations.find(
+      (item) => !item.pack_entry_id || item.pack_count <= 0
+    )
+    if (invalidAllocation) {
+      toast.error('Please complete all pack allocation rows with a pack entry and pack count.')
+      setSaving(false)
+      return
+    }
+
+    const allocationMap = new Map<number, number>()
+    normalizedAllocations.forEach((item) => {
+      allocationMap.set(item.pack_entry_id, (allocationMap.get(item.pack_entry_id) ?? 0) + item.pack_count)
+    })
+
+    if (allocationMap.size === 0) {
+      toast.error('Add at least one pack allocation before saving.')
+      setSaving(false)
+      return
+    }
+
+    for (const [entryId, totalAllocated] of allocationMap.entries()) {
+      const entry = packEntryMap.get(entryId)
+      const available = entry?.pack_count ?? 0
+      if (totalAllocated > available) {
+        toast.error(`Allocated packs exceed available packs for ${entry?.product_name ?? 'selected entry'}.`)
+        setSaving(false)
+        return
+      }
+    }
+
     const normalizedItems = formData.items
       .filter((item) => item.product_id && (Number(item.quantity) || 0) > 0)
       .map((item) => ({
@@ -600,6 +943,50 @@ function Shipments() {
         requested_qty: Number(item.quantity) || null,
         unit_id: item.unit ? Number(item.unit) : null, // unit_id is integer FK to units
       }))
+
+    const normalizedPackItems = formData.pack_items
+      .filter((item) => item.pack_entry_id && (Number(item.box_count) || Number(item.pack_count) || 0) > 0)
+      .map((item) => {
+        const entryId = Number(item.pack_entry_id)
+        const entry = packEntryMap.get(entryId)
+        const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
+        const boxCount = Number(item.box_count) || 0
+        const packCount =
+          packsPerBox != null ? boxCount * packsPerBox : Number(item.pack_count) || 0
+        return {
+          pack_entry_id: entryId,
+          pack_count: packCount,
+          box_count: boxCount > 0 ? boxCount : null,
+          box_label: item.box_label?.trim() || null,
+        }
+      })
+
+    const boxedMap = new Map<number, number>()
+    normalizedPackItems.forEach((item) => {
+      boxedMap.set(item.pack_entry_id, (boxedMap.get(item.pack_entry_id) ?? 0) + item.pack_count)
+    })
+
+    if (normalizedPackItems.length === 0) {
+      toast.error('Boxing details are required before saving.')
+      setSaving(false)
+      return
+    }
+
+    const invalidBoxing = normalizedPackItems.find((item) => item.pack_count <= 0)
+    if (invalidBoxing) {
+      toast.error('Boxing rows must include a valid box count or pack count.')
+      setSaving(false)
+      return
+    }
+
+    for (const [entryId, allocated] of allocationMap.entries()) {
+      const boxed = boxedMap.get(entryId) ?? 0
+      if (boxed !== allocated) {
+        toast.error('Boxing totals must match allocated packs for each pack entry.')
+        setSaving(false)
+        return
+      }
+    }
 
     const normalizeDateValue = (value: string): string | null => (value ? new Date(value).toISOString() : null)
 
@@ -640,6 +1027,13 @@ function Shipments() {
             .insert(normalizedItems.map((item) => ({ shipment_id: editingShipmentId, ...item })))
         }
 
+        await supabase.from('shipment_pack_items').delete().eq('shipment_id', editingShipmentId)
+        if (normalizedPackItems.length > 0) {
+          await supabase
+            .from('shipment_pack_items')
+            .insert(normalizedPackItems.map((item) => ({ shipment_id: editingShipmentId, ...item })))
+        }
+
         await load()
         toast.success('Shipment updated')
       } else {
@@ -665,6 +1059,11 @@ function Shipments() {
           await supabase
             .from('shipment_items')
             .insert(normalizedItems.map((item) => ({ shipment_id: newId, ...item })))
+        }
+        if (normalizedPackItems.length > 0) {
+          await supabase
+            .from('shipment_pack_items')
+            .insert(normalizedPackItems.map((item) => ({ shipment_id: newId, ...item })))
         }
 
         await load()
@@ -892,12 +1291,33 @@ function Shipments() {
               onSubmit={handleSubmit}
               className="flex-1 overflow-y-auto bg-beige/10 px-6 py-6"
             >
-              <div className="mx-auto max-w-2xl">
+              <div className="mx-auto max-w-5xl">
                 {formStep === 1 && (
                   <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
                     <h3 className="text-lg font-semibold text-text-dark">Shipment Details</h3>
                     <p className="text-sm text-text-dark/70">General shipment and scheduling information</p>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="customer_id">Customer *</Label>
+                        <select
+                          id="customer_id"
+                          name="customer_id"
+                          value={formData.customer_id}
+                          onChange={handleCustomerSelect}
+                          required
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <option value="">Select customer</option>
+                          {customers.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        {customers.length === 0 && (
+                          <p className="text-xs text-text-dark/50">No customers in the system. Add customers first.</p>
+                        )}
+                      </div>
                       <div className="space-y-2">
                         <Label htmlFor="doc_no">Document Number</Label>
                         <Input
@@ -971,79 +1391,6 @@ function Shipments() {
 
                 {formStep === 2 && (
                   <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                    <h3 className="text-lg font-semibold text-text-dark">Customer &amp; Destination</h3>
-                    <p className="text-sm text-text-dark/70">Delivery details and customer contacts</p>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="customer_id">Customer *</Label>
-                        <select
-                          id="customer_id"
-                          name="customer_id"
-                          value={formData.customer_id}
-                          onChange={handleCustomerSelect}
-                          required
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <option value="">Select customer</option>
-                          {customers.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        {customers.length === 0 && (
-                          <p className="text-xs text-text-dark/50">No customers in the system. Add customers first.</p>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="customer_contact_name">Customer Contact</Label>
-                        <Input
-                          id="customer_contact_name"
-                          name="customer_contact_name"
-                          value={formData.customer_contact_name}
-                          onChange={handleChange}
-                          placeholder="Primary contact name"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="customer_contact_email">Contact Email</Label>
-                        <Input
-                          id="customer_contact_email"
-                          name="customer_contact_email"
-                          type="email"
-                          value={formData.customer_contact_email}
-                          onChange={handleChange}
-                          placeholder="contact@example.com"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="customer_contact_phone">Contact Phone</Label>
-                        <Input
-                          id="customer_contact_phone"
-                          name="customer_contact_phone"
-                          value={formData.customer_contact_phone}
-                          onChange={handleChange}
-                          placeholder="+27 00 000 0000"
-                        />
-                      </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label htmlFor="shipping_address">Shipping Address</Label>
-                        <textarea
-                          id="shipping_address"
-                          name="shipping_address"
-                          value={formData.shipping_address}
-                          onChange={handleChange}
-                          rows={3}
-                          placeholder="Street, City, Country, Postal Code"
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        />
-                      </div>
-                    </div>
-                  </section>
-                )}
-
-                {formStep === 3 && (
-                  <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
                     <h3 className="text-lg font-semibold text-text-dark">Warehouse &amp; Carrier</h3>
                     <p className="text-sm text-text-dark/70">Operational origin and transport partner</p>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -1081,97 +1428,109 @@ function Shipments() {
                   </section>
                 )}
 
-                {formStep === 4 && (
+                {formStep === 3 && (
                   <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                    <h3 className="text-lg font-semibold text-text-dark">Line Items</h3>
+                    <h3 className="text-lg font-semibold text-text-dark">Pack Allocation</h3>
                     <p className="text-sm text-text-dark/70">
-                      Select only from packed stock. Products and quantities included in this shipment.
+                      Allocate packs from packed stock to this shipment.
                     </p>
-                    {loadingPacked && (
-                      <p className="mt-2 text-sm text-text-dark/60">Loading packed products…</p>
+                    {loadingPackedEntries && (
+                      <p className="mt-2 text-sm text-text-dark/60">Loading packed entries…</p>
                     )}
-                    {!loadingPacked && packedProducts.length === 0 && (
+                    {!loadingPackedEntries && packedEntries.length === 0 && (
                       <p className="mt-2 text-sm text-amber-700">
-                        No packed stock available. Record pack entries in packaging steps first.
+                        No pack entries available. Add pack entries in the packaging step first.
                       </p>
                     )}
                     <div className="mt-4 space-y-4">
-                      {formData.items.map((item) => {
-                        const selectedPacked = item.product_id
-                          ? packedProducts.find((p) => p.product_id === Number(item.product_id))
+                      {formData.allocations.map((allocation) => {
+                        const selectedEntry = allocation.pack_entry_id
+                          ? packedEntries.find((entry) => entry.id === Number(allocation.pack_entry_id))
                           : null
-                        const maxQty = selectedPacked?.total_quantity_kg ?? 0
+                        const entryId = selectedEntry?.id ?? 0
+                        const allocatedOther = formData.allocations.reduce((sum, row) => {
+                          if (row.id === allocation.id) return sum
+                          if (!row.pack_entry_id) return sum
+                          if (Number(row.pack_entry_id) !== entryId) return sum
+                          return sum + (Number(row.pack_count) || 0)
+                        }, 0)
+                        const availablePacks = Math.max(0, (selectedEntry?.pack_count ?? 0) - allocatedOther)
+                        const packSize = selectedEntry?.pack_size_kg ?? 0
+                        const packsPerBox = getPacksPerStandardCarton(selectedEntry?.pack_size_kg ?? null)
+                        const enteredPacks = Number(allocation.pack_count) || 0
+                        const totalKg = packSize > 0 ? enteredPacks * packSize : 0
                         return (
                           <div
-                            key={item.id}
+                            key={allocation.id}
                             className="grid gap-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 sm:grid-cols-4"
                           >
                             <div className="space-y-2 sm:col-span-2">
-                              <Label htmlFor={`packed-product-${item.id}`}>Packed product *</Label>
+                              <Label htmlFor={`allocation-entry-${allocation.id}`}>Pack entry *</Label>
                               <select
-                                id={`packed-product-${item.id}`}
-                                value={item.product_id}
-                                onChange={(e) => handlePackedProductSelect(item.id, e.target.value)}
+                                id={`allocation-entry-${allocation.id}`}
+                                value={allocation.pack_entry_id}
+                                onChange={(e) => handleAllocationChange(allocation.id, 'pack_entry_id', e.target.value)}
                                 required
                                 className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                <option value="">Select packed product</option>
-                                {packedProducts.map((p) => (
-                                  <option key={p.product_id} value={p.product_id}>
-                                    {p.product_name}
-                                    {p.product_sku ? ` (${p.product_sku})` : ''} — {p.total_quantity_kg.toFixed(2)} kg
-                                    available
+                                <option value="">Select pack entry</option>
+                                {packedEntries.map((entry) => (
+                                  <option key={entry.id} value={entry.id}>
+                                    {entry.product_name}
+                                    {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.pack_identifier}
+                                    {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg)` : ''} · {entry.pack_count ?? 0} packs
+                                    {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
                                   </option>
                                 ))}
                               </select>
+                              {selectedEntry && (
+                                <p className="text-xs text-text-dark/60">
+                                  Available: {availablePacks} packs · Pack size:{' '}
+                                  {packSize > 0 ? `${packSize} kg` : selectedEntry.pack_identifier}
+                                </p>
+                              )}
+                              {packsPerBox && (
+                                <p className="text-xs text-text-dark/60">
+                                  Standard 10 kg carton: {packsPerBox} packs per box
+                                </p>
+                              )}
                             </div>
                             <div className="space-y-2">
-                              <Label htmlFor={`quantity-${item.id}`}>
-                                Quantity (kg) *
-                                {selectedPacked && (
+                              <Label htmlFor={`allocation-count-${allocation.id}`}>
+                                Packs allocated *
+                                {selectedEntry && (
                                   <span className="ml-1 text-xs font-normal text-text-dark/50">
-                                    (max {maxQty.toFixed(2)})
+                                    (max {availablePacks})
                                   </span>
                                 )}
                               </Label>
                               <Input
-                                id={`quantity-${item.id}`}
+                                id={`allocation-count-${allocation.id}`}
                                 type="number"
                                 min="0"
-                                max={selectedPacked ? maxQty : undefined}
-                                step="0.01"
-                                value={item.quantity}
-                                onChange={(event) => handleItemChange(item.id, 'quantity', event.target.value)}
+                                max={selectedEntry ? availablePacks : undefined}
+                                step="1"
+                                value={allocation.pack_count}
+                                onChange={(event) => handleAllocationChange(allocation.id, 'pack_count', event.target.value)}
                                 placeholder="0"
-                                disabled={!item.product_id}
+                                disabled={!entryId}
                               />
+                              {selectedEntry && packSize > 0 && (
+                                <p className="text-xs text-text-dark/60">
+                                  ≈ {totalKg.toFixed(2)} kg total
+                                </p>
+                              )}
                             </div>
-                            <div className="space-y-2">
-                              <Label htmlFor={`unit-${item.id}`}>Unit</Label>
-                              <Input
-                                id={`unit-${item.id}`}
-                                value={item.unit}
-                                onChange={(event) => handleItemChange(item.id, 'unit', event.target.value)}
-                                placeholder="kg"
-                              />
-                            </div>
-                            {selectedPacked && (item.sku || item.description) && (
-                              <div className="sm:col-span-4 text-xs text-text-dark/60">
-                                {item.sku && <span>SKU: {item.sku}</span>}
-                                {item.sku && item.description && ' · '}
-                                {item.description && <span>{item.description}</span>}
-                              </div>
-                            )}
                             <div className="flex items-end justify-end sm:col-span-4">
                               <Button
                                 type="button"
                                 variant="ghost"
                                 className="text-red-600 hover:text-red-700"
-                                onClick={() => handleRemoveItem(item.id)}
-                                disabled={formData.items.length === 1}
+                                onClick={() => handleRemoveAllocation(allocation.id)}
+                                disabled={formData.allocations.length === 1}
                               >
                                 <Trash2 className="mr-2 h-4 w-4" />
-                                Remove Item
+                                Remove Allocation
                               </Button>
                             </div>
                           </div>
@@ -1180,44 +1539,256 @@ function Shipments() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={handleAddItem}
-                        disabled={loadingPacked || packedProducts.length === 0}
+                        onClick={handleAddAllocation}
+                        disabled={loadingPackedEntries || packedEntries.length === 0}
                       >
                         <PackageIcon className="mr-2 h-4 w-4" />
-                        Add Another Item
+                        Add Allocation
                       </Button>
                     </div>
                   </section>
                 )}
 
-                {formStep === 5 && (
-                  <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                    <h3 className="text-lg font-semibold text-text-dark">Notes &amp; Instructions</h3>
-                    <p className="text-sm text-text-dark/70">Additional context for the warehouse or carrier</p>
-                    <div className="mt-4 space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="notes">Internal Notes</Label>
-                        <textarea
-                          id="notes"
-                          name="notes"
-                          value={formData.notes}
-                          onChange={handleChange}
-                          rows={3}
-                          placeholder="Internal comments about this shipment"
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        />
+                {formStep === 4 && (
+                  <section className="space-y-6">
+                    <div className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Boxing</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Put allocated packs into boxes. Boxing totals must match allocations.
+                      </p>
+                      {formData.allocations.length === 0 && (
+                        <p className="mt-2 text-sm text-amber-700">
+                          Add pack allocations first to start boxing.
+                        </p>
+                      )}
+                      <div className="mt-4 space-y-4">
+                        {formData.pack_items.map((packItem) => {
+                          const selectedEntry = packItem.pack_entry_id
+                            ? packedEntries.find((entry) => entry.id === Number(packItem.pack_entry_id))
+                            : null
+                              const entryId = selectedEntry?.id ?? 0
+                              const allocated = allocationTotals.byEntry.get(entryId) ?? 0
+                              const boxedOther = formData.pack_items.reduce((sum, row) => {
+                                if (row.id === packItem.id) return sum
+                                if (!row.pack_entry_id) return sum
+                                if (Number(row.pack_entry_id) !== entryId) return sum
+                                const rowEntry = packEntryMap.get(entryId)
+                                const rowPacksPerBox = getPacksPerStandardCarton(rowEntry?.pack_size_kg ?? null)
+                                if (rowPacksPerBox != null) {
+                                  return sum + (Number(row.box_count) || 0) * rowPacksPerBox + (Number(row.pack_count) || 0)
+                                }
+                                return sum + (Number(row.pack_count) || 0)
+                              }, 0)
+                              const availableToBox = Math.max(0, allocated - boxedOther)
+                              const packSize = selectedEntry?.pack_size_kg ?? 0
+                              const packsPerBox = getPacksPerStandardCarton(selectedEntry?.pack_size_kg ?? null)
+                              const boxCount = Number(packItem.box_count) || 0
+                              const enteredPacks =
+                                packsPerBox != null
+                                  ? boxCount * packsPerBox + (Number(packItem.pack_count) || 0)
+                                  : Number(packItem.pack_count) || 0
+                              const totalKg = packSize > 0 ? enteredPacks * packSize : 0
+                              const remainingAfterBoxes =
+                                packsPerBox != null ? Math.max(0, availableToBox - boxCount * packsPerBox) : availableToBox
+                          return (
+                            <div
+                              key={packItem.id}
+                              className="grid gap-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 sm:grid-cols-4"
+                            >
+                              <div className="space-y-2 sm:col-span-2">
+                                <Label htmlFor={`pack-entry-${packItem.id}`}>Allocated pack entry *</Label>
+                                <select
+                                  id={`pack-entry-${packItem.id}`}
+                                  value={packItem.pack_entry_id}
+                                  onChange={(e) => handlePackItemChange(packItem.id, 'pack_entry_id', e.target.value)}
+                                  required
+                                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <option value="">Select allocated entry</option>
+                                  {formData.allocations
+                                    .filter((alloc) => alloc.pack_entry_id)
+                                    .map((alloc) => Number(alloc.pack_entry_id))
+                                    .filter((value, index, self) => self.indexOf(value) === index)
+                                    .map((entryId) => {
+                                      const entry = packedEntries.find((item) => item.id === entryId)
+                                      if (!entry) return null
+                                      const allocatedCount = allocationTotals.byEntry.get(entryId) ?? 0
+                                      return (
+                                        <option key={entry.id} value={entry.id}>
+                                          {entry.product_name}
+                                          {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.pack_identifier}
+                                          {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg)` : ''} · {allocatedCount} packs
+                                          {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
+                                        </option>
+                                      )
+                                    })}
+                                </select>
+                              {selectedEntry && (
+                                <p className="text-xs text-text-dark/60">
+                                  Remaining to box: {availableToBox} packs · Pack size:{' '}
+                                  {packSize > 0 ? `${packSize} kg` : selectedEntry.pack_identifier}
+                                </p>
+                              )}
+                              {packsPerBox && (
+                                <p className="text-xs text-text-dark/60">
+                                  Standard 10 kg carton: {packsPerBox} packs per box
+                                </p>
+                              )}
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`box-count-${packItem.id}`}>
+                                Boxes packed *
+                                {selectedEntry && (
+                                  <span className="ml-1 text-xs font-normal text-text-dark/50">
+                                    (max {packsPerBox ? Math.floor(availableToBox / packsPerBox) : availableToBox})
+                                  </span>
+                                )}
+                              </Label>
+                              <Input
+                                id={`box-count-${packItem.id}`}
+                                type="number"
+                                min="0"
+                                max={selectedEntry ? (packsPerBox ? Math.floor(availableToBox / packsPerBox) : availableToBox) : undefined}
+                                step="1"
+                                value={packItem.box_count}
+                                onChange={(event) => handlePackItemChange(packItem.id, 'box_count', event.target.value)}
+                                placeholder="0"
+                                disabled={!entryId || packsPerBox == null}
+                              />
+                              <Label htmlFor={`pack-count-${packItem.id}`} className="text-xs text-text-dark/60">
+                                Remainder packs
+                              </Label>
+                              <Input
+                                id={`pack-count-${packItem.id}`}
+                                type="number"
+                                min="0"
+                                max={selectedEntry ? remainingAfterBoxes : undefined}
+                                step="1"
+                                value={packItem.pack_count}
+                                onChange={(event) => handlePackItemChange(packItem.id, 'pack_count', event.target.value)}
+                                placeholder="0"
+                                disabled={!entryId}
+                              />
+                              {selectedEntry && packSize > 0 && (
+                                <p className="text-xs text-text-dark/60">
+                                  ≈ {totalKg.toFixed(2)} kg total
+                                </p>
+                              )}
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor={`box-label-${packItem.id}`}>Box label</Label>
+                                <Input
+                                  id={`box-label-${packItem.id}`}
+                                  value={packItem.box_label}
+                                  onChange={(event) => handlePackItemChange(packItem.id, 'box_label', event.target.value)}
+                                  placeholder="Box A, Pallet 1, etc."
+                                />
+                              </div>
+                              <div className="flex items-end justify-end sm:col-span-4">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  className="text-red-600 hover:text-red-700"
+                                  onClick={() => handleRemovePackItem(packItem.id)}
+                                  disabled={formData.pack_items.length === 1}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Remove Box
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleAddPackItem}
+                          disabled={allocationTotals.totalPacks === 0}
+                        >
+                          <PackageIcon className="mr-2 h-4 w-4" />
+                          Add Box
+                        </Button>
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="special_instructions">Special Instructions</Label>
-                        <textarea
-                          id="special_instructions"
-                          name="special_instructions"
-                          value={formData.special_instructions}
-                          onChange={handleChange}
-                          rows={3}
-                          placeholder="Instructions for loaders, drivers, or customer"
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        />
+                    </div>
+
+                    <div className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Review</h3>
+                      <p className="text-sm text-text-dark/70">Confirm totals before saving.</p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                        <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Allocated packs</p>
+                          <p className="text-lg font-semibold text-text-dark">{allocationTotals.totalPacks}</p>
+                          <p className="text-xs text-text-dark/60">
+                            {allocationTotals.totalKg > 0 ? `${allocationTotals.totalKg.toFixed(2)} kg` : '—'}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Boxes packed</p>
+                          <p className="text-lg font-semibold text-text-dark">
+                            {Array.from(boxingTotals.boxesByEntry.values()).reduce((sum, value) => sum + value, 0)}
+                          </p>
+                          <p className="text-xs text-text-dark/60">
+                            {boxingTotals.totalPacks} packs · {boxingTotals.totalKg > 0 ? `${boxingTotals.totalKg.toFixed(2)} kg` : '—'}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Status</p>
+                          <p className="text-lg font-semibold text-text-dark">
+                            {allocationTotals.totalPacks === boxingTotals.totalPacks ? 'Balanced' : 'Mismatch'}
+                          </p>
+                          <p className="text-xs text-text-dark/60">
+                            {allocationTotals.totalPacks === boxingTotals.totalPacks
+                              ? 'Ready to save'
+                              : 'Fix boxing totals'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-4 space-y-2 text-sm text-text-dark/70">
+                        {Array.from(allocationTotals.byEntry.entries()).map(([entryId, allocated]) => {
+                          const entry = packEntryMap.get(entryId)
+                          const boxed = boxingTotals.byEntry.get(entryId) ?? 0
+                          return (
+                            <div key={`review-${entryId}`} className="flex flex-wrap items-center justify-between gap-2">
+                              <span>
+                                {entry?.product_name ?? 'Entry'} · {entry?.pack_identifier ?? 'Pack'} {entry?.lot_no ? `· Lot ${entry.lot_no}` : ''}
+                              </span>
+                              <span className={boxed === allocated ? 'text-olive' : 'text-red-600'}>
+                                {boxed}/{allocated} packs boxed
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                      <h3 className="text-lg font-semibold text-text-dark">Notes &amp; Instructions</h3>
+                      <p className="text-sm text-text-dark/70">Additional context for the warehouse or carrier</p>
+                      <div className="mt-4 space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="notes">Internal Notes</Label>
+                          <textarea
+                            id="notes"
+                            name="notes"
+                            value={formData.notes}
+                            onChange={handleChange}
+                            rows={3}
+                            placeholder="Internal comments about this shipment"
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="special_instructions">Special Instructions</Label>
+                          <textarea
+                            id="special_instructions"
+                            name="special_instructions"
+                            value={formData.special_instructions}
+                            onChange={handleChange}
+                            rows={3}
+                            placeholder="Instructions for loaders, drivers, or customer"
+                            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </div>
                       </div>
                     </div>
                   </section>
