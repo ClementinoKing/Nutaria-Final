@@ -933,6 +933,7 @@ function ProcessStepsProgress() {
                               <SortingStep
                                 stepRun={activeStepRun}
                                 loading={saving || loadingStepRuns}
+                                originalSupplyBatchId={selectedLot?.id ?? null}
                                 availableQuantity={sortingAvailableQty}
                                 onQuantityChange={() => {
                                   // Refetch available qty so remaining stays accurate after add/edit/delete

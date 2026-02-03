@@ -341,6 +341,8 @@ function Supplies() {
   const [searchTerm, setSearchTerm] = useState('')
   const [receivedFrom, setReceivedFrom] = useState('')
   const [receivedTo, setReceivedTo] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 20
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false)
   const [draftFrom, setDraftFrom] = useState('')
   const [draftTo, setDraftTo] = useState('')
@@ -477,6 +479,20 @@ function Supplies() {
       return matchesSearch && matchesFrom && matchesTo
     })
   }, [searchTerm, receivedFrom, receivedTo, displaySupplies])
+
+  const totalPages = Math.max(1, Math.ceil(filteredSupplies.length / pageSize))
+  const paginatedSupplies = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize
+    return filteredSupplies.slice(startIndex, startIndex + pageSize)
+  }, [filteredSupplies, currentPage])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, receivedFrom, receivedTo])
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages))
+  }, [totalPages])
 
   const qualityAverageScore = useMemo(
     () => calculateAverageScore(qualityEntries),
@@ -2093,13 +2109,42 @@ function Supplies() {
 
               <ResponsiveTable
                 columns={columns}
-                data={filteredSupplies}
+                data={paginatedSupplies}
                 rowKey="id"
                 onRowClick={handleRowClick}
                 tableClassName=""
                 mobileCardClassName=""
                 getRowClassName={() => ''}
               />
+              {filteredSupplies.length > 0 && (
+                <div className="flex flex-col items-center justify-between gap-3 border-t border-olive-light/20 pt-4 sm:flex-row">
+                  <p className="text-xs text-text-dark/60">
+                    Showing {(currentPage - 1) * pageSize + 1}-
+                    {Math.min(currentPage * pageSize, filteredSupplies.length)} of {filteredSupplies.length} supplies
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                      disabled={currentPage === 1}
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-xs text-text-dark/70">
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                      disabled={currentPage >= totalPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -2653,4 +2698,3 @@ function Supplies() {
 }
 
 export default Supplies
-

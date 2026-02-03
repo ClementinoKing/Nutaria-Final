@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect, useCallback } from 'react'
+import { useState, FormEvent, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -44,6 +44,17 @@ const YES_NO_NA_OPTIONS = [
 const REWORK_DESTINATIONS = ['Washing', 'Drying', 'Sorting']
 const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
 const PACKING_TYPES = ['Vacuum packing', 'Bag packing', 'Shop packing'] as const
+const PACK_SIZE_OPTIONS = [
+  { value: '100 g', kg: 0.1 },
+  { value: '200 g', kg: 0.2 },
+  { value: '250 g', kg: 0.25 },
+  { value: '500 g', kg: 0.5 },
+  { value: '1 kg', kg: 1 },
+  { value: '2 kg', kg: 2 },
+  { value: '5 kg', kg: 5 },
+  { value: '10 kg', kg: 10 },
+  { value: '25 kg', kg: 25 },
+] as const
 const PHOTO_TYPES: Array<{ value: 'product' | 'label' | 'pallet'; label: string }> = [
   { value: 'product', label: 'Product' },
   { value: 'label', label: 'Label' },
@@ -77,7 +88,13 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [finishedProducts, setFinishedProducts] = useState<FinishedProductOption[]>([])
   const [loadingWips, setLoadingWips] = useState(false)
   const [showPackEntryForm, setShowPackEntryForm] = useState(false)
-  const [packEntryForm, setPackEntryForm] = useState({ sorting_output_id: '', product_id: '', packing_type: '', pack_identifier: '', quantity_kg: '' })
+  const [packEntryForm, setPackEntryForm] = useState({
+    sorting_output_id: '',
+    product_id: '',
+    packing_type: '',
+    pack_identifier: '',
+    quantity_kg: '',
+  })
 
   const loadSortedWips = useCallback(async () => {
     const lotRunId = stepRun.process_lot_run_id
@@ -213,6 +230,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [showWeightForm, setShowWeightForm] = useState(false)
   const [showWasteForm, setShowWasteForm] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [autoCreatingRun, setAutoCreatingRun] = useState(false)
+  const autoCreateAttemptedRef = useRef(false)
 
   useEffect(() => {
     if (packagingRun) {
@@ -239,6 +258,46 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       })
     }
   }, [packagingRun])
+
+  useEffect(() => {
+    if (packagingRun || loading || externalLoading || saving || autoCreateAttemptedRef.current) {
+      return
+    }
+
+    autoCreateAttemptedRef.current = true
+    setAutoCreatingRun(true)
+    setSaving(true)
+
+    savePackagingRun({
+      visual_status: null,
+      rework_destination: null,
+      pest_status: null,
+      foreign_object_status: null,
+      mould_status: null,
+      damaged_kernels_pct: null,
+      insect_damaged_kernels_pct: null,
+      nitrogen_used: null,
+      nitrogen_batch_number: null,
+      primary_packaging_type: null,
+      primary_packaging_batch: null,
+      secondary_packaging: null,
+      secondary_packaging_type: null,
+      secondary_packaging_batch: null,
+      label_correct: null,
+      label_legible: null,
+      pallet_integrity: null,
+      allergen_swab_result: null,
+      remarks: null,
+    })
+      .catch((error) => {
+        console.error('Error auto-creating packaging run:', error)
+        toast.error('Failed to initialize packaging run. Please try saving packaging data.')
+      })
+      .finally(() => {
+        setSaving(false)
+        setAutoCreatingRun(false)
+      })
+  }, [packagingRun, loading, externalLoading, saving, savePackagingRun])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -418,24 +477,56 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const showReworkDropdown = formData.visual_status?.toLowerCase().includes('rework')
 
+  const selectedWipForPackEntry = useMemo(
+    () => sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id) ?? null,
+    [sortedWips, packEntryForm.sorting_output_id]
+  )
+  const selectedWipUsedKg = useMemo(() => {
+    if (!selectedWipForPackEntry) return 0
+    return packEntries
+      .filter((entry) => entry.sorting_output_id === selectedWipForPackEntry.id)
+      .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
+  }, [packEntries, selectedWipForPackEntry])
+  const selectedWipRemainingKg = useMemo(() => {
+    if (!selectedWipForPackEntry) return null
+    return Math.max(0, selectedWipForPackEntry.quantity_kg - selectedWipUsedKg)
+  }, [selectedWipForPackEntry, selectedWipUsedKg])
+
   const handlePackEntrySubmit = async (e: FormEvent) => {
     e.preventDefault()
     const sortingOutputId = parseInt(packEntryForm.sorting_output_id, 10)
     const productId = packEntryForm.product_id ? parseInt(packEntryForm.product_id, 10) : null
+    const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier.trim())
     const quantityKg = parseFloat(packEntryForm.quantity_kg)
-    if (!sortingOutputId || isNaN(quantityKg) || quantityKg <= 0 || !packEntryForm.pack_identifier.trim()) {
-      toast.error('Select a WIP, enter pack identifier and valid quantity')
+    const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
+    const remainingKg =
+      selectedWipForPackEntry && selectedWipForPackEntry.id === sortingOutputId
+        ? selectedWipRemainingKg ?? 0
+        : selectedWip
+        ? selectedWip.quantity_kg -
+          packEntries
+            .filter((entry) => entry.sorting_output_id === selectedWip.id)
+            .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
+        : 0
+
+    if (!sortingOutputId || !selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) {
+      toast.error('Select a WIP, pack size, and valid quantity')
       return
     }
     if (!productId) {
       toast.error('Select the finished product being packed')
       return
     }
-    const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
-    if (selectedWip && quantityKg > selectedWip.quantity_kg) {
-      toast.error(`Quantity cannot exceed available ${selectedWip.quantity_kg} kg for this WIP`)
+    if (!Number.isFinite(quantityKg) || quantityKg <= 0) {
+      toast.error('Total quantity must be greater than 0')
       return
     }
+    if (quantityKg > remainingKg) {
+      toast.error(`Quantity cannot exceed remaining ${remainingKg.toFixed(2)} kg for this WIP`)
+      return
+    }
+    const packCount = Math.floor(quantityKg / selectedPackSize.kg)
+    const remainderKg = Math.max(0, quantityKg - packCount * selectedPackSize.kg)
     setSaving(true)
     try {
       await addPackEntry({
@@ -444,8 +535,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         pack_identifier: packEntryForm.pack_identifier.trim(),
         quantity_kg: quantityKg,
         packing_type: packEntryForm.packing_type.trim() || null,
+        pack_size_kg: selectedPackSize.kg,
       })
-      setPackEntryForm({ sorting_output_id: '', product_id: '', packing_type: '', pack_identifier: '', quantity_kg: '' })
+      setPackEntryForm({
+        sorting_output_id: '',
+        product_id: '',
+        packing_type: '',
+        pack_identifier: '',
+        quantity_kg: '',
+      })
       setShowPackEntryForm(false)
       toast.success('Pack entry added')
     } catch (err) {
@@ -497,11 +595,13 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         {sortedWips.length > 0 && (
           <div className="mt-4 border-t border-olive-light/30 pt-4">
             <h5 className="text-sm font-semibold text-text-dark mb-2">Pack WIPs into finished products</h5>
-            {!packagingRun ? (
+            {!packagingRun && (
               <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
-                Save the packaging data below once (click &quot;Save Packaging Data&quot;) to create this run. Then you can add pack entries here.
+                {autoCreatingRun
+                  ? 'Initializing packaging run…'
+                  : 'Packaging run is initializing. You will be able to add pack entries in a moment.'}
               </p>
-            ) : null}
+            )}
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-text-dark/60">Record which WIP went into which pack and which finished product.</span>
               <Button
@@ -518,6 +618,47 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             </div>
             {showPackEntryForm && packagingRun && (
               <form onSubmit={handlePackEntrySubmit} className="rounded-lg border border-olive-light/30 bg-white p-4 mb-4">
+                {(() => {
+                  const selectedWip = sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id)
+                  const usedKg = selectedWip
+                    ? packEntries
+                        .filter((entry) => entry.sorting_output_id === selectedWip.id)
+                        .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
+                    : 0
+                  const remainingKg = selectedWip ? Math.max(0, selectedWip.quantity_kg - usedKg) : 0
+                  const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                  const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
+                  const remainderKg =
+                    selectedPackSize && Number.isFinite(quantityKg)
+                      ? Math.max(0, quantityKg - Math.floor(quantityKg / selectedPackSize.kg) * selectedPackSize.kg)
+                      : 0
+                  const packCount =
+                    selectedPackSize && Number.isFinite(quantityKg)
+                      ? Math.floor(quantityKg / selectedPackSize.kg)
+                      : 0
+
+                  return (
+                    <div className="mb-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-xs text-text-dark/70">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span>
+                          Remaining WIP:{' '}
+                          <strong className="text-text-dark">
+                            {selectedWip ? remainingKg.toFixed(2) : '—'} kg
+                          </strong>
+                        </span>
+                        {selectedPackSize && Number.isFinite(quantityKg) && quantityKg >= 0 && (
+                          <span>
+                            Packs from this entry:{' '}
+                            <strong className="text-text-dark">
+                              {packCount}
+                            </strong>
+                            {remainderKg > 0 ? ` (+ ${remainderKg.toFixed(2)} kg remainder)` : ''}
+                          </span>
+                        )}
+              </div>
+            </div>
+          )
+        })()}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="space-y-2">
                     <Label>WIP (sorted output) *</Label>
@@ -567,14 +708,26 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Pack identifier *</Label>
-                    <Input
+                    <Label>Pack size *</Label>
+                    <select
                       value={packEntryForm.pack_identifier}
-                      onChange={(e) => setPackEntryForm({ ...packEntryForm, pack_identifier: e.target.value })}
-                      placeholder="e.g. Pallet 1, Box A"
+                      onChange={(e) =>
+                        setPackEntryForm({
+                          ...packEntryForm,
+                          pack_identifier: e.target.value,
+                        })
+                      }
                       required
                       disabled={saving || externalLoading}
-                    />
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      <option value="">Select pack size</option>
+                      {PACK_SIZE_OPTIONS.map((size) => (
+                        <option key={size.value} value={size.value}>
+                          {size.value}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="space-y-2">
                     <Label>Quantity (kg) *</Label>
@@ -583,9 +736,52 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       step="0.01"
                       min="0"
                       value={packEntryForm.quantity_kg}
-                      onChange={(e) => setPackEntryForm({ ...packEntryForm, quantity_kg: e.target.value })}
-                      placeholder="0.00"
+                      onChange={e => {
+                        const rawValue = e.target.value
+                        if (!selectedWipForPackEntry || rawValue === '') {
+                          setPackEntryForm({ ...packEntryForm, quantity_kg: rawValue })
+                          return
+                        }
+                        const remainingKg = selectedWipRemainingKg ?? 0
+                        const numericValue = parseFloat(rawValue)
+                        if (!Number.isNaN(numericValue) && numericValue > remainingKg) {
+                          toast.error(`Quantity cannot exceed remaining ${remainingKg.toFixed(2)} kg for this WIP`)
+                          setPackEntryForm({ ...packEntryForm, quantity_kg: String(remainingKg) })
+                          return
+                        }
+                        setPackEntryForm({ ...packEntryForm, quantity_kg: rawValue })
+                      }}
                       required
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Packs (auto)</Label>
+                    <Input
+                      type="text"
+                      readOnly
+                      value={(() => {
+                        const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                        const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
+                        if (!selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
+                        return Math.floor(quantityKg / selectedPackSize.kg).toString()
+                      })()}
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Remainder (kg, auto)</Label>
+                    <Input
+                      type="text"
+                      readOnly
+                      value={(() => {
+                        const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                        const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
+                        if (!selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
+                        const packCount = Math.floor(quantityKg / selectedPackSize.kg)
+                        const remainderKg = Math.max(0, quantityKg - packCount * selectedPackSize.kg)
+                        return remainderKg.toFixed(2)
+                      })()}
                       disabled={saving || externalLoading}
                     />
                   </div>
@@ -607,6 +803,22 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 {packEntries.map((pe) => {
                   const wip = sortedWips.find((w) => w.id === pe.sorting_output_id)
                   const finishedProduct = pe.product_id ? finishedProducts.find((p) => p.id === pe.product_id) : null
+                  const packSize =
+                    typeof pe.pack_size_kg === 'number'
+                      ? { value: pe.pack_identifier, kg: pe.pack_size_kg }
+                      : PACK_SIZE_OPTIONS.find((size) => size.value === pe.pack_identifier)
+                  const packCount =
+                    typeof pe.pack_count === 'number'
+                      ? pe.pack_count
+                      : packSize
+                      ? Math.floor(pe.quantity_kg / packSize.kg)
+                      : null
+                  const remainderKg =
+                    typeof pe.remainder_kg === 'number'
+                      ? pe.remainder_kg
+                      : packSize
+                      ? pe.quantity_kg - (packCount ?? 0) * packSize.kg
+                      : null
                   return (
                     <li
                       key={pe.id}
@@ -615,6 +827,11 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       <span className="text-text-dark">
                         {wip?.product_name ?? `Output #${pe.sorting_output_id}`} → {finishedProduct?.name ?? (pe.product_id ? `Product #${pe.product_id}` : '—')}
                         {pe.packing_type ? ` [${pe.packing_type}]` : ''} — {pe.pack_identifier}: {pe.quantity_kg} kg
+                        {packCount !== null && (
+                          <span className="text-text-dark/60">
+                            {' '}({packCount} packs{remainderKg !== null && remainderKg > 0 ? ` + ${remainderKg.toFixed(2)} kg remainder` : ''})
+                          </span>
+                        )}
                       </span>
                       <Button
                         type="button"

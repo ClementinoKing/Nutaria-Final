@@ -14,13 +14,22 @@ export default defineConfig({
     // Optimize chunk splitting for better caching
     rollupOptions: {
       output: {
-        manualChunks: {
-          // Vendor chunks
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'supabase-vendor': ['@supabase/supabase-js'],
-          'ui-vendor': ['lucide-react', 'sonner'],
-          // Large utility chunks
-          'process-utils': ['./src/lib/processExecution.ts'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react') || id.includes('react-dom') || id.includes('react-router')) {
+              return 'react-vendor'
+            }
+            if (id.includes('@supabase/supabase-js')) {
+              return 'supabase-vendor'
+            }
+            if (id.includes('lucide-react') || id.includes('sonner')) {
+              return 'ui-vendor'
+            }
+          }
+          if (id.includes('/src/lib/processExecution') || id.includes('\\src\\lib\\processExecution')) {
+            return 'process-utils'
+          }
+          return undefined
         },
         // Optimize chunk size
         chunkFileNames: 'assets/js/[name]-[hash].js',

@@ -30,14 +30,27 @@ interface UsePackagingRunReturn {
   addWaste: (wasteData: { waste_type: string; quantity_kg: number }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
   packEntries: Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>
-  addPackEntry: (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }) => Promise<void>
+  addPackEntry: (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null; pack_size_kg?: number | null }) => Promise<void>
   deletePackEntry: (id: number) => Promise<void>
 }
 
 export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRunReturn {
   const { stepRunId, enabled = true } = options
   const [packagingRun, setPackagingRun] = useState<ProcessPackagingRun | null>(null)
-  const [packEntries, setPackEntries] = useState<Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>>([])
+  const [packEntries, setPackEntries] = useState<
+    Array<{
+      id: number
+      packaging_run_id: number
+      sorting_output_id: number
+      product_id: number | null
+      pack_identifier: string
+      quantity_kg: number
+      packing_type: string | null
+      pack_size_kg?: number | null
+      pack_count?: number | null
+      remainder_kg?: number | null
+    }>
+  >([])
   const [weightChecks, setWeightChecks] = useState<ProcessPackagingWeightCheck[]>([])
   const [photos, setPhotos] = useState<ProcessPackagingPhoto[]>([])
   const [waste, setWaste] = useState<ProcessPackagingWaste[]>([])
@@ -78,7 +91,20 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         if (packEntriesError) {
           setPackEntries([])
         } else {
-          setPackEntries((packEntriesData as Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>) || [])
+          setPackEntries(
+            (packEntriesData as Array<{
+              id: number
+              packaging_run_id: number
+              sorting_output_id: number
+              product_id: number | null
+              pack_identifier: string
+              quantity_kg: number
+              packing_type: string | null
+              pack_size_kg?: number | null
+              pack_count?: number | null
+              remainder_kg?: number | null
+            }>) || []
+          )
         }
 
         // Fetch weight checks
@@ -153,13 +179,16 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           throw updateError
         }
       } else {
-        // Create new
+        // Create new (idempotent)
         const { error: insertError } = await supabase
           .from('process_packaging_runs')
-          .insert({
-            process_step_run_id: stepRunId,
-            ...updateData,
-          })
+          .upsert(
+            {
+              process_step_run_id: stepRunId,
+              ...updateData,
+            },
+            { onConflict: 'process_step_run_id' }
+          )
 
         if (insertError) {
           throw insertError
@@ -302,7 +331,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   )
 
   const addPackEntry = useCallback(
-    async (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }) => {
+    async (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null; pack_size_kg?: number | null }) => {
       if (!packagingRun) {
         throw new Error('Packaging run must be created before adding pack entries')
       }
@@ -316,6 +345,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           pack_identifier: data.pack_identifier,
           quantity_kg: data.quantity_kg,
           packing_type: data.packing_type ?? null,
+          pack_size_kg: data.pack_size_kg ?? null,
         })
 
       if (insertError) {

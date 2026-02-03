@@ -82,39 +82,32 @@ export async function calculateAvailableQuantity(
     stepsById.set(s.id, s.seq ?? 0)
   })
 
-  // Resolve step codes: try step_code column first (processes.sql), else step_name_id + process_step_names
+  // Resolve step codes using step_name_id + process_step_names (avoids step_code column on older schemas)
   const stepCodeByStepId = new Map<number, string>()
-  const { data: stepsWithCode, error: stepCodeError } = await supabase
+  const { data: stepsWithNameId } = await supabase
     .from('process_steps')
-    .select('id, step_code')
+    .select('id, step_name_id')
     .in('id', [...new Set(stepIds)])
-  if (!stepCodeError && stepsWithCode && stepsWithCode.length > 0) {
-    stepsWithCode.forEach((s: any) => {
-      stepCodeByStepId.set(s.id, ((s.step_code ?? '') as string).toUpperCase())
-    })
-  } else {
-    const { data: stepsWithNameId } = await supabase
-      .from('process_steps')
-      .select('id, step_name_id')
-      .in('id', [...new Set(stepIds)])
-    const stepNameIds = (stepsWithNameId || [])
-      .map((s: any) => s.step_name_id)
-      .filter((id: unknown): id is number => id != null && typeof id === 'number')
-    const nameIdToCode = new Map<number, string>()
-    if (stepNameIds.length > 0) {
-      const { data: namesData } = await supabase
-        .from('process_step_names')
-        .select('id, code')
-        .in('id', [...new Set(stepNameIds)])
-      ;(namesData || []).forEach((n: any) => {
-        nameIdToCode.set(n.id, ((n.code ?? '') as string).toUpperCase())
-      })
-    }
-    stepsWithNameId?.forEach((s: any) => {
-      const code = s.step_name_id ? nameIdToCode.get(s.step_name_id) : null
-      if (code) stepCodeByStepId.set(s.id, code)
+
+  const stepNameIds = (stepsWithNameId || [])
+    .map((s: any) => s.step_name_id)
+    .filter((id: unknown): id is number => id != null && typeof id === 'number')
+
+  const nameIdToCode = new Map<number, string>()
+  if (stepNameIds.length > 0) {
+    const { data: namesData } = await supabase
+      .from('process_step_names')
+      .select('id, code')
+      .in('id', [...new Set(stepNameIds)])
+    ;(namesData || []).forEach((n: any) => {
+      nameIdToCode.set(n.id, ((n.code ?? '') as string).toUpperCase())
     })
   }
+
+  stepsWithNameId?.forEach((s: any) => {
+    const code = s.step_name_id ? nameIdToCode.get(s.step_name_id) : null
+    if (code) stepCodeByStepId.set(s.id, code)
+  })
 
   // Build step runs with seq and step code, sorted by seq
   const stepRuns = (stepRunsRaw || [])

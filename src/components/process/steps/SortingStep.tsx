@@ -13,6 +13,7 @@ import type { ProcessStepRun, SortingOutputFormData, SortingWasteFormData } from
 interface SortingStepProps {
   stepRun: ProcessStepRun
   loading?: boolean
+  originalSupplyBatchId?: number | null
   availableQuantity?: {
     availableQty: number
     initialQty: number
@@ -26,6 +27,7 @@ const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
 export function SortingStep({
   stepRun,
   loading: externalLoading = false,
+  originalSupplyBatchId = null,
   availableQuantity,
   onQuantityChange,
 }: SortingStepProps) {
@@ -62,7 +64,15 @@ export function SortingStep({
     reason: '',
   })
 
-  const [reworks, setReworks] = useState<Array<{ id: number; quantity_kg: number; reason: string | null; created_at: string }>>([])
+  const [reworks, setReworks] = useState<
+    Array<{
+      id: number
+      quantity_kg: number
+      reason: string | null
+      created_at: string
+      rework_supply_batch_id: number
+    }>
+  >([])
   const [loadingReworks, setLoadingReworks] = useState(false)
 
   useEffect(() => {
@@ -80,27 +90,42 @@ export function SortingStep({
       })
   }, [])
 
-  // Fetch reworks for this step run
+  // Fetch reworks linked to this lot (fallback to step run if lot id is missing)
   useEffect(() => {
     const fetchReworks = async () => {
-      if (!stepRun?.id) {
+      if (!stepRun?.id && !originalSupplyBatchId) {
         setReworks([])
         return
       }
 
       setLoadingReworks(true)
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('reworked_lots')
-          .select('id, quantity_kg, reason, created_at')
-          .eq('process_step_run_id', stepRun.id)
+          .select('id, quantity_kg, reason, created_at, rework_supply_batch_id')
           .order('created_at', { ascending: false })
+
+        if (originalSupplyBatchId) {
+          query = query.eq('original_supply_batch_id', originalSupplyBatchId)
+        } else if (stepRun?.id) {
+          query = query.eq('process_step_run_id', stepRun.id)
+        }
+
+        const { data, error } = await query
 
         if (error) {
           console.error('Error fetching reworks:', error)
           setReworks([])
         } else {
-          setReworks((data || []) as Array<{ id: number; quantity_kg: number; reason: string | null; created_at: string }>)
+          setReworks(
+            (data || []) as Array<{
+              id: number
+              quantity_kg: number
+              reason: string | null
+              created_at: string
+              rework_supply_batch_id: number
+            }>
+          )
         }
       } catch (error) {
         console.error('Error fetching reworks:', error)
@@ -111,7 +136,7 @@ export function SortingStep({
     }
 
     fetchReworks()
-  }, [stepRun?.id, onQuantityChange])
+  }, [stepRun?.id, originalSupplyBatchId, onQuantityChange])
 
   const handleOutputSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -138,15 +163,15 @@ export function SortingStep({
     setSaving(true)
     try {
       if (editingOutputId) {
-      // Validate: outputs must not exceed available (reworks and waste come after)
+      // Validate: outputs must not exceed available after existing reworks and waste
       const currentTotalOutput = outputs.reduce((sum, o) => sum + o.quantity_kg, 0)
       const editingOutput = outputs.find((o) => o.id === editingOutputId)
       const currentEditingQty = editingOutput?.quantity_kg || 0
       const newTotalOutput = currentTotalOutput - currentEditingQty + quantity
 
-      if (newTotalOutput > availableQuantity.availableQty) {
+      if (maxTotalOutputs !== null && newTotalOutput > maxTotalOutputs) {
         toast.error(
-          `Total outputs cannot exceed available quantity. Available: ${availableQuantity.availableQty.toFixed(2)} kg, Attempted: ${newTotalOutput.toFixed(2)} kg`
+          `Total outputs cannot exceed available quantity after reworks and waste. Available: ${maxTotalOutputs.toFixed(2)} kg, Attempted: ${newTotalOutput.toFixed(2)} kg`
         )
         setSaving(false)
         return
@@ -161,13 +186,13 @@ export function SortingStep({
       toast.success('Output updated')
       onQuantityChange?.()
       } else {
-      // Validate: outputs must not exceed available (reworks and waste come after)
+      // Validate: outputs must not exceed available after existing reworks and waste
       const currentTotalOutput = outputs.reduce((sum, o) => sum + o.quantity_kg, 0)
       const newTotalOutput = currentTotalOutput + quantity
 
-      if (newTotalOutput > availableQuantity.availableQty) {
+      if (maxTotalOutputs !== null && newTotalOutput > maxTotalOutputs) {
         toast.error(
-          `Total outputs cannot exceed available quantity. Available: ${availableQuantity.availableQty.toFixed(2)} kg, Attempted: ${newTotalOutput.toFixed(2)} kg`
+          `Total outputs cannot exceed available quantity after reworks and waste. Available: ${maxTotalOutputs.toFixed(2)} kg, Attempted: ${newTotalOutput.toFixed(2)} kg`
         )
         setSaving(false)
         return
@@ -219,13 +244,13 @@ export function SortingStep({
     }
 
     // Validate: waste comes after outputs and reworks
-    // Remaining after outputs and reworks must be >= waste quantity
+    // Total waste must not exceed remaining after outputs and reworks
     const currentTotalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
     const newTotalWaste = currentTotalWaste + quantity
 
-    if (remainingAfterReworks === null || newTotalWaste > remainingAfterReworks) {
+    if (maxTotalWaste === null || newTotalWaste > maxTotalWaste) {
       toast.error(
-        `Total waste cannot exceed remaining quantity after outputs and reworks. Remaining: ${remainingAfterReworks?.toFixed(2) || 0} kg, Attempted: ${newTotalWaste.toFixed(2)} kg`
+        `Total waste cannot exceed remaining quantity after outputs and reworks. Remaining: ${maxTotalWaste?.toFixed(2) || 0} kg, Attempted: ${newTotalWaste.toFixed(2)} kg`
       )
       return
     }
@@ -324,9 +349,13 @@ export function SortingStep({
     }
 
     // Validate: reworks come after sorting outputs
-    // Remaining after outputs must be >= rework quantity
-    if (remainingAfterOutputs === null || quantityKg > remainingAfterOutputs) {
-      toast.error(`Rework quantity cannot exceed remaining quantity after sorting outputs (${remainingAfterOutputs?.toFixed(2) || 0} kg)`)
+    // Total reworks must not exceed remaining after outputs and waste
+    const currentTotalRework = reworks.reduce((sum, r) => sum + r.quantity_kg, 0)
+    const newTotalRework = currentTotalRework + quantityKg
+    if (maxTotalRework === null || newTotalRework > maxTotalRework) {
+      toast.error(
+        `Rework quantity cannot exceed remaining quantity after outputs and waste (${maxTotalRework?.toFixed(2) || 0} kg)`
+      )
       return
     }
 
@@ -366,22 +395,36 @@ export function SortingStep({
   const totalReworkQuantity = reworks.reduce((sum, r) => sum + r.quantity_kg, 0)
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
   
-  // Calculate remaining quantities in order: outputs → reworks → waste
+  // Calculate remaining quantities including existing reworks and waste.
   // Available quantity = supply - previous waste (from calculateAvailableQuantity)
-  // This excludes sorting waste and reworks, which are handled within this step
-  const remainingAfterOutputs = availableQuantity ? availableQuantity.availableQty - totalOutputQuantity : null
-  const remainingAfterReworks = remainingAfterOutputs !== null ? remainingAfterOutputs - totalReworkQuantity : null
-  const remainingAfterWaste = remainingAfterReworks !== null ? remainingAfterReworks - totalWaste : null
-  
-  // When adding: max = remainingAfterOutputs. When editing: max = remainingAfterOutputs + current row's qty (we're replacing it).
+  // Remaining must always reflect outputs + reworks + waste.
+  const baseAvailable = availableQuantity ? availableQuantity.availableQty : null
+  const totalUsed = totalOutputQuantity + totalReworkQuantity + totalWaste
+  const remainingAfterAll = baseAvailable !== null ? baseAvailable - totalUsed : null
+
+  const maxTotalOutputs =
+    baseAvailable !== null ? baseAvailable - totalReworkQuantity - totalWaste : null
+  const maxTotalRework =
+    baseAvailable !== null ? baseAvailable - totalOutputQuantity - totalWaste : null
+  const maxTotalWaste =
+    baseAvailable !== null ? baseAvailable - totalOutputQuantity - totalReworkQuantity : null
+
+  const remainingForOutputs =
+    maxTotalOutputs !== null ? maxTotalOutputs - totalOutputQuantity : null
+  const remainingForRework =
+    maxTotalRework !== null ? maxTotalRework - totalReworkQuantity : null
+  const remainingForWaste =
+    maxTotalWaste !== null ? maxTotalWaste - totalWaste : null
+
+  // When adding/editing outputs, remaining should account for existing reworks/waste.
   const editingOutputQty = editingOutputId ? (outputs.find((o) => o.id === editingOutputId)?.quantity_kg ?? 0) : 0
   const maxQtyForOutput =
-    availableQuantity && remainingAfterOutputs !== null ? Math.max(0, remainingAfterOutputs + editingOutputQty) : null
-  const maxQtyForRework = remainingAfterOutputs !== null ? Math.max(0, remainingAfterOutputs) : null
-  const maxQtyForWaste = remainingAfterReworks !== null ? Math.max(0, remainingAfterReworks) : null
-  
+    maxTotalOutputs !== null && remainingForOutputs !== null
+      ? Math.max(0, remainingForOutputs + editingOutputQty)
+      : null
+
   // Alias for backward compatibility in forms
-  const remainingQty = remainingAfterOutputs // For output form
+  const remainingQty = remainingForOutputs // For output form
   const maxQtyForEntry = maxQtyForOutput // For output form
 
   return (
@@ -418,18 +461,18 @@ export function SortingStep({
               <p className="text-xs uppercase tracking-wide text-text-dark/50">Remaining</p>
               <p
                 className={`text-base font-semibold ${
-                  remainingAfterWaste !== null && remainingAfterWaste < 0
+                  remainingAfterAll !== null && remainingAfterAll < 0
                     ? 'text-red-600'
-                    : remainingAfterWaste !== null && remainingAfterWaste < 10
+                    : remainingAfterAll !== null && remainingAfterAll < 10
                     ? 'text-orange-600'
                     : 'text-text-dark'
                 }`}
               >
-                {remainingAfterWaste !== null ? `${remainingAfterWaste.toFixed(2)} kg` : '—'}
+                {remainingAfterAll !== null ? `${remainingAfterAll.toFixed(2)} kg` : '—'}
               </p>
             </div>
           </div>
-          {remainingAfterWaste !== null && remainingAfterWaste < 0 && (
+          {remainingAfterAll !== null && remainingAfterAll < 0 && (
             <p className="text-xs text-red-600 mt-2">
               ⚠️ Warning: Total used quantity (outputs + reworks + waste) exceeds available quantity!
             </p>
@@ -688,26 +731,26 @@ export function SortingStep({
 
         {showReworkForm && (
           <form onSubmit={handleReworkSubmit} className="rounded-lg border border-yellow-300 bg-yellow-50/50 p-4">
-            {remainingAfterOutputs !== null && (
+            {remainingForOutputs !== null && (
               <div className="mb-4 rounded-md bg-white border-2 border-yellow-400 p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-text-dark">Remaining After Sorting Outputs:</span>
+                  <span className="text-sm font-medium text-text-dark">Remaining After Outputs/Reworks/Waste:</span>
                   <span className="text-lg font-bold text-yellow-700">
-                    {remainingAfterOutputs.toFixed(2)} kg
+                    {remainingForOutputs.toFixed(2)} kg
                   </span>
                 </div>
-                <p className="text-xs text-text-dark/60 mt-1">
-                  Rework quantity comes from remaining after sorting outputs
-                </p>
+              <p className="text-xs text-text-dark/60 mt-1">
+                Rework quantity comes from remaining after outputs and waste
+              </p>
               </div>
             )}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="rework_quantity">
                   Quantity to Rework (kg) *
-                  {remainingAfterOutputs !== null && (
+                  {remainingForRework !== null && (
                     <span className="ml-2 text-xs font-normal text-text-dark/60">
-                      (Max: {remainingAfterOutputs.toFixed(2)} kg)
+                      (Max: {remainingForRework.toFixed(2)} kg)
                     </span>
                   )}
                 </Label>
@@ -716,28 +759,28 @@ export function SortingStep({
                   type="number"
                   step="0.01"
                   min="0"
-                  max={remainingAfterOutputs ?? undefined}
+                  max={remainingForRework ?? undefined}
                   value={reworkFormData.quantity_kg}
                   onChange={(e) => {
                     let newValue = e.target.value
-                    if (remainingAfterOutputs !== null && newValue !== '') {
+                    if (remainingForRework !== null && newValue !== '') {
                       const num = parseFloat(newValue)
-                      if (!Number.isNaN(num) && num > remainingAfterOutputs) {
-                        newValue = String(remainingAfterOutputs)
-                        toast.error(`Quantity cannot exceed remaining after outputs ${remainingAfterOutputs.toFixed(2)} kg`)
+                      if (!Number.isNaN(num) && num > remainingForRework) {
+                        newValue = String(remainingForRework)
+                        toast.error(`Quantity cannot exceed remaining ${remainingForRework.toFixed(2)} kg`)
                       }
                     }
                     setReworkFormData({ ...reworkFormData, quantity_kg: newValue })
                   }}
                   placeholder="0.00"
                   required
-                  disabled={saving || externalLoading || remainingAfterOutputs === null}
+                  disabled={saving || externalLoading || remainingForRework === null}
                   className="bg-white"
                 />
-                {remainingAfterOutputs !== null && (
+                {remainingForRework !== null && (
                   <p className="text-xs text-text-dark/50">
                     Remaining after rework:{' '}
-                    {(remainingAfterOutputs - parseFloat(reworkFormData.quantity_kg || '0')).toFixed(2)} kg
+                    {(remainingForRework - parseFloat(reworkFormData.quantity_kg || '0')).toFixed(2)} kg
                   </p>
                 )}
               </div>
@@ -770,7 +813,7 @@ export function SortingStep({
               </Button>
               <Button
                 type="submit"
-                disabled={saving || externalLoading || remainingAfterOutputs === null}
+                disabled={saving || externalLoading || remainingForRework === null}
                 className="bg-yellow-600 hover:bg-yellow-700 text-white"
               >
                 Create Rework
@@ -778,6 +821,40 @@ export function SortingStep({
             </div>
           </form>
         )}
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Linked Reworks</p>
+            {loadingReworks && <span className="text-xs text-text-dark/50">Loading…</span>}
+          </div>
+          {reworks.length === 0 ? (
+            <p className="text-sm text-text-dark/60">No reworks linked to this lot yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {reworks.map((rework) => (
+                <div
+                  key={rework.id}
+                  className="flex flex-col gap-2 rounded-lg border border-olive-light/30 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-text-dark">
+                      Rework lot #{rework.rework_supply_batch_id}
+                    </p>
+                    {rework.reason ? (
+                      <p className="text-xs text-text-dark/60">Reason: {rework.reason}</p>
+                    ) : null}
+                    <p className="text-xs text-text-dark/50">
+                      Created {new Date(rework.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold text-text-dark">
+                    {rework.quantity_kg.toFixed(2)} kg
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Waste Section */}
@@ -808,20 +885,20 @@ export function SortingStep({
             {availableQuantity && (
               <div className="mb-4 rounded-md bg-white border-2 border-olive p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-text-dark">Remaining After Outputs & Reworks:</span>
+                  <span className="text-sm font-medium text-text-dark">Remaining After Outputs/Reworks/Waste:</span>
                   <span
                     className={`text-lg font-bold ${
-                      remainingAfterReworks !== null && remainingAfterReworks < 0
+                      remainingForWaste !== null && remainingForWaste < 0
                         ? 'text-red-600'
-                        : remainingAfterReworks !== null && remainingAfterReworks < 10
+                        : remainingForWaste !== null && remainingForWaste < 10
                         ? 'text-orange-600'
                         : 'text-olive-dark'
                     }`}
                   >
-                    {remainingAfterReworks !== null ? `${remainingAfterReworks.toFixed(2)} kg` : '—'}
+                    {remainingForWaste !== null ? `${remainingForWaste.toFixed(2)} kg` : '—'}
                   </span>
                 </div>
-                {remainingAfterReworks !== null && remainingAfterReworks < 0 && (
+                {remainingForWaste !== null && remainingForWaste < 0 && (
                   <p className="text-xs text-red-600 mt-1">
                     ⚠️ Warning: You have exceeded the available quantity
                   </p>
@@ -854,9 +931,9 @@ export function SortingStep({
               <div className="space-y-2">
                 <Label htmlFor="waste_quantity">
                   Quantity (kg) *
-                  {availableQuantity && remainingAfterReworks !== null && (
+                  {availableQuantity && remainingForWaste !== null && (
                     <span className="ml-2 text-xs font-normal text-text-dark/60">
-                      (Max: {Math.max(0, remainingAfterReworks).toFixed(2)} kg)
+                      (Max: {Math.max(0, remainingForWaste).toFixed(2)} kg)
                     </span>
                   )}
                 </Label>
@@ -865,7 +942,7 @@ export function SortingStep({
                   type="number"
                   step="0.01"
                   min="0"
-                  max={availableQuantity && remainingAfterReworks !== null ? Math.max(0, remainingAfterReworks) : undefined}
+                  max={availableQuantity && remainingForWaste !== null ? Math.max(0, remainingForWaste) : undefined}
                   value={wasteFormData.quantity_kg}
                   onChange={(e) => setWasteFormData({ ...wasteFormData, quantity_kg: e.target.value })}
                   placeholder="0.00"
@@ -873,9 +950,9 @@ export function SortingStep({
                   disabled={saving || externalLoading}
                   className="bg-white"
                 />
-                {availableQuantity && remainingAfterReworks !== null && (
+                {availableQuantity && remainingForWaste !== null && (
                   <p className="text-xs text-text-dark/50">
-                    Remaining after this entry: {(remainingAfterReworks - parseFloat(wasteFormData.quantity_kg || '0')).toFixed(2)} kg
+                    Remaining after this entry: {(remainingForWaste - parseFloat(wasteFormData.quantity_kg || '0')).toFixed(2)} kg
                   </p>
                 )}
               </div>
