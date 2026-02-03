@@ -8,21 +8,30 @@ export interface ProcessLotRun {
   completed_at: string | null
   created_at: string
   updated_at: string
+  is_rework?: boolean
+  original_process_lot_run_id?: number | null
 }
 
 export interface ProcessStepRun {
   id: number
   process_lot_run_id: number
   process_step_id: number
-  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED'
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'SKIPPED'
   started_at: string | null
   completed_at: string | null
   performed_by: string | null // UUID
   location_id: number | null
   notes: string | null
+  skipped_at?: string | null
+  skipped_by?: string | null // UUID
   // Joined fields
   process_step?: ProcessStep
   performed_by_user?: {
+    id: string
+    full_name?: string
+    email?: string
+  }
+  skipped_by_user?: {
     id: string
     full_name?: string
     email?: string
@@ -387,6 +396,34 @@ export interface BatchStepTransition {
   created_by: string // UUID
   created_at: string
   // Joined fields
+  created_by_user?: {
+    id: string
+    full_name?: string
+    email?: string
+  }
+}
+
+// Reworked Lots
+export interface ReworkedLot {
+  id: number
+  original_supply_batch_id: number
+  rework_supply_batch_id: number
+  sorting_output_id: number | null
+  process_step_run_id: number
+  quantity_kg: number
+  reason: string | null
+  created_at: string
+  created_by: string | null // UUID
+  // Joined fields
+  original_supply_batch?: {
+    id: number
+    lot_no: string
+  }
+  rework_supply_batch?: {
+    id: number
+    lot_no: string
+  }
+  sorting_output?: ProcessSortingOutput
   created_by_user?: {
     id: string
     full_name?: string

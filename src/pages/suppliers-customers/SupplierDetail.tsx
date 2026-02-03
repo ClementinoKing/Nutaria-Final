@@ -267,7 +267,8 @@ function SupplierDetail() {
 
   useEffect(() => {
     const fetchSupplier = async () => {
-      if (!supplierId) {
+      const supplierIdValue = supplierId ? Number(supplierId) : null
+      if (!supplierIdValue || Number.isNaN(supplierIdValue)) {
         setLoading(false)
         return
       }
@@ -275,11 +276,9 @@ function SupplierDetail() {
       setLoading(true)
       setError(null)
 
-      const { data, error: fetchError } = await supabase
-        .from('suppliers')
-        .select('*')
-        .eq('id', supplierId)
-        .maybeSingle()
+      const { data, error: fetchError } = await supabase.rpc('get_supplier_detail', {
+        p_supplier_id: supplierIdValue,
+      })
 
       if (fetchError) {
         setError(fetchError)
@@ -287,23 +286,14 @@ function SupplierDetail() {
         return
       }
 
-      if (!data) {
+      const payload = data as { supplier?: unknown; documents?: unknown[] } | null
+      if (!payload?.supplier) {
         setSupplierData(null)
         setLoading(false)
         return
       }
 
-      const { data: documentRows, error: documentsError } = await supabase
-        .from('documents')
-        .select('id, owner_type, owner_id, name, doc_type, storage_path, uploaded_at, expiry_date')
-        .eq('owner_type', 'supplier')
-        .eq('owner_id', supplierId)
-
-      if (documentsError) {
-        console.warn('Unable to load supplier documents', documentsError)
-      }
-
-      const normalized = createFormStateFromSupplier(data, documentRows ?? [])
+      const normalized = createFormStateFromSupplier(payload.supplier, payload.documents ?? [])
       setSupplierData(normalized)
       setLoading(false)
     }

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 
 const QUALITY_HOLD_STATUSES = new Set(['PENDING', 'HOLD'])
 
@@ -21,6 +22,7 @@ interface SupplyBatch {
   rejected_qty: number | null
   current_qty: number | null
   quality_status: string | null
+  created_at: string | null
 }
 
 interface Product {
@@ -119,6 +121,8 @@ function SupplyStockPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [warehouseFilter, setWarehouseFilter] = useState('ALL')
+  const [productFilter, setProductFilter] = useState('')
+  const [monthFilter, setMonthFilter] = useState('')
   const [showLowStockOnly, setShowLowStockOnly] = useState(false)
   const [coverageThreshold, setCoverageThreshold] = useState(14)
   const [loading, setLoading] = useState(true)
@@ -132,14 +136,29 @@ function SupplyStockPage() {
       const collectedErrors: string[] = []
 
       try {
+        let batchQuery = supabase
+          .from('supply_batches')
+          .select(
+            'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status, created_at'
+          )
+
+        // Apply month filter if selected
+        if (monthFilter) {
+          const [year, month] = monthFilter.split('-')
+          const startDate = `${year}-${month}-01`
+          const endDate = new Date(Number.parseInt(year, 10), Number.parseInt(month, 10), 0).toISOString().split('T')[0]
+          batchQuery = batchQuery.gte('created_at', startDate).lte('created_at', `${endDate}T23:59:59`)
+        }
+
+        // Apply product filter if selected
+        if (productFilter) {
+          batchQuery = batchQuery.eq('product_id', Number.parseInt(productFilter, 10))
+        }
+
         const {
           data: batchRows,
           error: batchError,
-        } = await supabase
-          .from('supply_batches')
-          .select(
-            'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'
-          )
+        } = await batchQuery
 
         if (batchError) {
           collectedErrors.push(`supply_batches: ${batchError.message}`)
@@ -389,7 +408,7 @@ function SupplyStockPage() {
     return () => {
       isMounted = false
     }
-  }, [])
+  }, [monthFilter, productFilter])
 
   const warehouses = useMemo(() => {
     const names = stockLevels
@@ -397,6 +416,34 @@ function SupplyStockPage() {
       .filter((name: string) => name && name !== '—')
     return Array.from(new Set(names)).sort()
   }, [stockLevels])
+
+  const productOptions = useMemo(() => {
+    const options = products.map((product: Product) => ({
+      value: product.id.toString(),
+      label: `${product.name ?? 'Unknown'}${product.sku ? ` (${product.sku})` : ''}`,
+    }))
+    return [{ value: '', label: 'All Products' }, ...options]
+  }, [products])
+
+  const monthOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = [{ value: '', label: 'All Months' }]
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth()
+
+    // Generate options for the last 12 months
+    for (let i = 0; i < 12; i++) {
+      const date = new Date(currentYear, currentMonth - i, 1)
+      const year = date.getFullYear()
+      const month = date.getMonth() + 1
+      const monthStr = month.toString().padStart(2, '0')
+      const value = `${year}-${monthStr}`
+      const label = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })
+      options.push({ value, label })
+    }
+
+    return options
+  }, [])
 
   const enrichedStockLevels = useMemo((): EnrichedStockLevel[] => {
     return stockLevels.map((entry: StockLevel): EnrichedStockLevel => {
@@ -431,21 +478,25 @@ function SupplyStockPage() {
 
       const matchesWarehouse = warehouseFilter === 'ALL' || entry.warehouse_name === warehouseFilter
 
+      const matchesProduct = !productFilter || entry.product_id.toString() === productFilter
+
       const matchesCoverage =
         !showLowStockOnly ||
         entry.isBelowReorder ||
         entry.isBelowSafety ||
         (entry.daysOfCover !== null && entry.daysOfCover <= coverageThreshold)
 
-      return matchesSearch && matchesWarehouse && matchesCoverage
+      return matchesSearch && matchesWarehouse && matchesProduct && matchesCoverage
     })
-  }, [enrichedStockLevels, searchTerm, warehouseFilter, showLowStockOnly, coverageThreshold])
+  }, [enrichedStockLevels, searchTerm, warehouseFilter, productFilter, showLowStockOnly, coverageThreshold])
 
-  const totalAvailable = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + entry.available, 0)
-  const totalAllocated = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.allocated ?? 0), 0)
   const totalOnHand = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.on_hand ?? 0), 0)
+  const totalUnprocessed = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => {
+    const unprocessed = Math.max((entry.on_hand ?? 0) - (entry.quality_hold ?? 0) - (entry.in_process ?? 0), 0)
+    return total + unprocessed
+  }, 0)
   const totalInProcess = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.in_process ?? 0), 0)
-  const lowStockCount = filteredStockLevels.filter((entry: EnrichedStockLevel) => entry.isBelowReorder).length
+  const lowStockCount = filteredStockLevels.filter((entry: EnrichedStockLevel) => entry.isBelowReorder || entry.isBelowSafety).length
 
   const columns = useMemo(
     () => [
@@ -681,7 +732,7 @@ function SupplyStockPage() {
       <div className="grid gap-4 sm:grid-cols-4 mb-6">
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
-            <CardDescription>Total On Hand</CardDescription>
+            <CardDescription>Total At Hand</CardDescription>
             <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
               {totalOnHand.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
             </CardTitle>
@@ -689,23 +740,15 @@ function SupplyStockPage() {
         </Card>
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
-            <CardDescription>Available</CardDescription>
+            <CardDescription>Unprocessed Stock</CardDescription>
             <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
-              {totalAvailable.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className="border-olive-light/30">
-          <CardHeader className="pb-2">
-            <CardDescription>Allocated</CardDescription>
-            <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
-              {totalAllocated.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
+              {totalUnprocessed.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
             </CardTitle>
           </CardHeader>
         </Card>
         <Card className="border-amber-200/60">
           <CardHeader className="pb-2">
-            <CardDescription>In process</CardDescription>
+            <CardDescription>In Process</CardDescription>
             <CardTitle className="flex items-baseline gap-2 text-2xl font-semibold text-text-dark">
               {totalInProcess.toLocaleString()} <span className="text-sm font-medium text-text-dark/60">Kg</span>
             </CardTitle>
@@ -749,7 +792,7 @@ function SupplyStockPage() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
             <div className="sm:col-span-2">
               <Label htmlFor="stock-search">Search</Label>
               <Input
@@ -757,6 +800,28 @@ function SupplyStockPage() {
                 placeholder="Search by product, SKU, or note"
                 value={searchTerm}
                 onChange={(event: ChangeEvent<HTMLInputElement>) => setSearchTerm(event.target.value)}
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="product-filter">Product</Label>
+              <SearchableSelect
+                id="product-filter"
+                options={productOptions}
+                value={productFilter}
+                onChange={setProductFilter}
+                placeholder="All Products"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="month-filter">Month</Label>
+              <SearchableSelect
+                id="month-filter"
+                options={monthOptions}
+                value={monthFilter}
+                onChange={setMonthFilter}
+                placeholder="All Months"
                 className="mt-1"
               />
             </div>

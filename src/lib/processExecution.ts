@@ -6,6 +6,7 @@ import type {
   ProcessSignoff,
   ProductionBatch,
   BatchStepTransition,
+  ReworkedLot,
 } from '@/types/processExecution'
 
 /**
@@ -709,4 +710,354 @@ export async function getProcessStepQualityCheck(stepRunId: number): Promise<{
     qualityCheck,
     items: transformedItems,
   }
+}
+
+/**
+ * Generate a unique rework lot number
+ * Format: REWORK-{original_lot_no}-{timestamp}
+ */
+async function generateReworkLotNumber(originalLotNo: string): Promise<string> {
+  const timestamp = Date.now().toString().slice(-6) // Last 6 digits of timestamp
+  const baseLotNo = `REWORK-${originalLotNo}-${timestamp}`
+  
+  // Check if lot number already exists, append sequence if needed
+  const { data: existing } = await supabase
+    .from('supply_batches')
+    .select('lot_no')
+    .eq('lot_no', baseLotNo)
+    .maybeSingle()
+
+  if (!existing) {
+    return baseLotNo
+  }
+
+  // If exists, try with sequence numbers
+  let sequence = 1
+  let lotNo = `${baseLotNo}-${sequence}`
+  
+  while (true) {
+    const { data: check } = await supabase
+      .from('supply_batches')
+      .select('lot_no')
+      .eq('lot_no', lotNo)
+      .maybeSingle()
+
+    if (!check) {
+      return lotNo
+    }
+    
+    sequence++
+    lotNo = `${baseLotNo}-${sequence}`
+    
+    if (sequence > 999) {
+      throw new Error('Unable to generate unique rework lot number')
+    }
+  }
+}
+
+/**
+ * Create a reworked lot from a sorting step
+ * Creates a new supply batch from the original supply batch, links it to the original, and creates a process lot run
+ * The quantity is taken from the supply batch's available quantity, not from sorting outputs
+ */
+export async function createReworkedLot(
+  processStepRunId: number,
+  quantityKg: number,
+  reason: string | null,
+  userId: string | null
+): Promise<{
+  reworkBatchId: number
+  reworkLotRunId: number
+  reworkedLot: ReworkedLot
+}> {
+  // Get the process step run and its lot run
+  const { data: stepRun, error: stepRunError } = await supabase
+    .from('process_step_runs')
+    .select(`
+      id,
+      process_lot_run_id,
+      process_lot_runs:process_lot_run_id (
+        id,
+        supply_batch_id,
+        process_id,
+        supply_batches:supply_batch_id (
+          id,
+          lot_no,
+          product_id,
+          unit_id,
+          supply_id,
+          current_qty,
+          expiry_date
+        )
+      )
+    `)
+    .eq('id', processStepRunId)
+    .single()
+
+  if (stepRunError || !stepRun) {
+    throw new Error(`Process step run ${processStepRunId} not found`)
+  }
+
+  const lotRun = (stepRun as any).process_lot_runs
+  if (!lotRun) {
+    throw new Error(`Process lot run not found for step run ${processStepRunId}`)
+  }
+
+  const originalBatch = (lotRun as any).supply_batches
+  if (!originalBatch) {
+    throw new Error(`Supply batch not found for lot run ${lotRun.id}`)
+  }
+
+  if (quantityKg <= 0) {
+    throw new Error('Rework quantity must be greater than zero')
+  }
+
+  // Get sorting outputs to calculate remaining quantity after sorting
+  const { data: sortingOutputs } = await supabase
+    .from('process_sorting_outputs')
+    .select('quantity_kg')
+    .eq('process_step_run_id', processStepRunId)
+
+  const totalOutputQuantity = sortingOutputs?.reduce((sum, o) => sum + (Number(o.quantity_kg) || 0), 0) || 0
+
+  // Get existing reworks for this step run
+  const { data: existingReworks } = await supabase
+    .from('reworked_lots')
+    .select('quantity_kg')
+    .eq('process_step_run_id', processStepRunId)
+
+  const totalReworkQuantity = existingReworks?.reduce((sum, r) => sum + (Number(r.quantity_kg) || 0), 0) || 0
+
+  // Calculate available quantity: initial - waste from previous steps - sorting outputs
+  // Reworks come from remaining after sorting outputs
+  const { data: lotRunForQty } = await supabase
+    .from('process_lot_runs')
+    .select(`
+      supply_batches:supply_batch_id (
+        current_qty
+      )
+    `)
+    .eq('id', lotRun.id)
+    .single()
+
+  const initialQty = (lotRunForQty as any)?.supply_batches?.current_qty || 0
+
+  // Get waste from previous steps (before sorting)
+  const { data: previousStepRuns } = await supabase
+    .from('process_step_runs')
+    .select(`
+      id,
+      process_steps:process_step_id (
+        seq,
+        step_code
+      )
+    `)
+    .eq('process_lot_run_id', lotRun.id)
+
+  let previousWaste = 0
+  if (previousStepRuns) {
+    const sortStepRun = previousStepRuns.find((sr: any) => {
+      const stepCode = (sr.process_steps?.step_code || '').toUpperCase()
+      return stepCode === 'SORT'
+    })
+    const sortStepSeq = sortStepRun?.process_steps?.seq || 999
+
+    for (const prevStepRun of previousStepRuns) {
+      const stepSeq = prevStepRun.process_steps?.seq || 0
+      const stepCode = (prevStepRun.process_steps?.step_code || '').toUpperCase()
+      
+      if (stepSeq < sortStepSeq) {
+        // Calculate waste from this step
+        if (stepCode === 'WASH') {
+          const { data: washRun } = await supabase
+            .from('process_washing_runs')
+            .select('id')
+            .eq('process_step_run_id', prevStepRun.id)
+            .maybeSingle()
+          if (washRun) {
+            const { data: washWaste } = await supabase
+              .from('process_washing_waste')
+              .select('quantity_kg')
+              .eq('washing_run_id', washRun.id)
+            if (washWaste) {
+              previousWaste += washWaste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
+            }
+          }
+        } else if (stepCode === 'METAL') {
+          const { data: metalSession } = await supabase
+            .from('process_metal_detector')
+            .select('id')
+            .eq('process_step_run_id', prevStepRun.id)
+            .maybeSingle()
+          if (metalSession) {
+            const { data: rejections } = await supabase
+              .from('process_foreign_object_rejections')
+              .select('weight')
+              .eq('session_id', metalSession.id)
+            if (rejections) {
+              previousWaste += rejections.reduce((sum, r) => sum + (Number(r.weight) || 0), 0)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Available for reworks = initial - previous waste - sorting outputs
+  const availableForReworks = Math.max(0, initialQty - previousWaste - totalOutputQuantity)
+  const remainingAfterReworks = availableForReworks - totalReworkQuantity
+
+  // Validate quantity doesn't exceed remaining after sorting outputs
+  if (quantityKg > remainingAfterReworks) {
+    throw new Error(`Rework quantity (${quantityKg} kg) cannot exceed remaining quantity after sorting outputs (${remainingAfterReworks.toFixed(2)} kg)`)
+  }
+
+  // Get sorting output for tracking (optional - just for reference)
+  const { data: sortingOutput } = await supabase
+    .from('process_sorting_outputs')
+    .select('id')
+    .eq('process_step_run_id', processStepRunId)
+    .limit(1)
+    .maybeSingle()
+
+  // Generate rework lot number
+  const reworkLotNo = await generateReworkLotNumber(originalBatch.lot_no)
+
+  // Create new supply batch for rework
+  // Note: We do NOT reduce the original supply batch's current_qty here
+  // because reworks are accounted for separately in quantity calculations
+  const { data: reworkBatch, error: batchError } = await supabase
+    .from('supply_batches')
+    .insert({
+      supply_id: originalBatch.supply_id,
+      product_id: originalBatch.product_id,
+      unit_id: originalBatch.unit_id,
+      lot_no: reworkLotNo,
+      received_qty: quantityKg,
+      accepted_qty: quantityKg,
+      rejected_qty: 0,
+      current_qty: quantityKg,
+      quality_status: 'PASSED',
+      process_status: 'UNPROCESSED',
+      expiry_date: originalBatch.expiry_date,
+    })
+    .select('id')
+    .single()
+
+  if (batchError || !reworkBatch) {
+    throw new Error(`Failed to create rework supply batch: ${batchError?.message || 'Unknown error'}`)
+  }
+
+  // Create reworked_lots record
+  const { data: reworkedLot, error: reworkedLotError } = await supabase
+    .from('reworked_lots')
+    .insert({
+      original_supply_batch_id: originalBatch.id,
+      rework_supply_batch_id: reworkBatch.id,
+      sorting_output_id: sortingOutput?.id || null,
+      process_step_run_id: processStepRunId,
+      quantity_kg: quantityKg,
+      reason: reason || null,
+      created_by: userId || null,
+    })
+    .select()
+    .single()
+
+  if (reworkedLotError || !reworkedLot) {
+    // Rollback: delete rework batch
+    await supabase.from('supply_batches').delete().eq('id', reworkBatch.id)
+    throw new Error(`Failed to create reworked_lots record: ${reworkedLotError?.message || 'Unknown error'}`)
+  }
+
+  // Create process lot run for rework (with is_rework flag)
+  const { data: reworkLotRun, error: reworkLotRunError } = await supabase
+    .from('process_lot_runs')
+    .insert({
+      supply_batch_id: reworkBatch.id,
+      process_id: lotRun.process_id,
+      status: 'IN_PROGRESS',
+      started_at: new Date().toISOString(),
+      is_rework: true,
+      original_process_lot_run_id: lotRun.id,
+    })
+    .select('id')
+    .single()
+
+  if (reworkLotRunError || !reworkLotRun) {
+    // Rollback: delete reworked_lots record and delete rework batch
+    await supabase.from('reworked_lots').delete().eq('id', reworkedLot.id)
+    await supabase.from('supply_batches').delete().eq('id', reworkBatch.id)
+    throw new Error(`Failed to create rework process lot run: ${reworkLotRunError?.message || 'Unknown error'}`)
+  }
+
+  // Create process step runs for the rework (same process as original)
+  await createProcessStepRuns(reworkLotRun.id)
+
+  // Update rework batch status to PROCESSING
+  await supabase
+    .from('supply_batches')
+    .update({ process_status: 'PROCESSING' })
+    .eq('id', reworkBatch.id)
+
+  return {
+    reworkBatchId: reworkBatch.id,
+    reworkLotRunId: reworkLotRun.id,
+    reworkedLot: reworkedLot as ReworkedLot,
+  }
+}
+
+/**
+ * Skip a process step
+ * Validates that the step can be skipped and updates its status
+ */
+export async function skipProcessStep(
+  stepRunId: number,
+  userId: string
+): Promise<ProcessStepRun> {
+  // Get the step run with process step details
+  const { data: stepRun, error: stepRunError } = await supabase
+    .from('process_step_runs')
+    .select(`
+      id,
+      status,
+      process_step_id,
+      process_steps:process_step_id (
+        id,
+        can_be_skipped
+      )
+    `)
+    .eq('id', stepRunId)
+    .single()
+
+  if (stepRunError || !stepRun) {
+    throw new Error(`Process step run ${stepRunId} not found`)
+  }
+
+  const processStep = (stepRun as any).process_steps
+  if (!processStep || !processStep.can_be_skipped) {
+    throw new Error(`Step cannot be skipped (can_be_skipped is false)`)
+  }
+
+  // Validate step is in a skippable state
+  if (stepRun.status !== 'PENDING' && stepRun.status !== 'IN_PROGRESS') {
+    throw new Error(`Cannot skip step with status ${stepRun.status}`)
+  }
+
+  // Update step run to SKIPPED
+  const { data: updatedStepRun, error: updateError } = await supabase
+    .from('process_step_runs')
+    .update({
+      status: 'SKIPPED',
+      skipped_at: new Date().toISOString(),
+      skipped_by: userId,
+    })
+    .eq('id', stepRunId)
+    .select()
+    .single()
+
+  if (updateError) {
+    throw updateError
+  }
+
+  return updatedStepRun as ProcessStepRun
 }

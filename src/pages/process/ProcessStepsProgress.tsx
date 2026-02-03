@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, Save, Plus } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, Save, Plus, SkipForward } from 'lucide-react'
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
@@ -21,6 +21,7 @@ import {
   createProcessSignoff,
   createProcessLotRun,
   createProcessStepRuns,
+  skipProcessStep,
 } from '@/lib/processExecution'
 import { calculateAvailableQuantity } from '@/lib/processQuantityTracking'
 import { NonConformanceList } from '@/components/process/NonConformanceList'
@@ -64,7 +65,7 @@ interface Lot {
   } | null
 }
 
-const PROCESS_STATUSES: Array<ProcessStepRun['status']> = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED']
+const PROCESS_STATUSES: Array<ProcessStepRun['status']> = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'SKIPPED']
 
 function toLocalDateTimeInput(value: string | null | undefined): string {
   if (!value) return ''
@@ -238,7 +239,7 @@ function ProcessStepsProgress() {
     }
   }, [lotRunId, activeStepRun?.id, activeStep?.step_code])
 
-  const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED')
+  const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED' || step.status === 'SKIPPED')
   const canStartNextStep = useMemo(() => {
     if (currentStepIndex === 0) return true
     const previousStep = stepRuns[currentStepIndex - 1]
@@ -360,6 +361,61 @@ function ProcessStepsProgress() {
     } catch (error) {
       console.error('Error updating step status:', error)
       toast.error('Failed to update step status')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSkipStep = async () => {
+    if (!activeStepRun || !user?.id) return
+
+    // Check if step can be skipped
+    if (!activeStep?.can_be_skipped) {
+      toast.error('This step cannot be skipped')
+      return
+    }
+
+    // Check if step is in a skippable state
+    if (activeStepRun.status !== 'PENDING' && activeStepRun.status !== 'IN_PROGRESS') {
+      toast.error(`Cannot skip step with status ${activeStepRun.status}`)
+      return
+    }
+
+    // Confirm before skipping
+    const confirmed = window.confirm(
+      `Are you sure you want to skip "${activeStep.step_name || 'this step'}"? This action cannot be undone.`
+    )
+
+    if (!confirmed) return
+
+    setSaving(true)
+    try {
+      await skipProcessStep(activeStepRun.id, user.id)
+      
+      // Record batch step transition
+      try {
+        const { createBatchStepTransition } = await import('@/lib/processExecution')
+        const fromStep = activeStepRun.status === 'PENDING' ? null : activeStep?.step_code || null
+        const toStep = activeStep?.step_code || 'SKIPPED'
+        const reason = 'Step skipped'
+        
+        await createBatchStepTransition(lotRunId!, fromStep, toStep, reason, user.id)
+      } catch (transitionError) {
+        // Log but don't fail the skip
+        console.warn('Failed to record batch step transition:', transitionError)
+      }
+      
+      await refreshStepRuns()
+      toast.success('Step skipped successfully')
+      
+      // Auto-advance to next step if available
+      if (currentStepIndex < stepRuns.length - 1) {
+        setCurrentStepIndex(currentStepIndex + 1)
+      }
+    } catch (error) {
+      console.error('Error skipping step:', error)
+      const errorMessage = error instanceof Error ? error.message : 'Failed to skip step'
+      toast.error(errorMessage)
     } finally {
       setSaving(false)
     }
@@ -653,8 +709,9 @@ function ProcessStepsProgress() {
                       const step = stepRun.process_step
                       const isCompleted = stepRun.status === 'COMPLETED'
                       const isInProgress = stepRun.status === 'IN_PROGRESS'
+                      const isSkipped = stepRun.status === 'SKIPPED'
                       const isCurrent = index === currentStepIndex
-                      const canAccess = index === 0 || stepRuns[index - 1]?.status === 'COMPLETED'
+                      const canAccess = index === 0 || stepRuns[index - 1]?.status === 'COMPLETED' || stepRuns[index - 1]?.status === 'SKIPPED'
                       const stepName = step?.step_name || `Step ${index + 1}`
                       const stepCode = step?.step_code || ''
 
@@ -669,6 +726,8 @@ function ProcessStepsProgress() {
                                 ? 'text-olive'
                                 : isCompleted
                                 ? 'text-green-600'
+                                : isSkipped
+                                ? 'text-gray-600'
                                 : canAccess
                                 ? 'text-text-dark/60'
                                 : 'text-text-dark/30 cursor-not-allowed'
@@ -680,6 +739,8 @@ function ProcessStepsProgress() {
                                   ? 'border-olive bg-olive-light/20'
                                   : isCompleted
                                   ? 'border-green-600 bg-green-100'
+                                  : isSkipped
+                                  ? 'border-gray-400 bg-gray-100'
                                   : isInProgress
                                   ? 'border-orange-400 bg-orange-100'
                                   : 'border-text-dark/20 bg-white'
@@ -687,6 +748,8 @@ function ProcessStepsProgress() {
                             >
                               {isCompleted ? (
                                 <CheckCircle2 className="h-6 w-6 text-green-600" />
+                              ) : isSkipped ? (
+                                <SkipForward className="h-5 w-5 text-gray-600" />
                               ) : (
                                 <span className="text-sm font-semibold">{index + 1}</span>
                               )}
@@ -703,7 +766,7 @@ function ProcessStepsProgress() {
                           {index < stepRuns.length - 1 && (
                             <div
                               className={`mx-2 mb-3 flex-1 h-0.5 ${
-                                isCompleted ? 'bg-green-600' : 'bg-text-dark/20'
+                                isCompleted || isSkipped ? 'bg-green-600' : 'bg-text-dark/20'
                               }`}
                             />
                           )}
@@ -731,19 +794,37 @@ function ProcessStepsProgress() {
                             </span>
                           </div>
                         )}
-                        <span
-                          className={`inline-flex h-8 items-center rounded-full px-3 text-xs font-semibold ${
-                            activeStepRun.status === 'COMPLETED'
-                              ? 'bg-green-100 text-green-800'
-                              : activeStepRun.status === 'IN_PROGRESS'
-                              ? 'bg-orange-100 text-orange-800'
-                              : activeStepRun.status === 'FAILED'
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-olive-light/40 text-olive-dark'
-                          }`}
-                        >
-                          {activeStepRun.status}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-flex h-8 items-center rounded-full px-3 text-xs font-semibold ${
+                              activeStepRun.status === 'COMPLETED'
+                                ? 'bg-green-100 text-green-800'
+                                : activeStepRun.status === 'IN_PROGRESS'
+                                ? 'bg-orange-100 text-orange-800'
+                                : activeStepRun.status === 'FAILED'
+                                ? 'bg-red-100 text-red-800'
+                                : activeStepRun.status === 'SKIPPED'
+                                ? 'bg-gray-100 text-gray-800'
+                                : 'bg-olive-light/40 text-olive-dark'
+                            }`}
+                          >
+                            {activeStepRun.status}
+                          </span>
+                          {activeStep?.can_be_skipped && 
+                           activeStepRun.status !== 'SKIPPED' && 
+                           activeStepRun.status !== 'COMPLETED' && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleSkipStep}
+                              disabled={saving || loadingStepRuns}
+                              className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
+                            >
+                              <SkipForward className="h-4 w-4 mr-1" />
+                              Skip
+                            </Button>
+                          )}
+                        </div>
                       </div>
 
                       <div className="grid gap-2 md:grid-cols-2">

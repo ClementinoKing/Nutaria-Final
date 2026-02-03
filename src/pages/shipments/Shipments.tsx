@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, ChangeEvent, FormEvent, MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, ChangeEvent, FormEvent, MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
@@ -188,6 +188,8 @@ function Shipments() {
   const [formStep, setFormStep] = useState(1)
   const [packedProducts, setPackedProducts] = useState<PackedProduct[]>([])
   const [loadingPacked, setLoadingPacked] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 20
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -375,6 +377,16 @@ function Shipments() {
   useEffect(() => {
     loadPackedProducts()
   }, [loadPackedProducts])
+
+  const totalPages = Math.max(1, Math.ceil(shipments.length / pageSize))
+  const paginatedShipments = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize
+    return shipments.slice(startIndex, startIndex + pageSize)
+  }, [shipments, currentPage])
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalPages))
+  }, [totalPages])
 
   // When creating a new shipment, default warehouse to the first created (first in list, ordered by id)
   useEffect(() => {
@@ -773,13 +785,42 @@ function Shipments() {
         <CardContent>
           <ResponsiveTable 
             columns={columns as any} 
-            data={shipments as any} 
+            data={paginatedShipments as any} 
             rowKey="id" 
             onRowClick={handleRowClick as any}
             tableClassName={undefined as any}
             mobileCardClassName={undefined as any}
             getRowClassName={undefined as any}
           />
+          {shipments.length > 0 && (
+            <div className="flex flex-col items-center justify-between gap-3 border-t border-olive-light/20 pt-4 sm:flex-row">
+              <p className="text-xs text-text-dark/60">
+                Showing {(currentPage - 1) * pageSize + 1}-
+                {Math.min(currentPage * pageSize, shipments.length)} of {shipments.length} shipments
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                  disabled={currentPage === 1}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-text-dark/70">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                  disabled={currentPage >= totalPages}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1241,4 +1282,3 @@ function Shipments() {
 }
 
 export default Shipments
-

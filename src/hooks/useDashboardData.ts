@@ -295,7 +295,7 @@ interface DashboardStats {
   totalProducts: number
   lowStockCount: number
   openShipments: number
-  halalSuppliers: number
+  suppliersCount: number
 }
 
 interface UseDashboardDataReturn {
@@ -313,7 +313,7 @@ export function useDashboardData(): UseDashboardDataReturn {
     totalProducts: 0,
     lowStockCount: 0,
     openShipments: 0,
-    halalSuppliers: 0,
+    suppliersCount: 0,
   })
   const [recentStock, setRecentStock] = useState<NormalizedInventoryRow[]>([])
 
@@ -346,42 +346,43 @@ export function useDashboardData(): UseDashboardDataReturn {
     }) => {
       const inventoryFetchErrors: string[] = []
 
-      // Fetch supplies data for supply_batches warehouse lookup
+      // Fetch supplies data for supply_batches warehouse lookup (only if supply_batches is in sources)
       let suppliesMap = new Map<number, { warehouse_id: number | null }>()
-      const suppliesResult = await runQuerySafely(
-        supabase.from('supplies').select('id, warehouse_id'),
-        'supplies for warehouse lookup'
-      )
-      if (suppliesResult.data && !(suppliesResult as { error?: string }).error) {
-        const suppliesData = (suppliesResult.data as { data?: Array<{ id: number; warehouse_id: number | null }> })?.data ?? []
-        suppliesMap = new Map(suppliesData.map((s) => [s.id, { warehouse_id: s.warehouse_id }]))
+      if (inventorySources.includes('supply_batches')) {
+        const suppliesResult = await runQuerySafely(
+          supabase.from('supplies').select('id, warehouse_id').limit(1000),
+          'supplies for warehouse lookup'
+        )
+        if (suppliesResult.data && !(suppliesResult as { error?: string }).error) {
+          const suppliesData = (suppliesResult.data as { data?: Array<{ id: number; warehouse_id: number | null }> })?.data ?? []
+          suppliesMap = new Map(suppliesData.map((s) => [s.id, { warehouse_id: s.warehouse_id }]))
+        }
       }
 
+      // Try tables in order, return first successful result
+      // Limit to 100 rows for dashboard (reduced from 200)
       for (const table of inventorySources) {
         // Build column list based on table structure
         let columns = 'id, product_id'
         
         if (table === 'supply_batches') {
-          // supply_batches doesn't have warehouse_id (it's linked through supply_id)
-          // It also uses current_qty instead of on_hand/available
           columns = 'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'
         } else if (table === 'stock_levels') {
-          // stock_levels doesn't have unit_id column - remove it from query
           columns = 'id, product_id, warehouse_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
         } else {
-          // Default columns for other tables
           columns = 'id, product_id, warehouse_id, unit_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
         }
 
+        // Query without ordering to avoid column errors
+        // Sorting will be done in-memory after fetching
         const { data: queryResult, error } = await runQuerySafely(
-          supabase.from(table).select(columns).limit(200),
+          supabase.from(table).select(columns).limit(100),
           `${table} inventory`
         )
 
         if (error) {
           // Skip tables that don't exist or have column mismatches
           if (error.includes('does not exist') || error.includes('column')) {
-            // Silently skip tables with schema mismatches
             continue
           }
           inventoryFetchErrors.push(error)
@@ -404,7 +405,6 @@ export function useDashboardData(): UseDashboardDataReturn {
 
         if (rows.length > 0) {
           const normalised = normaliseInventoryRows(rows, { productMap, warehouseMap, unitMap })
-
           return { rows: normalised, errors: inventoryFetchErrors }
         }
       }
@@ -420,17 +420,25 @@ export function useDashboardData(): UseDashboardDataReturn {
 
     const collectedErrors: string[] = []
 
-    const [productsResult, halalSuppliersResult, openShipmentsResult, warehousesResult, unitsResult] =
+    // Fetch all data in parallel for faster loading
+    // Optimize: Only fetch products that might appear in recent stock (limit to 500)
+    // For total count, use count query separately if needed
+    const [productsResult, productsCountResult, suppliersResult, openShipmentsResult, warehousesResult, unitsResult] =
       await Promise.all([
         runQuerySafely(
           supabase
             .from('products')
-            .select('id, name, sku, reorder_point, safety_stock, target_stock, base_unit_id', { count: 'exact' }),
+            .select('id, name, sku, reorder_point, safety_stock, base_unit_id')
+            .limit(500), // Reduced limit - only products that might appear in recent stock
           'products'
         ),
         runQuerySafely(
-          supabase.from('suppliers').select('id', { count: 'exact', head: true }).eq('is_halal_certified', true),
-          'halal suppliers'
+          supabase.from('products').select('id', { count: 'exact', head: true }),
+          'products count'
+        ),
+        runQuerySafely(
+          supabase.from('suppliers').select('id', { count: 'exact', head: true }),
+          'suppliers'
         ),
         runQuerySafely(
           supabase
@@ -439,19 +447,27 @@ export function useDashboardData(): UseDashboardDataReturn {
             .in('doc_status', ['PENDING', 'READY']),
           'open shipments'
         ),
-        runQuerySafely(supabase.from('warehouses').select('id, name'), 'warehouses'),
-        runQuerySafely(supabase.from('units').select('id, name, symbol'), 'units'),
+        runQuerySafely(supabase.from('warehouses').select('id, name').limit(100), 'warehouses'),
+        runQuerySafely(supabase.from('units').select('id, name, symbol').limit(100), 'units'),
       ])
 
     let products: Product[] = []
     let totalProducts = 0
 
+    // Get total products count from dedicated count query
+    if ((productsCountResult as { error?: string }).error) {
+      collectedErrors.push((productsCountResult as { error: string }).error)
+    } else if (productsCountResult.data) {
+      const countData = productsCountResult.data as { count?: number }
+      totalProducts = countData.count ?? 0
+    }
+
+    // Get products for inventory normalization (limited set)
     if ((productsResult as { error?: string }).error) {
       collectedErrors.push((productsResult as { error: string }).error)
     } else if (productsResult.data) {
-      const data = (productsResult.data as { data?: Product[]; count?: number })
+      const data = (productsResult.data as { data?: Product[] })
       products = Array.isArray(data.data) ? data.data : []
-      totalProducts = data.count ?? products.length
     }
 
     const productMap = new Map<number, Product>()
@@ -461,12 +477,12 @@ export function useDashboardData(): UseDashboardDataReturn {
       }
     })
 
-    let halalSuppliers = 0
-    if ((halalSuppliersResult as { error?: string }).error) {
-      collectedErrors.push((halalSuppliersResult as { error: string }).error)
-    } else if (halalSuppliersResult.data) {
-      const data = halalSuppliersResult.data as { count?: number; data?: unknown[] }
-      halalSuppliers =
+    let suppliersCount = 0
+    if ((suppliersResult as { error?: string }).error) {
+      collectedErrors.push((suppliersResult as { error: string }).error)
+    } else if (suppliersResult.data) {
+      const data = suppliersResult.data as { count?: number; data?: unknown[] }
+      suppliersCount =
         data.count ??
         (Array.isArray(data.data) ? data.data.length : 0)
     }
@@ -545,7 +561,7 @@ export function useDashboardData(): UseDashboardDataReturn {
       totalProducts,
       lowStockCount,
       openShipments,
-      halalSuppliers,
+      suppliersCount,
     })
     setRecentStock(sortedStock.slice(0, 5))
     setErrors(collectedErrors.filter(Boolean))

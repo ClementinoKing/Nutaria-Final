@@ -203,7 +203,9 @@ const SUPPLIER_FORM_STEPS: FormStep[] = [
 ]
 
 function Suppliers() {
-  const { suppliers, setSuppliers, loading: loadingSuppliers, error: suppliersError } = useSuppliers()
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
+  const [countries, setCountries] = useState<string[]>([])
+  const [loadingCountries, setLoadingCountries] = useState(false)
   const { supplierTypes, loading: loadingTypes } = useSupplierTypes()
   const { documentTypes, loading: loadingDocumentTypes } = useDocumentTypes()
   const { user } = useAuth()
@@ -237,59 +239,45 @@ function Suppliers() {
     [supplierTypes]
   )
 
-  // Get unique countries from suppliers
-  const uniqueCountries = useMemo(() => {
-    const countries = new Set<string>()
-    suppliers.forEach((supplier) => {
-      const country = supplier.country
-      if (country && typeof country === 'string' && country.trim()) {
-        countries.add(country.trim())
-      }
-    })
-    return Array.from(countries).sort()
-  }, [suppliers])
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery)
+    }, 250)
 
-  // Filter suppliers based on search query, type, and country
-  const filteredSuppliers = useMemo(() => {
-    return suppliers.filter((supplier) => {
-      // Search filter - check name, email, phone, primary contact name
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase().trim()
-        const name = typeof supplier.name === 'string' ? supplier.name.toLowerCase() : ''
-        const email = typeof supplier.email === 'string' ? supplier.email.toLowerCase() : ''
-        const phone = typeof supplier.phone === 'string' ? supplier.phone.toLowerCase() : ''
-        const primaryContactName = typeof supplier.primary_contact_name === 'string' ? supplier.primary_contact_name.toLowerCase() : ''
-        const primaryContactEmail = typeof supplier.primary_contact_email === 'string' ? supplier.primary_contact_email.toLowerCase() : ''
-        const primaryContactPhone = typeof supplier.primary_contact_phone === 'string' ? supplier.primary_contact_phone.toLowerCase() : ''
-        const address = typeof supplier.address === 'string' ? supplier.address.toLowerCase() : ''
-        
-        const matchesSearch =
-          name.includes(query) ||
-          email.includes(query) ||
-          phone.includes(query) ||
-          primaryContactName.includes(query) ||
-          primaryContactEmail.includes(query) ||
-          primaryContactPhone.includes(query) ||
-          address.includes(query)
-        if (!matchesSearch) return false
-      }
+    return () => window.clearTimeout(handle)
+  }, [searchQuery])
 
-      // Type filter
-      if (filterType && supplier.supplier_type !== filterType) {
-        return false
+  useEffect(() => {
+    const loadCountries = async () => {
+      setLoadingCountries(true)
+      const { data, error } = await supabase.rpc('get_supplier_countries')
+      if (!error && Array.isArray(data)) {
+        setCountries(data.map((row) => row.country).filter((value): value is string => Boolean(value)))
       }
+      setLoadingCountries(false)
+    }
 
-      // Country filter
-      if (filterCountry) {
-        const supplierCountry = typeof supplier.country === 'string' ? supplier.country.trim() : ''
-        if (supplierCountry !== filterCountry) {
-          return false
-        }
-      }
+    loadCountries()
+  }, [])
 
-      return true
-    })
-  }, [suppliers, searchQuery, filterType, filterCountry])
+  const supplierQuery = useMemo(
+    () => ({
+      searchQuery: debouncedSearchQuery,
+      filterType,
+      filterCountry,
+      page,
+      pageSize,
+    }),
+    [debouncedSearchQuery, filterType, filterCountry, page, pageSize]
+  )
+
+  const {
+    suppliers,
+    loading: loadingSuppliers,
+    error: suppliersError,
+    totalCount,
+    refresh: refreshSuppliers,
+  } = useSuppliers(supplierQuery)
 
   const documentTypeOptions = useMemo(
     () => [
@@ -417,7 +405,7 @@ function Suppliers() {
         throw deleteError
       }
 
-      setSuppliers((prev = []) => prev.filter((item) => item.id !== supplier.id))
+      await refreshSuppliers()
       toast.success(`Supplier "${supplier.name}" removed`)
     } catch (error) {
       console.error('Error deleting supplier', error)
@@ -728,7 +716,8 @@ function Suppliers() {
       }
 
       toast.success('Supplier added')
-      setSuppliers((previous = []) => [data, ...previous.filter((item) => item.id !== data.id)])
+      setPage(1)
+      await refreshSuppliers({ page: 1 })
       resetFormState()
       setIsModalOpen(false)
     } catch (error) {
@@ -794,9 +783,9 @@ function Suppliers() {
 
   // Reset to page 1 when suppliers list changes
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(filteredSuppliers.length / pageSize))
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
     if (page > totalPages) setPage(totalPages)
-  }, [filteredSuppliers.length, pageSize])
+  }, [totalCount, pageSize, page])
 
   const columns = [
     {
@@ -920,7 +909,7 @@ function Suppliers() {
     },
   ]
 
-  if (loadingSuppliers) {
+  if (loadingSuppliers && suppliers.length === 0) {
     return (
       <PageLayout
         title="Suppliers"
@@ -953,17 +942,6 @@ function Suppliers() {
           {loadingSuppliers ? (
             <div className="flex items-center justify-center py-16 text-sm text-text-dark/60">
               Loading suppliers from Supabase…
-            </div>
-          ) : suppliers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-              <p className="text-sm font-medium text-text-dark">No suppliers captured yet.</p>
-              <p className="text-sm text-text-dark/60">
-                Add your first supplier to start building the Nutaria directory.
-              </p>
-              <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark">
-                <Plus className="mr-2 h-4 w-4" />
-                Add Supplier
-              </Button>
             </div>
           ) : (
             <>
@@ -1015,11 +993,12 @@ function Suppliers() {
                       id="filter-country"
                       options={[
                         { value: '', label: 'All Countries' },
-                        ...uniqueCountries.map((country) => ({ value: country, label: country })),
+                        ...countries.map((country) => ({ value: country, label: country })),
                       ]}
                       value={filterCountry}
                       onChange={(value) => setFilterCountry(value)}
                       placeholder="Select country"
+                      disabled={loadingTypes || loadingCountries}
                     />
                   </div>
                 </div>
@@ -1084,44 +1063,54 @@ function Suppliers() {
                 )}
               </div>
 
-              {filteredSuppliers.length === 0 ? (
+              {totalCount === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-                  <p className="text-sm font-medium text-text-dark">No suppliers match your filters.</p>
-                  <p className="text-sm text-text-dark/60">
-                    Try adjusting your search criteria or clear filters to see all suppliers.
-                  </p>
-                  {(searchQuery || filterType || filterCountry) && (
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setSearchQuery('')
-                        setFilterType('')
-                        setFilterCountry('')
-                      }}
-                    >
-                      Clear Filters
-                    </Button>
+                  {searchQuery || filterType || filterCountry ? (
+                    <>
+                      <p className="text-sm font-medium text-text-dark">No suppliers match your filters.</p>
+                      <p className="text-sm text-text-dark/60">
+                        Try adjusting your search criteria or clear filters to see all suppliers.
+                      </p>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setSearchQuery('')
+                          setFilterType('')
+                          setFilterCountry('')
+                        }}
+                      >
+                        Clear Filters
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-text-dark">No suppliers captured yet.</p>
+                      <p className="text-sm text-text-dark/60">
+                        Add your first supplier to start building the Nutaria directory.
+                      </p>
+                      <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark">
+                        <Plus className="mr-2 h-4 w-4" />
+                        Add Supplier
+                      </Button>
+                    </>
                   )}
                 </div>
               ) : (
                 <>
                   <ResponsiveTable 
                     columns={columns as any} 
-                    data={filteredSuppliers.slice((page - 1) * pageSize, page * pageSize) as any} 
+                    data={suppliers as any} 
                     rowKey="id" 
                     onRowClick={handleSupplierClick as any}
                     tableClassName={undefined as any}
                     mobileCardClassName={undefined as any}
                     getRowClassName={undefined as any}
                   />
-                  {filteredSuppliers.length > 0 && (
+                  {totalCount > 0 && (
                     <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 mt-4">
                       <div className="text-sm text-text-dark/70">
                         Showing {(page - 1) * pageSize + 1}–
-                        {Math.min(page * pageSize, filteredSuppliers.length)} of {filteredSuppliers.length}
-                        {filteredSuppliers.length !== suppliers.length && (
-                          <span className="text-text-dark/50"> (filtered from {suppliers.length} total)</span>
-                        )}
+                        {Math.min(page * pageSize, totalCount)} of {totalCount}
                       </div>
                       <div className="flex items-center gap-2">
                         <label htmlFor="page-size" className="text-sm text-text-dark/70">
@@ -1154,7 +1143,7 @@ function Suppliers() {
                           variant="outline"
                           size="sm"
                           onClick={() => setPage((p) => p + 1)}
-                          disabled={page * pageSize >= filteredSuppliers.length}
+                          disabled={page * pageSize >= totalCount}
                         >
                           Next
                         </Button>
@@ -1721,4 +1710,3 @@ function Suppliers() {
 }
 
 export default Suppliers
-

@@ -60,6 +60,8 @@ function AuditLogs() {
   const [filterOperation, setFilterOperation] = useState('')
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
+  const pageSize = 20
 
   const fetchLogs = async () => {
     try {
@@ -117,6 +119,16 @@ function AuditLogs() {
 
     return filtered
   }, [logs, searchTerm, filterTable, filterOperation])
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / pageSize))
+  const paginatedLogs = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize
+    return filteredLogs.slice(startIndex, startIndex + pageSize)
+  }, [filteredLogs, currentPage])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [searchTerm, filterTable, filterOperation])
 
   const tableNames = useMemo(() => {
     const uniqueTables = new Set<string>()
@@ -307,11 +319,41 @@ function AuditLogs() {
             ) : (
               <ResponsiveTable
                 columns={columns}
-                data={filteredLogs}
+                data={paginatedLogs}
                 rowKey="id"
                 emptyMessage="No audit logs found"
                 onRowClick={handleRowClick}
               />
+            )}
+
+            {!loading && filteredLogs.length > 0 && (
+              <div className="flex flex-col items-center justify-between gap-3 border-t border-olive-light/20 pt-4 sm:flex-row">
+                <p className="text-xs text-text-dark/60">
+                  Showing {(currentPage - 1) * pageSize + 1}-
+                  {Math.min(currentPage * pageSize, filteredLogs.length)} of {filteredLogs.length} logs
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                    disabled={currentPage === 1}
+                  >
+                    Previous
+                  </Button>
+                  <span className="text-xs text-text-dark/70">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                    disabled={currentPage >= totalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -471,4 +513,3 @@ function AuditLogs() {
 }
 
 export default AuditLogs
-

@@ -7,7 +7,6 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { SUPPLY_QUALITY_PARAMETERS, SupplyQualityParameter } from '@/constants/supplyQuality'
 import { supabase } from '@/lib/supabaseClient'
-import jsPDF from 'jspdf'
 import { Download, Loader2 } from 'lucide-react'
 
 interface QualityParameterWithId extends SupplyQualityParameter {
@@ -283,6 +282,7 @@ function SupplyDetail() {
     setIsGeneratingPDF(true)
 
     try {
+      const { default: jsPDF } = await import('jspdf')
       const pdf = new jsPDF('p', 'mm', 'a4')
       const pageWidth = pdf.internal.pageSize.getWidth()
       const pageHeight = pdf.internal.pageSize.getHeight()
@@ -1520,4 +1520,3 @@ function SupplyDetail() {
 }
 
 export default SupplyDetail
-

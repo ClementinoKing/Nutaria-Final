@@ -179,9 +179,9 @@ function Dashboard() {
         color: 'bg-brown',
       },
       {
-        title: 'Halal Suppliers',
-        value: stats.halalSuppliers,
-        description: 'Certified partners',
+        title: 'Suppliers',
+        value: stats.suppliersCount,
+        description: 'Total suppliers',
         icon: Users,
         color: 'bg-olive',
       },

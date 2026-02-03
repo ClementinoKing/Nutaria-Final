@@ -34,6 +34,9 @@ export async function calculateAvailableQuantity(
     throw new Error(`Process lot run ${lotRunId} not found`)
   }
 
+  // Get initial quantity from supply batch
+  // Note: Reworks and sorting outputs/waste are NOT deducted from current_qty
+  // They are handled within the sorting step itself with sequential deduction: outputs → reworks → waste
   const initialQty = (lotRun as any).supply_batches?.current_qty || 0
 
   // Get all step runs for this lot run (no embed: process_step_runs has no seq, and process_steps schema varies)
@@ -185,7 +188,12 @@ export async function calculateAvailableQuantity(
         }
       }
     } else if (stepCode === 'SORT') {
-      // Get sorting outputs and their waste
+      // Sorting step: outputs, reworks, and waste are handled within the sorting step UI
+      // with sequential deduction: outputs → reworks → waste
+      // We do NOT deduct sorting waste or reworks here because they come from the remaining
+      // quantity after sorting outputs, not from the initial supply quantity
+      // The available quantity returned here is used as the base for sorting step calculations
+      // Sorting waste is tracked in breakdown for reporting but not deducted from availableQty
       const { data: outputs } = await supabase
         .from('process_sorting_outputs')
         .select('id')
@@ -201,6 +209,8 @@ export async function calculateAvailableQuantity(
         if (waste) {
           const totalWaste = waste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
           breakdown.sortingWaste += totalWaste
+          // Note: sortingWaste is tracked but NOT deducted from availableQty
+          // because it's handled within the sorting step's sequential calculation
         }
       }
     } else if (stepCode === 'PACK') {
@@ -225,12 +235,20 @@ export async function calculateAvailableQuantity(
     }
   }
 
+  // Calculate total waste from steps BEFORE sorting
+  // Sorting waste and reworks are NOT included here because they are handled
+  // within the sorting step with sequential deduction: outputs → reworks → waste
   const totalWaste =
     breakdown.washingWaste +
     breakdown.metalRejections +
-    breakdown.sortingWaste +
+    // sortingWaste is NOT included - handled in sorting step UI
     breakdown.packagingWaste
 
+  // Available quantity = initial - waste from previous steps (before sorting)
+  // This becomes the base for sorting step calculations where:
+  // remainingAfterOutputs = availableQty - sorting outputs
+  // remainingAfterReworks = remainingAfterOutputs - reworks
+  // remainingAfterWaste = remainingAfterReworks - sorting waste
   const availableQty = Math.max(0, initialQty - totalWaste)
 
   return {

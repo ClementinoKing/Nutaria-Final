@@ -41,7 +41,10 @@ const ProcessStepNames = lazy(() => import('./pages/settings/ProcessStepNames'))
 function LoadingScreen() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-beige">
-      <div className="text-text-dark">Loading...</div>
+      <div className="flex flex-col items-center gap-2">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-olive border-t-transparent"></div>
+        <div className="text-text-dark">Loading...</div>
+      </div>
     </div>
   )
 }
@@ -56,7 +59,10 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-beige">
-        <div className="text-text-dark">Loading...</div>
+        <div className="flex flex-col items-center gap-2">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-olive border-t-transparent"></div>
+          <div className="text-text-dark">Loading...</div>
+        </div>
       </div>
     )
   }

@@ -104,6 +104,14 @@ interface ProcessRun {
   supply_batches: SupplyBatch | SupplyBatch[] | null
   processes: Process | Process[] | null
   process_signoffs?: ProcessSignoff[]
+  is_rework?: boolean
+  original_process_lot_run_id?: number | null
+  original_lot_run?: {
+    id: number
+    supply_batches?: {
+      lot_no?: string
+    } | null
+  } | null
 }
 
 interface TimelineItem {
@@ -147,6 +155,8 @@ function ProcessView() {
         created_at,
         supply_batch_id,
         process_id,
+        is_rework,
+        original_process_lot_run_id,
         supply_batches: supply_batch_id (
           id,
           lot_no,
@@ -181,6 +191,12 @@ function ProcessView() {
           role,
           signed_by,
           signed_at
+        ),
+        original_lot_run:original_process_lot_run_id (
+          id,
+          supply_batches:supply_batch_id (
+            lot_no
+          )
         )
       `)
       .order('created_at', { ascending: false })
@@ -476,23 +492,49 @@ function ProcessView() {
       header: 'Lot',
       render: (run: ProcessRun) => {
         const batch = getSupplyBatch(run)
+        const originalLotNo = run.original_lot_run?.supply_batches?.lot_no
         return (
           <div>
-            <div className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</div>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</span>
+              {run.is_rework && (
+                <span className="inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs font-semibold border border-yellow-300">
+                  Rework
+                </span>
+              )}
+            </div>
             <div className="text-xs text-text-dark/60">
               {batch?.supplies?.doc_no ?? 'No document number'}
             </div>
+            {run.is_rework && originalLotNo && (
+              <div className="text-xs text-yellow-700 mt-1">
+                Rework of {originalLotNo}
+              </div>
+            )}
           </div>
         )
       },
       mobileRender: (run: ProcessRun) => {
         const batch = getSupplyBatch(run)
+        const originalLotNo = run.original_lot_run?.supply_batches?.lot_no
         return (
           <div className="text-right">
-            <div className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</div>
+            <div className="flex items-center justify-end gap-2">
+              <span className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</span>
+              {run.is_rework && (
+                <span className="inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs font-semibold border border-yellow-300">
+                  Rework
+                </span>
+              )}
+            </div>
             <div className="text-xs text-text-dark/60">
               {batch?.supplies?.doc_no ?? 'No document number'}
             </div>
+            {run.is_rework && originalLotNo && (
+              <div className="text-xs text-yellow-700 mt-1">
+                Rework of {originalLotNo}
+              </div>
+            )}
           </div>
         )
       },
