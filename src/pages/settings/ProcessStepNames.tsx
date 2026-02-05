@@ -8,6 +8,16 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { toast } from 'sonner'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useProcessStepNames, type ProcessStepName } from '@/hooks/useProcessStepNames'
 
 interface FormData {
@@ -28,6 +38,8 @@ function ProcessStepNames() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [stepNameToDelete, setStepNameToDelete] = useState<ProcessStepName | null>(null)
   const [formData, setFormData] = useState<FormData>({ 
     name: '', 
     description: '' 
@@ -240,9 +252,8 @@ function ProcessStepNames() {
   }
 
   const handleDeleteClick = (stepName: ProcessStepName) => {
-    if (window.confirm(`Are you sure you want to delete "${stepName.name}"? This action cannot be undone.`)) {
-      handleDelete(stepName.id)
-    }
+    setStepNameToDelete(stepName)
+    setDeleteAlertOpen(true)
   }
 
   const handleDelete = async (id: number) => {
@@ -431,6 +442,28 @@ function ProcessStepNames() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setStepNameToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete process step name?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {stepNameToDelete
+                ? `Are you sure you want to delete "${stepNameToDelete.name}"? This action cannot be undone.`
+                : 'This action cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => stepNameToDelete && handleDelete(stepNameToDelete.id)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

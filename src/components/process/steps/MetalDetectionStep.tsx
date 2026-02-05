@@ -6,6 +6,16 @@ import { Plus, Trash2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMetalDetection } from '@/hooks/useMetalDetection'
 import type { ProcessStepRun, MetalDetectionFormData, ForeignObjectRejectionFormData } from '@/types/processExecution'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface MetalDetectionStepProps {
   stepRun: ProcessStepRun
@@ -59,6 +69,8 @@ export function MetalDetectionStep({
 
   const [showRejectionForm, setShowRejectionForm] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [rejectionToDeleteId, setRejectionToDeleteId] = useState<number | null>(null)
 
   useEffect(() => {
     if (session) {
@@ -147,16 +159,20 @@ export function MetalDetectionStep({
     }
   }
 
-  const handleDeleteRejection = async (rejectionId: number) => {
-    if (!confirm('Are you sure you want to delete this rejection record?')) {
-      return
-    }
+  const handleDeleteRejection = (rejectionId: number) => {
+    setRejectionToDeleteId(rejectionId)
+    setDeleteAlertOpen(true)
+  }
 
+  const performDeleteRejection = async () => {
+    if (rejectionToDeleteId == null) return
     setSaving(true)
     try {
-      await deleteRejection(rejectionId)
+      await deleteRejection(rejectionToDeleteId)
       toast.success('Rejection deleted')
       onQuantityChange?.()
+      setDeleteAlertOpen(false)
+      setRejectionToDeleteId(null)
     } catch (error) {
       console.error('Error deleting rejection:', error)
       toast.error('Failed to delete rejection')
@@ -433,6 +449,26 @@ export function MetalDetectionStep({
           </div>
         )}
       </div>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setRejectionToDeleteId(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete rejection record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this rejection record?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => performDeleteRejection()}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

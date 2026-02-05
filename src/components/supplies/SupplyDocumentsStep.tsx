@@ -2,8 +2,19 @@ import { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { Camera, X } from 'lucide-react'
+import { Camera, X, Sparkles } from 'lucide-react'
 import { CameraCapture } from '@/components/CameraCapture'
+
+function generateBatchNumber(): string {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const h = String(now.getHours()).padStart(2, '0')
+  const min = String(now.getMinutes()).padStart(2, '0')
+  const r = Math.floor(1000 + Math.random() * 9000)
+  return `BATCH-${y}${m}${d}-${h}${min}-${r}`
+}
 
 export interface SupplyDocument {
   invoiceNumber: string
@@ -11,7 +22,6 @@ export interface SupplyDocument {
   batchNumber: string
   productionDate: string
   expiryDate: string
-  coaAvailable: 'YES' | 'NO' | 'NA' | ''
   invoiceFile: File | null
 }
 
@@ -84,15 +94,27 @@ export function SupplyDocumentsStep({ documents, onChange, disabled }: SupplyDoc
 
           <div className="space-y-2 lg:col-span-6">
             <Label htmlFor="batch_number">Supply Batch Number *</Label>
-            <Input
-              id="batch_number"
-              required
-              value={documents.batchNumber}
-              onChange={(e) => handleFieldChange('batchNumber', e.target.value)}
-              placeholder="Enter supply batch number"
-              className={baseFieldClass}
-              disabled={disabled}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="batch_number"
+                required
+                value={documents.batchNumber}
+                onChange={(e) => handleFieldChange('batchNumber', e.target.value)}
+                placeholder="Enter supply batch number"
+                className={baseFieldClass}
+                disabled={disabled}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleFieldChange('batchNumber', generateBatchNumber())}
+                disabled={disabled}
+                className="shrink-0"
+                title="Auto-generate batch number"
+              >
+                <Sparkles className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-2 lg:col-span-6">
@@ -117,22 +139,6 @@ export function SupplyDocumentsStep({ documents, onChange, disabled }: SupplyDoc
               className={baseFieldClass}
               disabled={disabled}
             />
-          </div>
-
-          <div className="space-y-2 lg:col-span-6">
-            <Label htmlFor="coa_available">COA Available</Label>
-            <select
-              id="coa_available"
-              value={documents.coaAvailable}
-              onChange={(e) => handleFieldChange('coaAvailable', e.target.value as 'YES' | 'NO' | 'NA' | '')}
-              className={baseFieldClass}
-              disabled={disabled}
-            >
-              <option value="">Select</option>
-              <option value="YES">Yes</option>
-              <option value="NO">No</option>
-              <option value="NA">N/A</option>
-            </select>
           </div>
 
           <div className="space-y-2 lg:col-span-12">

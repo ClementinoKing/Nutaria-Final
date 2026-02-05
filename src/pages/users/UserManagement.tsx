@@ -10,6 +10,16 @@ import { supabase } from '@/lib/supabaseClient'
 import { useUserProfiles } from '@/hooks/useUserProfiles'
 import { ROLE_OPTIONS } from '@/constants/roles'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 const HIGHLIGHT_ROLES = ['admin', 'planner', 'qa']
 
@@ -57,6 +67,8 @@ function isValidNutariaEmail(email: string) {
 function UserManagement() {
   const { profiles, loading, error, refresh, setProfiles } = useUserProfiles()
   const [searchTerm, setSearchTerm] = useState('')
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [profileToDelete, setProfileToDelete] = useState<{ [key: string]: unknown } | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState<{ [key: string]: unknown } | null>(null)
   const [formState, setFormState] = useState({ fullName: '', email: '', role: 'viewer' })
@@ -260,17 +272,9 @@ function UserManagement() {
     handleCloseModal()
   }
 
-  const handleDelete = async (profile: { [key: string]: unknown }) => {
+  const performDelete = async (profile: { [key: string]: unknown }) => {
     const roleMeta = getRoleMeta(profile.role as string | null | undefined)
     const displayName = String(profile.full_name || profile.email || profile.auth_user_id || '')
-
-    const confirmDelete = window.confirm(
-      `Remove ${displayName}? Their profile entry will be deleted immediately.`
-    )
-
-    if (!confirmDelete) {
-      return
-    }
 
     setDeletingUserId(profile.id as string | number | null)
     const { error: deleteError } = await supabase.from('user_profiles').delete().eq('id', profile.id)
@@ -286,6 +290,13 @@ function UserManagement() {
     )
     setProfiles((previous) => previous.filter((item) => item.id !== profile.id))
     setDeletingUserId(null)
+    setDeleteAlertOpen(false)
+    setProfileToDelete(null)
+  }
+
+  const handleDelete = (profile: { [key: string]: unknown }) => {
+    setProfileToDelete(profile)
+    setDeleteAlertOpen(true)
   }
 
   if (loading) {
@@ -552,6 +563,28 @@ function UserManagement() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setProfileToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove user?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {profileToDelete
+                ? `Remove ${String(profileToDelete.full_name || profileToDelete.email || profileToDelete.auth_user_id || '')}? Their profile entry will be deleted immediately.`
+                : 'Their profile entry will be deleted immediately.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => profileToDelete && performDelete(profileToDelete)}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

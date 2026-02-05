@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { CalendarRange, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
+import { CalendarRange, Camera, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { useAuth } from '@/context/AuthContext'
@@ -19,6 +19,7 @@ import { SupplyDocumentsStep, SupplyDocument } from '@/components/supplies/Suppl
 import { VehicleInspectionsStep, VehicleInspection } from '@/components/supplies/VehicleInspectionsStep'
 import { PackagingQualityStep, PackagingQuality } from '@/components/supplies/PackagingQualityStep'
 import { SupplierSignOffStep, SupplierSignOff } from '@/components/supplies/SupplierSignOffStep'
+import { CameraCapture } from '@/components/CameraCapture'
 
 interface QualityEntry {
   score: number | string | null
@@ -36,6 +37,8 @@ interface SupplyBatch {
   qty: string
   accepted_qty: string
   rejected_qty: string
+  unit_price: string
+  amount_paid: string
 }
 
 interface FormData {
@@ -68,6 +71,7 @@ interface SupplyLine {
   product_id: number
   unit_id: number | null
   accepted_qty: number
+  unit_price?: number | null
   [key: string]: unknown
 }
 
@@ -289,6 +293,7 @@ function sanitiseAcceptedQuantityInput(value: string | number | null | undefined
 
 function Supplies() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user } = useAuth()
   const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers()
   const [supplies, setSupplies] = useState<Supply[]>([])
@@ -313,7 +318,6 @@ function Supplies() {
     batchNumber: '',
     productionDate: '',
     expiryDate: '',
-    coaAvailable: '',
     invoiceFile: null,
   }))
   const [vehicleInspection, setVehicleInspection] = useState<VehicleInspection>(() => ({
@@ -336,6 +340,15 @@ function Supplies() {
     signedByName: '',
     remarks: '',
   }))
+  const [supplierCoaStatus, setSupplierCoaStatus] = useState<'available' | 'missing' | 'expired' | null>(null)
+  const [supplierCoaLoading, setSupplierCoaLoading] = useState(false)
+  const [addCoaModalOpen, setAddCoaModalOpen] = useState(false)
+  const [addCoaFile, setAddCoaFile] = useState<File | null>(null)
+  const [addCoaExpiry, setAddCoaExpiry] = useState('')
+  const [addCoaCameraOpen, setAddCoaCameraOpen] = useState(false)
+  const [addCoaUploading, setAddCoaUploading] = useState(false)
+  const [editingSupplyId, setEditingSupplyId] = useState<number | null>(null)
+  const [editLoadDone, setEditLoadDone] = useState(false)
   const [loadingData, setLoadingData] = useState(true)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
@@ -398,7 +411,7 @@ function Supplies() {
       received_by: currentUserName,
       doc_status: STATUS_OPTIONS[0]!,
       supply_batches: [
-        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0' },
+        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' },
       ],
     }),
     [computeNextDocNumber, currentUserName],
@@ -824,7 +837,7 @@ function Supplies() {
       ...prev,
       supply_batches: [
         ...prev.supply_batches,
-        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0' },
+        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' },
       ],
     }))
   }
@@ -1067,6 +1080,268 @@ function Supplies() {
 
     setIsSubmitting(true)
     try {
+      if (editingSupplyId) {
+        const { error: updateSupplyError } = await supabase
+          .from('supplies')
+          .update({
+            warehouse_id: warehouseId,
+            supplier_id: supplierId,
+            received_at: receivedAtISO,
+            received_by: profileId ?? null,
+            doc_status: formData.doc_status,
+            quality_status: qualityStatus,
+            updated_at: nowISO,
+          })
+          .eq('id', editingSupplyId)
+        if (updateSupplyError) throw updateSupplyError
+
+        await supabase.from('supply_lines').delete().eq('supply_id', editingSupplyId)
+        const supplyLineRows = validLines.map((line) => {
+          const quantity = Number.parseFloat(line.qty) || 0
+          const acceptedRaw = Number.parseFloat(line.accepted_qty)
+          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
+          const rejectedQty = Math.max(quantity - acceptedQty, 0)
+          const unitPriceRaw = line.unit_price?.trim()
+          const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
+          return {
+            supply_id: editingSupplyId,
+            product_id: parseInt(line.product_id, 10),
+            unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
+            ordered_qty: quantity,
+            received_qty: quantity,
+            accepted_qty: acceptedQty,
+            rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
+            variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
+            unit_price: unitPrice,
+          }
+        })
+        const { data: linesData, error: linesError } = await supabase
+          .from('supply_lines')
+          .insert(supplyLineRows)
+          .select('id')
+        if (linesError) throw linesError
+        const insertedLines = linesData ?? []
+
+        await supabase.from('supply_batches').delete().eq('supply_id', editingSupplyId)
+        const supplyBatchRows = validLines.map((line, index) => {
+          const quantity = Number.parseFloat(line.qty) || 0
+          const acceptedRaw = Number.parseFloat(line.accepted_qty)
+          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
+          const rejectedQty = Math.max(quantity - acceptedQty, 0)
+          const lotNumber = `LOT-${editingSupplyId}-${String(index + 1).padStart(3, '0')}`
+          const batchQualityStatus = rejectedQty === 0 ? 'PASSED' : acceptedQty === 0 ? 'FAILED' : 'HOLD'
+          return {
+            supply_id: editingSupplyId,
+            supply_line_id: insertedLines[index]?.id ?? null,
+            product_id: parseInt(line.product_id, 10),
+            unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
+            lot_no: lotNumber,
+            received_qty: quantity,
+            accepted_qty: acceptedQty,
+            rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
+            current_qty: acceptedQty,
+            quality_status: batchQualityStatus,
+            expiry_date: null,
+            created_at: nowISO,
+          }
+        })
+        const { error: batchesError } = await supabase.from('supply_batches').insert(supplyBatchRows)
+        if (batchesError) throw batchesError
+
+        await supabase.from('supply_documents').delete().eq('supply_id', editingSupplyId)
+        const supplyDocumentsPayload: { supply_id: number; document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null; document_id: number | null }[] = []
+        if (supplyDocuments.invoiceNumber) {
+          supplyDocumentsPayload.push({
+            supply_id: editingSupplyId,
+            document_type_code: 'INVOICE',
+            value: supplyDocuments.invoiceNumber,
+            date_value: null,
+            boolean_value: null,
+            document_id: null,
+          })
+        }
+        if (supplyDocuments.driverLicenseName) {
+          supplyDocumentsPayload.push({
+            supply_id: editingSupplyId,
+            document_type_code: 'DRIVER_LICENSE',
+            value: supplyDocuments.driverLicenseName,
+            date_value: null,
+            boolean_value: null,
+            document_id: null,
+          })
+        }
+        if (supplyDocuments.batchNumber) {
+          supplyDocumentsPayload.push({
+            supply_id: editingSupplyId,
+            document_type_code: 'BATCH_NUMBER',
+            value: supplyDocuments.batchNumber,
+            date_value: null,
+            boolean_value: null,
+            document_id: null,
+          })
+        }
+        if (supplyDocuments.productionDate) {
+          supplyDocumentsPayload.push({
+            supply_id: editingSupplyId,
+            document_type_code: 'PRODUCTION_DATE',
+            value: null,
+            date_value: supplyDocuments.productionDate,
+            boolean_value: null,
+            document_id: null,
+          })
+        }
+        if (supplyDocuments.expiryDate) {
+          supplyDocumentsPayload.push({
+            supply_id: editingSupplyId,
+            document_type_code: 'EXPIRY_DATE',
+            value: null,
+            date_value: supplyDocuments.expiryDate,
+            boolean_value: null,
+            document_id: null,
+          })
+        }
+        if (supplyDocumentsPayload.length > 0) {
+          const { error: documentsError } = await supabase.from('supply_documents').insert(supplyDocumentsPayload)
+          if (documentsError) throw documentsError
+        }
+
+        if (vehicleInspection.vehicleClean && vehicleInspection.noForeignObjects && vehicleInspection.noPestInfestation) {
+          const { data: existingVehicle } = await supabase
+            .from('supply_vehicle_inspections')
+            .select('id')
+            .eq('supply_id', editingSupplyId)
+            .maybeSingle()
+          if (existingVehicle?.id) {
+            await supabase.from('supply_vehicle_inspections').update({
+              vehicle_clean: vehicleInspection.vehicleClean,
+              no_foreign_objects: vehicleInspection.noForeignObjects,
+              no_pest_infestation: vehicleInspection.noPestInfestation,
+              remarks: vehicleInspection.remarks?.trim() || null,
+            }).eq('id', existingVehicle.id)
+          } else {
+            await supabase.from('supply_vehicle_inspections').insert({
+              supply_id: editingSupplyId,
+              vehicle_clean: vehicleInspection.vehicleClean,
+              no_foreign_objects: vehicleInspection.noForeignObjects,
+              no_pest_infestation: vehicleInspection.noPestInfestation,
+              inspected_by: profileId ?? null,
+              remarks: vehicleInspection.remarks?.trim() || null,
+            })
+          }
+        }
+
+        const { data: existingPackaging } = await supabase
+          .from('supply_packaging_quality_checks')
+          .select('id')
+          .eq('supply_id', editingSupplyId)
+          .maybeSingle()
+        let packagingCheckId = existingPackaging?.id
+        if (!packagingCheckId && (packagingQuality.inaccurateLabelling || packagingQuality.visibleDamage)) {
+          const { data: newPack } = await supabase.from('supply_packaging_quality_checks').insert({
+            supply_id: editingSupplyId,
+            checked_by: profileId ?? null,
+            remarks: null,
+          }).select('id').single()
+          packagingCheckId = newPack?.id
+        }
+        if (packagingCheckId && packagingQuality.inaccurateLabelling && packagingQuality.visibleDamage && packagingQuality.specifiedQuantity && packagingQuality.odor && packagingQuality.strengthIntegrity) {
+          if (existingPackaging?.id) {
+            await supabase.from('supply_packaging_quality_check_items').delete().eq('packaging_check_id', existingPackaging.id)
+          }
+          const { data: packagingParams } = await supabase.from('packaging_quality_parameters').select('id, code')
+          const map = new Map((packagingParams ?? []).map((p: { id: number; code: string }) => [p.code, p.id]))
+          const packagingItemsPayload = [
+            { packaging_check_id: packagingCheckId, parameter_id: map.get('INACCURATE_LABELLING'), value: packagingQuality.inaccurateLabelling, numeric_value: null },
+            { packaging_check_id: packagingCheckId, parameter_id: map.get('VISIBLE_DAMAGE'), value: packagingQuality.visibleDamage, numeric_value: null },
+            { packaging_check_id: packagingCheckId, parameter_id: map.get('SPECIFIED_QUANTITY'), value: null, numeric_value: Number.parseFloat(packagingQuality.specifiedQuantity) || null },
+            { packaging_check_id: packagingCheckId, parameter_id: map.get('ODOR'), value: packagingQuality.odor, numeric_value: null },
+            { packaging_check_id: packagingCheckId, parameter_id: map.get('STRENGTH_INTEGRITY'), value: packagingQuality.strengthIntegrity, numeric_value: null },
+          ].filter((i) => i.parameter_id != null)
+          if (packagingItemsPayload.length > 0) {
+            await supabase.from('supply_packaging_quality_check_items').insert(packagingItemsPayload)
+          }
+        }
+
+        const { data: existingQualityCheck } = await supabase
+          .from('supply_quality_checks')
+          .select('id')
+          .eq('supply_id', editingSupplyId)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        let qualityCheckId = existingQualityCheck?.id
+        if (!qualityCheckId) {
+          const { data: newQc } = await supabase.from('supply_quality_checks').insert({
+            supply_id: editingSupplyId,
+            check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
+            status: qualityCheckStatus,
+            result: qualityCheckStatus,
+            performed_by: profileId ?? null,
+            performed_at: nowISO,
+            evaluated_at: nowISO,
+            evaluated_by: profileId ?? null,
+            overall_score: overallScore,
+          }).select('id').single()
+          qualityCheckId = newQc?.id
+        } else {
+          await supabase.from('supply_quality_checks').update({
+            status: qualityCheckStatus,
+            result: qualityCheckStatus,
+            evaluated_at: nowISO,
+            overall_score: overallScore,
+          }).eq('id', qualityCheckId)
+        }
+        if (qualityCheckId) {
+          await supabase.from('supply_quality_check_items').delete().eq('quality_check_id', qualityCheckId)
+          const parameterIdLookup = new Map(qualityParameterIdMap)
+          const qualityItemsPayload = qualityParameters
+            .map((p) => {
+              const entry = qualityEntries[p.code]
+              if (!entry) return null
+              const parameterId = parameterIdLookup.get(p.code)
+              if (!parameterId) return null
+              const scoreValue = entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4' ? 4 : Number(entry.score)
+              return {
+                quality_check_id: qualityCheckId,
+                parameter_id: parameterId,
+                score: scoreValue,
+                remarks: entry.remarks?.trim() ? entry.remarks.trim() : null,
+                results: entry.results?.trim() ? entry.results.trim() : null,
+              }
+            })
+            .filter(Boolean)
+          if (qualityItemsPayload.length > 0) {
+            await supabase.from('supply_quality_check_items').insert(qualityItemsPayload)
+          }
+        }
+
+        const { data: existingSignOff } = await supabase.from('supply_supplier_sign_offs').select('id').eq('supply_id', editingSupplyId).maybeSingle()
+        if (supplierSignOff.signatureType && supplierSignOff.signedByName) {
+          const signOffPayload: Record<string, unknown> = {
+            supply_id: editingSupplyId,
+            signed_by_name: supplierSignOff.signedByName,
+            signature_type: supplierSignOff.signatureType,
+            remarks: supplierSignOff.remarks?.trim() || null,
+            signed_at: nowISO,
+          }
+          if (supplierSignOff.signatureType === 'E_SIGNATURE' && supplierSignOff.signatureData) {
+            signOffPayload.signature_data = supplierSignOff.signatureData
+          }
+          if (existingSignOff?.id) {
+            await supabase.from('supply_supplier_sign_offs').update(signOffPayload).eq('id', existingSignOff.id)
+          } else {
+            await supabase.from('supply_supplier_sign_offs').insert(signOffPayload)
+          }
+        }
+
+        toast.success('Supply updated successfully.')
+        setEditingSupplyId(null)
+        setEditLoadDone(false)
+        closeModal()
+        loadSuppliesData()
+        return
+      }
+
       const { data: insertedSupply, error: insertSupplyError } = await supabase
         .from('supplies')
         .insert({
@@ -1102,6 +1377,8 @@ function Supplies() {
           const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
           const rejectedQty = Math.max(quantity - acceptedQty, 0)
 
+          const unitPriceRaw = line.unit_price?.trim()
+          const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
           return {
             supply_id: newSupplyId,
             product_id: parseInt(line.product_id, 10),
@@ -1111,6 +1388,7 @@ function Supplies() {
             accepted_qty: acceptedQty,
             rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
             variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
+            unit_price: unitPrice,
           }
         })
 
@@ -1521,8 +1799,26 @@ function Supplies() {
         console.log('Supplier sign-off saved successfully:', signOffData)
       }
 
+      for (let i = 0; i < formData.supply_batches.length; i++) {
+        const batch = formData.supply_batches[i]
+        const amountPaidRaw = batch.amount_paid?.trim()
+        const amountPaid = amountPaidRaw && Number.isFinite(Number(amountPaidRaw)) ? Number(amountPaidRaw) : 0
+        if (amountPaid > 0) {
+          const { error: paymentError } = await supabase.from('supply_payments').insert({
+            supply_id: newSupplyId,
+            amount: amountPaid,
+            paid_at: receivedAtISO,
+            reference: `Batch ${i + 1}`,
+          })
+          if (paymentError) {
+            console.warn('Could not save amount paid for supply batch:', i + 1, paymentError)
+            toast.warning('Supply saved but some batch payments could not be recorded. You can add them from the Payments page.')
+          }
+        }
+      }
+
       toast.success('Supply captured successfully.')
-      await loadSuppliesData()
+      const createdSupplyId = newSupplyId
       setFormData(getInitialFormData())
       setQualityEntries(createInitialQualityEntries(qualityParameters))
       setSupplyDocuments({
@@ -1556,7 +1852,8 @@ function Supplies() {
       })
       setCurrentStep(0)
       setIsModalOpen(false)
-      window.location.reload()
+      loadSuppliesData()
+      navigate(`/supplies/${createdSupplyId}`, { replace: true })
     } catch (error) {
       console.error('Error capturing supply', error)
       const errorMessage = error instanceof Error ? error.message : 'Unable to capture supply.'
@@ -1566,8 +1863,204 @@ function Supplies() {
     }
   }
 
+  const handleSaveSupplierCoa = async () => {
+    const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
+    if (!supplierId || !Number.isFinite(supplierId)) {
+      toast.error('Select a supplier first.')
+      return
+    }
+    if (!addCoaFile) {
+      toast.error('Upload a file or take a photo first.')
+      return
+    }
+    setAddCoaUploading(true)
+    try {
+      const storagePath = `suppliers/${supplierId}/certificates/coa_${Date.now()}_${addCoaFile.name}`
+      const { error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(storagePath, addCoaFile)
+      if (uploadError) {
+        throw uploadError
+      }
+      const expiryToUse = addCoaExpiry.trim() ? addCoaExpiry.trim() : null
+      const { error: insertError } = await supabase.from('documents').insert({
+        owner_type: 'supplier',
+        owner_id: supplierId,
+        name: addCoaFile.name,
+        document_type_code: 'COA',
+        doc_type: 'COA',
+        storage_path: storagePath,
+        expiry_date: expiryToUse,
+        uploaded_by: profileId ?? null,
+      })
+      if (insertError) {
+        throw insertError
+      }
+      setSupplierCoaStatus('available')
+      setSupplyDocuments((prev) => ({ ...prev, coaAvailable: 'YES' }))
+      setAddCoaModalOpen(false)
+      setAddCoaFile(null)
+      setAddCoaExpiry('')
+      toast.success('COA added to supplier.')
+    } catch (err) {
+      console.error('Error adding COA', err)
+      toast.error(err instanceof Error ? err.message : 'Failed to add COA.')
+    } finally {
+      setAddCoaUploading(false)
+    }
+  }
+
+  const loadSupplyForEdit = useCallback(
+    async (supplyId: number) => {
+      try {
+        const [
+          { data: supplyData, error: supplyError },
+          { data: linesData, error: linesError },
+          { data: docsData },
+          { data: vehicleData },
+          { data: packagingChecksData },
+          { data: packagingItemsData },
+          { data: qualityChecksData },
+          { data: qualityItemsData },
+          { data: signOffData },
+        ] = await Promise.all([
+          supabase.from('supplies').select('*').eq('id', supplyId).single(),
+          supabase.from('supply_lines').select('*').eq('supply_id', supplyId),
+          supabase.from('supply_documents').select('*').eq('supply_id', supplyId),
+          supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId).maybeSingle(),
+          supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId).maybeSingle(),
+          supabase.from('supply_packaging_quality_check_items').select('*'),
+          supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId).order('id', { ascending: false }).limit(1),
+          supabase.from('supply_quality_check_items').select('*'),
+          supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId).maybeSingle(),
+        ])
+        if (supplyError || !supplyData) throw supplyError ?? new Error('Supply not found')
+        if (linesError) throw linesError
+        const supply = supplyData as Record<string, unknown>
+        const lines = (linesData ?? []) as { product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }[]
+        const docs = (docsData ?? []) as { document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null }[]
+        const vehicle = vehicleData as Record<string, unknown> | null
+        const packagingCheck = packagingChecksData?.[0] ?? null
+        const packagingItems = (packagingItemsData ?? []).filter(
+          (i: { packaging_check_id?: number }) => packagingCheck && i.packaging_check_id === (packagingCheck as { id: number }).id,
+        ) as { parameter_id: number; value: string | null; numeric_value: number | null }[]
+        const { data: packagingParamsData } = await supabase.from('packaging_quality_parameters').select('id, code')
+        const packagingParamMap = new Map((packagingParamsData ?? []).map((p: { id: number; code: string }) => [p.id, p.code]))
+        const qualityCheck = qualityChecksData?.[0] ?? null
+        const qualityItems = (qualityItemsData ?? []).filter(
+          (i: { quality_check_id?: number }) => qualityCheck && i.quality_check_id === (qualityCheck as { id: number }).id,
+        ) as { parameter_id: number; score: number | null; remarks: string | null; results: string | null }[]
+        const signOff = signOffData as Record<string, unknown> | null
+
+        const getDoc = (code: string) => docs.find((d) => d.document_type_code === code)
+        setFormData({
+          doc_no: String(supply.doc_no ?? ''),
+          warehouse_id: String(supply.warehouse_id ?? ''),
+          supplier_id: String(supply.supplier_id ?? ''),
+          received_at: supply.received_at ? toLocalDateTimeInput(new Date(supply.received_at as string)) : toLocalDateTimeInput(),
+          received_by: currentUserName,
+          doc_status: String(supply.doc_status ?? STATUS_OPTIONS[0]),
+          supply_batches:
+            lines.length > 0
+              ? lines.map((l) => {
+                  const received = Number(l.received_qty ?? l.ordered_qty ?? 0)
+                  const accepted = Number(l.accepted_qty ?? 0)
+                  const rejected = Number(l.rejected_qty ?? received - accepted)
+                  return {
+                    product_id: String(l.product_id),
+                    unit_id: l.unit_id != null ? String(l.unit_id) : '',
+                    qty: String(received),
+                    accepted_qty: String(accepted),
+                    rejected_qty: String(rejected >= 0 ? rejected : 0),
+                    unit_price: l.unit_price != null ? String(l.unit_price) : '',
+                    amount_paid: '',
+                  }
+                })
+              : [{ product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' }],
+        })
+        const invDoc = getDoc('INVOICE')
+        const driverDoc = getDoc('DRIVER_LICENSE')
+        const batchDoc = getDoc('BATCH_NUMBER')
+        const prodDoc = getDoc('PRODUCTION_DATE')
+        const expDoc = getDoc('EXPIRY_DATE')
+        const coaDoc = getDoc('COA')
+        setSupplyDocuments({
+          invoiceNumber: (invDoc?.value as string) ?? '',
+          driverLicenseName: (driverDoc?.value as string) ?? '',
+          batchNumber: (batchDoc?.value as string) ?? '',
+          productionDate: (prodDoc?.date_value as string) ?? '',
+          expiryDate: (expDoc?.date_value as string) ?? '',
+          coaAvailable: coaDoc?.boolean_value === true ? 'YES' : coaDoc?.boolean_value === false ? 'NO' : '',
+          invoiceFile: null,
+        })
+        setVehicleInspection({
+          vehicleClean: (vehicle?.vehicle_clean as string) ?? '',
+          noForeignObjects: (vehicle?.no_foreign_objects as string) ?? '',
+          noPestInfestation: (vehicle?.no_pest_infestation as string) ?? '',
+          remarks: (vehicle?.remarks as string) ?? '',
+        })
+        const paramByCode: Record<string, string> = {
+          INACCURATE_LABELLING: 'inaccurateLabelling',
+          VISIBLE_DAMAGE: 'visibleDamage',
+          SPECIFIED_QUANTITY: 'specifiedQuantity',
+          ODOR: 'odor',
+          STRENGTH_INTEGRITY: 'strengthIntegrity',
+        }
+        const packagingMap: Record<string, string> = {}
+        packagingItems.forEach((item) => {
+          const code = packagingParamMap.get(item.parameter_id) ?? ''
+          const key = paramByCode[code]
+          if (key) {
+            packagingMap[key] = item.value ?? (item.numeric_value != null ? String(item.numeric_value) : '')
+          }
+        })
+        setPackagingQuality({
+          inaccurateLabelling: packagingMap.inaccurateLabelling ?? '',
+          visibleDamage: packagingMap.visibleDamage ?? '',
+          specifiedQuantity: packagingMap.specifiedQuantity ?? '',
+          odor: packagingMap.odor ?? '',
+          strengthIntegrity: packagingMap.strengthIntegrity ?? '',
+        })
+        const entries: QualityEntries = {}
+        qualityItems.forEach((item) => {
+          const param = qualityParameters.find((p) => p.id === item.parameter_id)
+          if (param?.code) {
+            entries[param.code] = {
+              score: item.score ?? 3,
+              remarks: item.remarks ?? '',
+              results: item.results ?? '',
+            }
+          }
+        })
+        setQualityEntries((prev) => ({ ...createInitialQualityEntries(qualityParameters), ...entries }))
+        setSupplierSignOff({
+          signatureType: signOff?.signature_type === 'E_SIGNATURE' ? 'E_SIGNATURE' : signOff?.signature_type === 'UPLOADED_DOCUMENT' ? 'UPLOADED_DOCUMENT' : '',
+          signatureData: (signOff?.signature_data as string) ?? null,
+          documentFile: null,
+          signedByName: (signOff?.signed_by_name as string) ?? '',
+          remarks: (signOff?.remarks as string) ?? '',
+        })
+        setEditLoadDone(true)
+      } catch (err) {
+        console.error('Error loading supply for edit', err)
+        toast.error('Failed to load supply for editing.')
+        setEditingSupplyId(null)
+        setIsModalOpen(false)
+      }
+    },
+    [qualityParameters, currentUserName],
+  )
+
+  useEffect(() => {
+    if (isModalOpen && editingSupplyId != null && !loadingData && !editLoadDone) {
+      loadSupplyForEdit(editingSupplyId)
+    }
+  }, [isModalOpen, editingSupplyId, loadingData, editLoadDone, loadSupplyForEdit])
+
   const closeModal = () => {
     setIsModalOpen(false)
+    setEditingSupplyId(null)
+    setEditLoadDone(false)
     setFormData(getInitialFormData())
     setQualityEntries(createInitialQualityEntries(qualityParameters))
     setSupplyDocuments({
@@ -1824,7 +2317,7 @@ function Supplies() {
           .select('id, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
-        supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty'),
+        supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty, unit_price'),
         supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, quality_status'),
         supabase.from('supply_quality_checks').select('id, supply_id'),
         supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id, results'),
@@ -1920,6 +2413,69 @@ function Supplies() {
       }))
     }
   }, [isModalOpen, warehouses, formData.warehouse_id])
+
+  // Open modal in edit mode when navigating from detail with editSupplyId
+  useEffect(() => {
+    const editId = (location.state as { editSupplyId?: number })?.editSupplyId
+    if (editId != null && Number.isFinite(editId)) {
+      setEditingSupplyId(editId)
+      setIsModalOpen(true)
+      setEditLoadDone(false)
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [location.state, location.pathname, navigate])
+
+  // Fetch supplier COA status only when on the documents step (step 1) to avoid re-renders/jitter when selecting supplier on step 0
+  useEffect(() => {
+    if (currentStep !== 1) {
+      return
+    }
+    const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
+    if (!supplierId || !Number.isFinite(supplierId)) {
+      setSupplierCoaStatus(null)
+      setSupplierCoaLoading(false)
+      return
+    }
+    let cancelled = false
+    setSupplierCoaLoading(true)
+    supabase
+      .from('documents')
+      .select('id, expiry_date')
+      .eq('owner_type', 'supplier')
+      .eq('owner_id', supplierId)
+      .eq('document_type_code', 'COA')
+      .then(({ data, error }) => {
+        if (cancelled) return
+        setSupplierCoaLoading(false)
+        if (error) {
+          setSupplierCoaStatus('missing')
+          return
+        }
+        const docs = (data ?? []) as { id: number; expiry_date: string | null }[]
+        if (docs.length === 0) {
+          setSupplierCoaStatus('missing')
+          return
+        }
+        const now = new Date()
+        now.setHours(0, 0, 0, 0)
+        const hasValid = docs.some((d) => {
+          if (!d.expiry_date) return true
+          const exp = new Date(d.expiry_date)
+          exp.setHours(0, 0, 0, 0)
+          return exp >= now
+        })
+        const allExpired = docs.every((d) => {
+          if (!d.expiry_date) return false
+          const exp = new Date(d.expiry_date)
+          exp.setHours(0, 0, 0, 0)
+          return exp < now
+        })
+        setSupplierCoaStatus(hasValid ? 'available' : allExpired ? 'expired' : 'missing')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentStep, formData.supplier_id])
 
   if (loadingData) {
     return (
@@ -2155,8 +2711,12 @@ function Supplies() {
           <div className="flex w-full max-w-5xl max-h-[92vh] flex-col overflow-hidden rounded-2xl border border-olive-light/40 bg-white shadow-2xl">
             <div className="flex flex-col gap-2 border-b border-olive-light/20 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
               <div>
-                <h2 className="text-2xl font-semibold text-text-dark">New Supply</h2>
-                <p className="text-sm text-text-dark/70">Capture a new receipt or load from staging.</p>
+                <h2 className="text-2xl font-semibold text-text-dark">
+                  {editingSupplyId ? 'Edit Supply' : 'New Supply'}
+                </h2>
+                <p className="text-sm text-text-dark/70">
+                  {editingSupplyId ? 'Update supply details and related records.' : 'Capture a new receipt or load from staging.'}
+                </p>
               </div>
               <Button
                 variant="ghost"
@@ -2250,10 +2810,10 @@ function Supplies() {
                           options={supplierSelectOptions}
                           value={formData.supplier_id}
                           onChange={(value) => handleInputChange('supplier_id', value)}
-                          placeholder="Select supplier"
-                          disabled={isSubmitting || suppliersLoading || supplierList.length === 0}
+                          placeholder={suppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
+                          disabled={isSubmitting}
                           required
-                          emptyMessage="No suppliers found"
+                          emptyMessage={supplierList.length === 0 ? 'No suppliers found. Add suppliers under Partner → Suppliers.' : 'No match'}
                         />
                       </div>
 
@@ -2303,6 +2863,32 @@ function Supplies() {
                       onChange={setSupplyDocuments}
                       disabled={isSubmitting}
                     />
+                    {formData.supplier_id && (
+                      <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-olive-light/40 bg-white px-4 py-3">
+                        <span className="text-sm font-medium text-text-dark/80">Supplier COA:</span>
+                        {supplierCoaLoading ? (
+                          <span className="text-sm text-text-dark/60">Checking…</span>
+                        ) : supplierCoaStatus === 'available' ? (
+                          <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-800">
+                            COA available
+                          </span>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setAddCoaFile(null)
+                              setAddCoaExpiry('')
+                              setAddCoaModalOpen(true)
+                            }}
+                            disabled={isSubmitting}
+                          >
+                            Add a new COA
+                          </Button>
+                        )}
+                      </div>
+                    )}
                   </section>
                 )}
 
@@ -2590,6 +3176,45 @@ function Supplies() {
                                 </p>
                               </div>
                             </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`unit_price_${index}`}>Unit price (optional)</Label>
+                                <Input
+                                  id={`unit_price_${index}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={batch.unit_price}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'unit_price', event.target.value)
+                                  }
+                                  placeholder="e.g. 12.50"
+                                  className={baseFieldClass}
+                                />
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  Price per unit for this line; used for payment tracking.
+                                </p>
+                              </div>
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`amount_paid_${index}`}>Amount paid (optional)</Label>
+                                <Input
+                                  id={`amount_paid_${index}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={batch.amount_paid}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'amount_paid', event.target.value)
+                                  }
+                                  placeholder="e.g. 0.00"
+                                  className={baseFieldClass}
+                                />
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  Payment amount for this batch. Visible on the Payments page.
+                                </p>
+                              </div>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -2693,6 +3318,88 @@ function Supplies() {
           </div>
         </div>
       )}
+
+      {addCoaModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-olive-light/40 bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-text-dark">Add COA to supplier</h3>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setAddCoaModalOpen(false)
+                  setAddCoaFile(null)
+                  setAddCoaExpiry('')
+                }}
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <Label>COA document</Label>
+                <div className="mt-2 flex gap-2">
+                  <Input
+                    type="file"
+                    accept="image/*,.pdf"
+                    onChange={(e) => setAddCoaFile(e.target.files?.[0] ?? null)}
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setAddCoaCameraOpen(true)}
+                    title="Take photo"
+                  >
+                    <Camera className="h-4 w-4" />
+                  </Button>
+                </div>
+                {addCoaFile && (
+                  <p className="mt-1 text-sm text-text-dark/70">{addCoaFile.name}</p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="add_coa_expiry">Expiry date (optional)</Label>
+                <Input
+                  id="add_coa_expiry"
+                  type="date"
+                  value={addCoaExpiry}
+                  onChange={(e) => setAddCoaExpiry(e.target.value)}
+                  className="mt-2"
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setAddCoaModalOpen(false)
+                  setAddCoaFile(null)
+                  setAddCoaExpiry('')
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveSupplierCoa}
+                disabled={addCoaUploading || !addCoaFile}
+              >
+                {addCoaUploading ? 'Saving…' : 'Save COA'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      <CameraCapture
+        isOpen={addCoaCameraOpen}
+        onClose={() => setAddCoaCameraOpen(false)}
+        onCapture={(file) => {
+          setAddCoaFile(file)
+          setAddCoaCameraOpen(false)
+        }}
+        disabled={addCoaUploading}
+      />
     </>
   )
 }

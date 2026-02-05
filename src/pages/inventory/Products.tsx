@@ -10,6 +10,16 @@ import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface Product {
   id: number
@@ -84,9 +94,14 @@ const sortableColumns = [
   { value: 'updated_at', label: 'Last Updated' },
 ]
 
-function createEmptyProductForm() {
+function createEmptyProductForm(existingProducts: Product[] = []): ProductFormData {
+  const nextId =
+    existingProducts.length === 0
+      ? 1
+      : Math.max(...existingProducts.map((p) => p.id), 0) + 1
+  const sku = `PRD-${String(nextId).padStart(5, '0')}`
   return {
-    sku: '',
+    sku,
     name: '',
     category: '',
     base_unit_id: '',
@@ -149,6 +164,8 @@ function Products() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [deletingProductId, setDeletingProductId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
@@ -365,7 +382,7 @@ function Products() {
   }, [error, loading])
 
   const handleOpenCreateModal = () => {
-    setFormData(createEmptyProductForm())
+    setFormData(createEmptyProductForm(products))
     setFormErrors({})
     setModalMode('create')
     setEditingProduct(null)
@@ -380,7 +397,7 @@ function Products() {
     setFormErrors({})
     setModalMode('create')
     setEditingProduct(null)
-    setFormData(createEmptyProductForm())
+    setFormData(createEmptyProductForm(products))
   }
 
   const handleOpenEditModal = useCallback((product: Product) => {
@@ -418,14 +435,9 @@ function Products() {
     setIsModalOpen(true)
   }, [])
 
-  const handleDeleteProduct = useCallback(
+  const performDeleteProduct = useCallback(
     async (product: Product) => {
       if (!product?.id) return
-      const displayName = product.name ?? product.sku ?? 'Unknown'
-      const confirmed = window.confirm(
-        `Delete product "${displayName}"? This cannot be undone.`
-      )
-      if (!confirmed) return
       setDeletingProductId(product.id)
       try {
         const { error: deleteError } = await supabase
@@ -444,6 +456,11 @@ function Products() {
     },
     []
   )
+
+  const requestDeleteProduct = useCallback((product: Product) => {
+    setProductToDelete(product)
+    setDeleteAlertOpen(true)
+  }, [])
 
   const handleFormChange = (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = event.target
@@ -750,7 +767,7 @@ function Products() {
               className="text-red-600 hover:bg-red-50"
               onClick={(event) => {
                 event.stopPropagation()
-                handleDeleteProduct(product)
+                requestDeleteProduct(product)
               }}
               disabled={deletingProductId === product.id}
             >
@@ -789,7 +806,7 @@ function Products() {
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                handleDeleteProduct(product)
+                requestDeleteProduct(product)
               }}
               disabled={deletingProductId === product.id}
             >
@@ -806,7 +823,7 @@ function Products() {
         ),
       },
     ],
-    [handleOpenEditModal, handleDeleteProduct, deletingProductId, unitMap]
+    [handleOpenEditModal, requestDeleteProduct, deletingProductId, unitMap]
   )
 
   const isEditMode = modalMode === 'edit'
@@ -1259,6 +1276,28 @@ function Products() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setProductToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete product?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {productToDelete
+                ? `Delete product "${productToDelete.name ?? productToDelete.sku ?? 'Unknown'}"? This cannot be undone.`
+                : 'This cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => productToDelete && performDeleteProduct(productToDelete)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

@@ -14,6 +14,16 @@ import { useDocumentTypes } from '@/hooks/useDocumentTypes'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { CameraCapture } from '@/components/CameraCapture'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 
@@ -214,6 +224,8 @@ function Suppliers() {
   const [formErrors, setFormErrors] = useState<FormErrors>(createEmptyFormErrors())
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deletingSupplierId, setDeletingSupplierId] = useState<string | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null)
   const [profileId, setProfileId] = useState<string | null>(null)
   const [activeStep, setActiveStep] = useState(0)
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
@@ -223,6 +235,7 @@ function Suppliers() {
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState<string>('')
   const [filterCountry, setFilterCountry] = useState<string>('')
+  const [expiredDocCountBySupplierId, setExpiredDocCountBySupplierId] = useState<Record<string, number>>({})
   const totalSteps = SUPPLIER_FORM_STEPS.length
   const currentStepIndex = Math.min(activeStep, totalSteps - 1)
   const currentStep = SUPPLIER_FORM_STEPS[currentStepIndex]
@@ -305,6 +318,44 @@ function Suppliers() {
   }, [suppliersError])
 
   useEffect(() => {
+    if (suppliers.length === 0) {
+      setExpiredDocCountBySupplierId({})
+      return
+    }
+    const supplierIds = suppliers.map((s) => s.id).filter((id): id is string => id != null)
+    if (supplierIds.length === 0) {
+      setExpiredDocCountBySupplierId({})
+      return
+    }
+    const today = new Date().toISOString().split('T')[0]
+    supabase
+      .from('documents')
+      .select('owner_id')
+      .eq('owner_type', 'supplier')
+      .in('owner_id', supplierIds)
+      .not('expiry_date', 'is', null)
+      .lt('expiry_date', today)
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn('Failed to load expired document counts', error)
+          setExpiredDocCountBySupplierId({})
+          return
+        }
+        const countByOwnerId: Record<string, number> = {}
+        supplierIds.forEach((id) => {
+          countByOwnerId[String(id)] = 0
+        })
+        ;(data ?? []).forEach((row: { owner_id?: string | number }) => {
+          const id = row.owner_id != null ? String(row.owner_id) : ''
+          if (id && countByOwnerId[id] !== undefined) {
+            countByOwnerId[id] += 1
+          }
+        })
+        setExpiredDocCountBySupplierId(countByOwnerId)
+      })
+  }, [suppliers])
+
+  useEffect(() => {
     const loadProfile = async () => {
       if (!user?.id) {
         setProfileId(null)
@@ -378,16 +429,8 @@ function Suppliers() {
     navigate(`/suppliers-customers/suppliers/${supplier.id}/edit`)
   }
 
-  const handleDeleteSupplier = async (supplier: Supplier) => {
+  const performDeleteSupplier = async (supplier: Supplier) => {
     if (!supplier?.id) return
-
-    const confirmed = window.confirm(
-      `Delete supplier "${supplier.name}"? This will remove their profile and associated documents.`
-    )
-    if (!confirmed) {
-      return
-    }
-
     setDeletingSupplierId(supplier.id)
     try {
       const { error: docsError } = await supabase
@@ -407,6 +450,8 @@ function Suppliers() {
 
       await refreshSuppliers()
       toast.success(`Supplier "${supplier.name}" removed`)
+      setDeleteAlertOpen(false)
+      setSupplierToDelete(null)
     } catch (error) {
       console.error('Error deleting supplier', error)
       const errorMessage = error instanceof Error ? error.message : 'Unable to delete supplier.'
@@ -414,6 +459,12 @@ function Suppliers() {
     } finally {
       setDeletingSupplierId(null)
     }
+  }
+
+  const handleDeleteSupplier = (supplier: Supplier) => {
+    if (!supplier?.id) return
+    setSupplierToDelete(supplier)
+    setDeleteAlertOpen(true)
   }
 
   const clearFieldError = (field: string) => {
@@ -833,6 +884,28 @@ function Suppliers() {
       header: 'Country',
       render: (supplier: Supplier) => supplier.country || '-',
       mobileRender: (supplier: Supplier) => supplier.country || '-',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark',
+    },
+    {
+      key: 'expired_docs',
+      header: 'Expired docs',
+      render: (supplier: Supplier) => {
+        const count = expiredDocCountBySupplierId[String(supplier.id)] ?? 0
+        if (count === 0) {
+          return <span className="text-text-dark/50">0</span>
+        }
+        return (
+          <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/40 dark:text-red-200">
+            {count}
+          </span>
+        )
+      },
+      mobileRender: (supplier: Supplier) => {
+        const count = expiredDocCountBySupplierId[String(supplier.id)] ?? 0
+        if (count === 0) return '0'
+        return String(count)
+      },
       cellClassName: 'text-text-dark/70',
       mobileValueClassName: 'text-text-dark',
     },
@@ -1705,6 +1778,28 @@ function Suppliers() {
         onCapture={handleCameraCapture}
         disabled={isSubmitting}
       />
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setSupplierToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete supplier?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {supplierToDelete
+                ? `Delete supplier "${supplierToDelete.name}"? This will remove their profile and associated documents.`
+                : 'This will remove their profile and associated documents.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => supplierToDelete && performDeleteSupplier(supplierToDelete)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

@@ -31,6 +31,7 @@ import {
   FileText,
   HelpCircle,
   Tag,
+  Banknote,
 } from 'lucide-react'
 import { useDailyChecks } from '@/context/DailyChecksContext'
 import { useTheme } from '@/context/ThemeContext'
@@ -89,6 +90,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       ]
     },
     { name: 'Supplies', icon: ArrowDownCircle, key: 'supplies', path: '/supplies' },
+    { name: 'Payments', icon: Banknote, key: 'payments', path: '/payments' },
     { 
       name: 'Process', 
       icon: Cog, 

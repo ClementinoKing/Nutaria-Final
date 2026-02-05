@@ -9,6 +9,16 @@ import { useSortingRun } from '@/hooks/useSortingRun'
 import { useAuth } from '@/context/AuthContext'
 import { createReworkedLot } from '@/lib/processExecution'
 import type { ProcessStepRun, SortingOutputFormData, SortingWasteFormData } from '@/types/processExecution'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface SortingStepProps {
   stepRun: ProcessStepRun
@@ -48,6 +58,8 @@ export function SortingStep({
     waste_type: '',
     quantity_kg: '',
   })
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<{ type: 'output'; id: number } | { type: 'waste'; id: number } | null>(null)
 
   const [showOutputForm, setShowOutputForm] = useState(false)
   const [showWasteForm, setShowWasteForm] = useState(false)
@@ -297,37 +309,33 @@ export function SortingStep({
     return products.filter((product) => !selectedProductIds.includes(product.id))
   }, [products, outputs, editingOutputId])
 
-  const handleDeleteOutput = async (outputId: number) => {
-    if (!confirm('Are you sure you want to delete this output?')) {
-      return
-    }
-
-    setSaving(true)
-    try {
-      await deleteOutput(outputId)
-      toast.success('Output deleted')
-      onQuantityChange?.()
-    } catch (error) {
-      console.error('Error deleting output:', error)
-      toast.error('Failed to delete output')
-    } finally {
-      setSaving(false)
-    }
+  const handleDeleteOutput = (outputId: number) => {
+    setDeleteTarget({ type: 'output', id: outputId })
+    setDeleteAlertOpen(true)
   }
 
-  const handleDeleteWaste = async (wasteId: number) => {
-    if (!confirm('Are you sure you want to delete this waste record?')) {
-      return
-    }
+  const handleDeleteWaste = (wasteId: number) => {
+    setDeleteTarget({ type: 'waste', id: wasteId })
+    setDeleteAlertOpen(true)
+  }
 
+  const performDelete = async () => {
+    if (!deleteTarget) return
     setSaving(true)
     try {
-      await deleteWaste(wasteId)
-      toast.success('Waste record deleted')
+      if (deleteTarget.type === 'output') {
+        await deleteOutput(deleteTarget.id)
+        toast.success('Output deleted')
+      } else {
+        await deleteWaste(deleteTarget.id)
+        toast.success('Waste record deleted')
+      }
       onQuantityChange?.()
+      setDeleteAlertOpen(false)
+      setDeleteTarget(null)
     } catch (error) {
-      console.error('Error deleting waste:', error)
-      toast.error('Failed to delete waste record')
+      console.error(deleteTarget.type === 'output' ? 'Error deleting output' : 'Error deleting waste', error)
+      toast.error(deleteTarget.type === 'output' ? 'Failed to delete output' : 'Failed to delete waste record')
     } finally {
       setSaving(false)
     }
@@ -1005,6 +1013,28 @@ export function SortingStep({
           </div>
         )}
       </div>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{deleteTarget?.type === 'output' ? 'Delete output?' : 'Delete waste record?'}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.type === 'output'
+                ? 'Are you sure you want to delete this output?'
+                : 'Are you sure you want to delete this waste record?'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => performDelete()}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

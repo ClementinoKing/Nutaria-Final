@@ -15,6 +15,16 @@ import { useNonConformances } from '@/hooks/useNonConformances'
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
 import { supabase } from '@/lib/supabaseClient'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   updateProcessStepRun,
   createNonConformance,
   completeProcessLotRun,
@@ -108,6 +118,8 @@ function ProcessStepsProgress() {
   const { user } = useAuth()
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [skipAlertOpen, setSkipAlertOpen] = useState(false)
+  const [finishWithNCAlertOpen, setFinishWithNCAlertOpen] = useState(false)
   const [showNCForm, setShowNCForm] = useState(false)
   const [showSignoffs, setShowSignoffs] = useState(false)
   const [creatingLotRun, setCreatingLotRun] = useState(false)
@@ -366,52 +378,41 @@ function ProcessStepsProgress() {
     }
   }
 
-  const handleSkipStep = async () => {
+  const performSkipStep = async () => {
     if (!activeStepRun || !user?.id) return
 
-    // Check if step can be skipped
     if (!activeStep?.can_be_skipped) {
       toast.error('This step cannot be skipped')
       return
     }
 
-    // Check if step is in a skippable state
     if (activeStepRun.status !== 'PENDING' && activeStepRun.status !== 'IN_PROGRESS') {
       toast.error(`Cannot skip step with status ${activeStepRun.status}`)
       return
     }
 
-    // Confirm before skipping
-    const confirmed = window.confirm(
-      `Are you sure you want to skip "${activeStep.step_name || 'this step'}"? This action cannot be undone.`
-    )
-
-    if (!confirmed) return
-
     setSaving(true)
     try {
       await skipProcessStep(activeStepRun.id, user.id)
-      
-      // Record batch step transition
+
       try {
         const { createBatchStepTransition } = await import('@/lib/processExecution')
         const fromStep = activeStepRun.status === 'PENDING' ? null : activeStep?.step_code || null
         const toStep = activeStep?.step_code || 'SKIPPED'
         const reason = 'Step skipped'
-        
+
         await createBatchStepTransition(lotRunId!, fromStep, toStep, reason, user.id)
       } catch (transitionError) {
-        // Log but don't fail the skip
         console.warn('Failed to record batch step transition:', transitionError)
       }
-      
+
       await refreshStepRuns()
       toast.success('Step skipped successfully')
-      
-      // Auto-advance to next step if available
+
       if (currentStepIndex < stepRuns.length - 1) {
         setCurrentStepIndex(currentStepIndex + 1)
       }
+      setSkipAlertOpen(false)
     } catch (error) {
       console.error('Error skipping step:', error)
       const errorMessage = error instanceof Error ? error.message : 'Failed to skip step'
@@ -419,6 +420,19 @@ function ProcessStepsProgress() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleSkipStep = () => {
+    if (!activeStepRun || !user?.id) return
+    if (!activeStep?.can_be_skipped) {
+      toast.error('This step cannot be skipped')
+      return
+    }
+    if (activeStepRun.status !== 'PENDING' && activeStepRun.status !== 'IN_PROGRESS') {
+      toast.error(`Cannot skip step with status ${activeStepRun.status}`)
+      return
+    }
+    setSkipAlertOpen(true)
   }
 
   const [stepFormData, setStepFormData] = useState<{
@@ -495,32 +509,35 @@ function ProcessStepsProgress() {
     }
   }
 
-  const handleCompleteProcess = async () => {
-    if (!lotRunId || !allStepsCompleted) {
-      toast.error('All steps must be completed before finishing the process')
-      return
-    }
-
-    // Check for unresolved NCs
-    if (unresolvedNCs.length > 0) {
-      const proceed = confirm(
-        `There are ${unresolvedNCs.length} unresolved non-conformances. Do you want to proceed anyway?`
-      )
-      if (!proceed) return
-    }
-
+  const performCompleteProcess = async () => {
+    if (!lotRunId) return
     setSaving(true)
     try {
       await completeProcessLotRun(lotRunId)
       toast.success('Process completed successfully. Production batch created.')
       await refresh()
       navigate('/process/process-steps', { replace: true })
+      setFinishWithNCAlertOpen(false)
     } catch (error) {
       console.error('Error completing process:', error)
       toast.error('Failed to complete process')
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleCompleteProcess = () => {
+    if (!lotRunId || !allStepsCompleted) {
+      toast.error('All steps must be completed before finishing the process')
+      return
+    }
+
+    if (unresolvedNCs.length > 0) {
+      setFinishWithNCAlertOpen(true)
+      return
+    }
+
+    performCompleteProcess()
   }
 
   const handleSignoff = async (role: 'operator' | 'supervisor' | 'qa') => {
@@ -1118,6 +1135,49 @@ function ProcessStepsProgress() {
           </Card>
         </>
       )}
+
+      <AlertDialog open={skipAlertOpen} onOpenChange={setSkipAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Skip this step?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {activeStep
+                ? `Are you sure you want to skip "${activeStep.step_name || 'this step'}"? This action cannot be undone.`
+                : 'This action cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-700"
+              onClick={() => performSkipStep()}
+            >
+              Skip
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={finishWithNCAlertOpen} onOpenChange={setFinishWithNCAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unresolved non-conformances</AlertDialogTitle>
+            <AlertDialogDescription>
+              There {unresolvedNCs.length === 1 ? 'is' : 'are'} {unresolvedNCs.length} unresolved
+              non-conformance{unresolvedNCs.length === 1 ? '' : 's'}. Do you want to proceed anyway?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-olive hover:bg-olive-dark"
+              onClick={() => performCompleteProcess()}
+            >
+              Proceed
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

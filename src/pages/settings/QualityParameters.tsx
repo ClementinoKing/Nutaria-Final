@@ -9,6 +9,16 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
 
 interface FormData {
@@ -32,6 +42,8 @@ function QualityParameters() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [parameterToDelete, setParameterToDelete] = useState<QualityParameter | null>(null)
   const [formData, setFormData] = useState<FormData>({ 
     code: '', 
     name: '', 
@@ -252,9 +264,8 @@ function QualityParameters() {
   }
 
   const handleDeleteClick = (parameter: QualityParameter) => {
-    if (window.confirm(`Are you sure you want to delete "${parameter.name}"? This action cannot be undone.`)) {
-      handleDelete(parameter.id)
-    }
+    setParameterToDelete(parameter)
+    setDeleteAlertOpen(true)
   }
 
   const handleDelete = async (id: number) => {
@@ -474,6 +485,28 @@ function QualityParameters() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setParameterToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete quality parameter?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {parameterToDelete
+                ? `Are you sure you want to delete "${parameterToDelete.name}"? This action cannot be undone.`
+                : 'This action cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => parameterToDelete && handleDelete(parameterToDelete.id)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

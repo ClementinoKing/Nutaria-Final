@@ -10,6 +10,16 @@ import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
 import { useProcessStepNames, type ProcessStepName } from '@/hooks/useProcessStepNames'
 
@@ -204,6 +214,9 @@ function Processes() {
   const { qualityParameters, loading: qualityParametersLoading } = useQualityParameters()
   const { processStepNames, loading: processStepNamesLoading } = useProcessStepNames()
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [deletingProcessId, setDeletingProcessId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [processToDelete, setProcessToDelete] = useState<Process | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [currentStep, setCurrentStep] = useState<1 | 2>(1)
   const [formData, setFormData] = useState<FormState>({
@@ -372,6 +385,52 @@ function Processes() {
       steps: []
     })
   }
+
+  const performDeleteProcess = useCallback(
+    async (process: Process) => {
+      if (!process?.id) return
+      setDeletingProcessId(process.id)
+      try {
+        const { error: lotRunsError } = await supabase
+          .from('process_lot_runs')
+          .delete()
+          .eq('process_id', process.id)
+        if (lotRunsError) throw lotRunsError
+
+        const { error: productProcessesError } = await supabase
+          .from('product_processes')
+          .delete()
+          .eq('process_id', process.id)
+        if (productProcessesError) throw productProcessesError
+
+        const { error: stepsError } = await supabase
+          .from('process_steps')
+          .delete()
+          .eq('process_id', process.id)
+        if (stepsError) throw stepsError
+
+        const { error: processError } = await supabase
+          .from('processes')
+          .delete()
+          .eq('id', process.id)
+        if (processError) throw processError
+
+        toast.success('Process deleted.')
+        setProcesses((prev) => prev.filter((p) => p.id !== process.id))
+      } catch (err) {
+        const msg = (err as PostgrestError)?.message ?? 'Unable to delete process.'
+        toast.error(msg)
+      } finally {
+        setDeletingProcessId(null)
+      }
+    },
+    []
+  )
+
+  const requestDeleteProcess = useCallback((process: Process) => {
+    setProcessToDelete(process)
+    setDeleteAlertOpen(true)
+  }, [])
 
   const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
@@ -845,8 +904,24 @@ function Processes() {
                         <Eye className="mr-2 h-4 w-4" />
                         View
                       </Button>
-                      <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50">
-                        <Trash2 className="h-4 w-4" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600 hover:bg-red-50"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          requestDeleteProcess(process)
+                        }}
+                        disabled={deletingProcessId === process.id}
+                      >
+                        {deletingProcessId === process.id ? (
+                          'Deleting…'
+                        ) : (
+                          <>
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </>
+                        )}
                       </Button>
                     </div>
                   </div>
@@ -856,6 +931,28 @@ function Processes() {
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setProcessToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete process?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {processToDelete
+                ? `Delete process "${processToDelete.name || processToDelete.code || 'Unknown'}"? This will remove the process and its steps. This cannot be undone.`
+                : 'This will remove the process and its steps. This cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => processToDelete && performDeleteProcess(processToDelete)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Add Process Modal */}
       {isModalOpen && (

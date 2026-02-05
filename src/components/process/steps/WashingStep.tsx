@@ -6,6 +6,16 @@ import { Plus, Trash2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { useWashingRun } from '@/hooks/useWashingRun'
 import type { ProcessStepRun, WashingFormData, WashingWasteFormData } from '@/types/processExecution'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface WashingStepProps {
   stepRun: ProcessStepRun
@@ -43,6 +53,8 @@ export function WashingStep({
     quantity_kg: '',
     remarks: '',
   })
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [wasteToDeleteId, setWasteToDeleteId] = useState<number | null>(null)
 
   const [showWasteForm, setShowWasteForm] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -111,16 +123,20 @@ export function WashingStep({
     }
   }
 
-  const handleDeleteWaste = async (wasteId: number) => {
-    if (!confirm('Are you sure you want to delete this waste record?')) {
-      return
-    }
+  const handleDeleteWaste = (wasteId: number) => {
+    setWasteToDeleteId(wasteId)
+    setDeleteAlertOpen(true)
+  }
 
+  const performDeleteWaste = async () => {
+    if (wasteToDeleteId == null) return
     setSaving(true)
     try {
-      await deleteWaste(wasteId)
+      await deleteWaste(wasteToDeleteId)
       toast.success('Waste record deleted')
       onQuantityChange?.()
+      setDeleteAlertOpen(false)
+      setWasteToDeleteId(null)
     } catch (error) {
       console.error('Error deleting waste:', error)
       toast.error('Failed to delete waste record')
@@ -343,6 +359,26 @@ export function WashingStep({
           </div>
         )}
       </div>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setWasteToDeleteId(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete waste record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this waste record?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => performDeleteWaste()}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

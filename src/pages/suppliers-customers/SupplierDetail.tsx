@@ -57,6 +57,16 @@ function formatDateOnly(value: string | Date | number | null | undefined): strin
   }).format(date)
 }
 
+function isExpired(expiryDate: string | Date | number | null | undefined): boolean {
+  if (!expiryDate) return false
+  const date = new Date(expiryDate)
+  if (Number.isNaN(date.getTime())) return false
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  date.setHours(0, 0, 0, 0)
+  return date < today
+}
+
 function formatFileSize(size: unknown): string | null {
   if (typeof size !== 'number') {
     return null
@@ -579,24 +589,39 @@ function SupplierDetail() {
                     </div>
                     {documentType.files.length > 0 && (
                       <ul className="space-y-1 text-sm text-text-dark">
-                        {documentType.files.map((file, index) => (
-                          <li
-                            key={`${documentType.id}-file-${index}`}
-                            className="flex items-center justify-between gap-2 rounded bg-white/80 px-3 py-2"
-                          >
-                            <div className="flex flex-col flex-1">
-                              <span className="truncate">{file.name}</span>
-                              {formatDateOnly(file.expiry_date) && (
-                                <span className="text-xs text-text-dark/60">
-                                  Expires {formatDateOnly(file.expiry_date)}
-                                </span>
-                              )}
-                            </div>
-                            {formatFileSize(file.size) && (
-                              <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
-                            )}
-                          </li>
-                        ))}
+                        {documentType.files.map((file, index) => {
+                          const expired = isExpired(file.expiry_date)
+                          return (
+                            <li
+                              key={`${documentType.id}-file-${index}`}
+                              className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
+                                expired
+                                  ? 'border border-red-200 bg-red-50/80 dark:border-red-800 dark:bg-red-900/20'
+                                  : 'bg-white/80'
+                              }`}
+                            >
+                              <div className="flex flex-1 flex-col gap-0.5">
+                                <span className="truncate">{file.name}</span>
+                                {formatDateOnly(file.expiry_date) && (
+                                  <span className={expired ? 'text-xs font-medium text-red-700 dark:text-red-300' : 'text-xs text-text-dark/60'}>
+                                    {expired ? 'Expired ' : 'Expires '}
+                                    {formatDateOnly(file.expiry_date)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                {expired && (
+                                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-200">
+                                    Expired
+                                  </span>
+                                )}
+                                {formatFileSize(file.size) && (
+                                  <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
+                                )}
+                              </div>
+                            </li>
+                          )
+                        })}
                       </ul>
                     )}
                   </div>
@@ -631,24 +656,39 @@ function SupplierDetail() {
                     </div>
                     {certificateType.files.length > 0 && (
                       <ul className="space-y-1 text-sm text-text-dark">
-                        {certificateType.files.map((file, index) => (
-                          <li
-                            key={`${certificateType.id}-file-${index}`}
-                            className="flex items-center justify-between gap-2 rounded bg-white/80 px-3 py-2"
-                          >
-                            <div className="flex flex-col flex-1">
-                              <span className="truncate">{file.name}</span>
-                              {formatDateOnly(file.expiry_date) && (
-                                <span className="text-xs text-text-dark/60">
-                                  Expires {formatDateOnly(file.expiry_date)}
-                                </span>
-                              )}
-                            </div>
-                            {formatFileSize(file.size) && (
-                              <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
-                            )}
-                          </li>
-                        ))}
+                        {certificateType.files.map((file, index) => {
+                          const expired = isExpired(file.expiry_date)
+                          return (
+                            <li
+                              key={`${certificateType.id}-file-${index}`}
+                              className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
+                                expired
+                                  ? 'border border-red-200 bg-red-50/80 dark:border-red-800 dark:bg-red-900/20'
+                                  : 'bg-white/80'
+                              }`}
+                            >
+                              <div className="flex flex-1 flex-col gap-0.5">
+                                <span className="truncate">{file.name}</span>
+                                {formatDateOnly(file.expiry_date) && (
+                                  <span className={expired ? 'text-xs font-medium text-red-700 dark:text-red-300' : 'text-xs text-text-dark/60'}>
+                                    {expired ? 'Expired ' : 'Expires '}
+                                    {formatDateOnly(file.expiry_date)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                {expired && (
+                                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-200">
+                                    Expired
+                                  </span>
+                                )}
+                                {formatFileSize(file.size) && (
+                                  <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
+                                )}
+                              </div>
+                            </li>
+                          )
+                        })}
                       </ul>
                     )}
                   </div>

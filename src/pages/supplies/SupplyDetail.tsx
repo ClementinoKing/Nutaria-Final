@@ -7,7 +7,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { SUPPLY_QUALITY_PARAMETERS, SupplyQualityParameter } from '@/constants/supplyQuality'
 import { supabase } from '@/lib/supabaseClient'
-import { Download, Loader2 } from 'lucide-react'
+import { Download, Loader2, Pencil } from 'lucide-react'
 
 interface QualityParameterWithId extends SupplyQualityParameter {
   id?: number | null
@@ -99,34 +99,196 @@ function formatDate(value: string | Date | number | null | undefined): string {
   }).format(date)
 }
 
+interface FetchedDetailData {
+  supply: Record<string, unknown>
+  supplyLines: Record<string, unknown>[]
+  supplyBatches: Record<string, unknown>[]
+  supplyQualityChecks: Record<string, unknown>[]
+  supplyQualityItems: Record<string, unknown>[]
+  supplyDocuments: Record<string, unknown>[]
+  vehicleInspection: Record<string, unknown> | null
+  packagingCheck: Record<string, unknown> | null
+  packagingItems: Record<string, unknown>[]
+  supplierSignOff: Record<string, unknown> | null
+  supplierLookup: Record<string, unknown>
+  warehouseLookup: Record<string, unknown>
+  productLookup: Record<string, unknown>
+  unitLookup: Record<string, unknown>
+  profileLookup: Record<string, unknown>
+  qualityParameters: QualityParameterWithId[]
+}
+
 function SupplyDetail() {
-  const { supplyId: _supplyId } = useParams()
+  const { supplyId: supplyIdParam } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
 
   const navigationState = location.state ?? {}
+  const [fetchedData, setFetchedData] = useState<FetchedDetailData | null>(null)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
 
-  const supply = navigationState.supply ?? null
-  const lines = Array.isArray(navigationState.supplyLines) ? navigationState.supplyLines : []
-  const batches = Array.isArray(navigationState.supplyBatches) ? navigationState.supplyBatches : []
+  const supply = (navigationState.supply ?? fetchedData?.supply) ?? null
+  const lines = Array.isArray(navigationState.supplyLines)
+    ? navigationState.supplyLines
+    : Array.isArray(fetchedData?.supplyLines)
+      ? fetchedData!.supplyLines
+      : []
+  const batches = Array.isArray(navigationState.supplyBatches)
+    ? navigationState.supplyBatches
+    : Array.isArray(fetchedData?.supplyBatches)
+      ? fetchedData!.supplyBatches
+      : []
   const qualityChecks = Array.isArray(navigationState.supplyQualityChecks)
     ? navigationState.supplyQualityChecks
-    : []
+    : Array.isArray(fetchedData?.supplyQualityChecks)
+      ? fetchedData!.supplyQualityChecks
+      : []
   const qualityItems = Array.isArray(navigationState.supplyQualityItems)
     ? navigationState.supplyQualityItems
-    : []
+    : Array.isArray(fetchedData?.supplyQualityItems)
+      ? fetchedData!.supplyQualityItems
+      : []
   const qualityParameters =
     Array.isArray(navigationState.qualityParameters) && navigationState.qualityParameters.length > 0
       ? navigationState.qualityParameters
-      : SUPPLY_QUALITY_PARAMETERS
-  const supplyDocuments = Array.isArray(navigationState.supplyDocuments) ? navigationState.supplyDocuments : []
-  const vehicleInspection = navigationState.vehicleInspection ?? null
-  const packagingCheck = navigationState.packagingCheck ?? null
-  const packagingItems = Array.isArray(navigationState.packagingItems) ? navigationState.packagingItems : []
-  const supplierSignOff = navigationState.supplierSignOff ?? null
+      : (fetchedData?.qualityParameters?.length
+          ? fetchedData.qualityParameters
+          : SUPPLY_QUALITY_PARAMETERS) as QualityParameterWithId[]
+  const supplyDocuments = Array.isArray(navigationState.supplyDocuments)
+    ? navigationState.supplyDocuments
+    : Array.isArray(fetchedData?.supplyDocuments)
+      ? fetchedData!.supplyDocuments
+      : []
+  const vehicleInspection = navigationState.vehicleInspection ?? fetchedData?.vehicleInspection ?? null
+  const packagingCheck = navigationState.packagingCheck ?? fetchedData?.packagingCheck ?? null
+  const packagingItems = Array.isArray(navigationState.packagingItems)
+    ? navigationState.packagingItems
+    : Array.isArray(fetchedData?.packagingItems)
+      ? fetchedData!.packagingItems
+      : []
+  const supplierSignOff = navigationState.supplierSignOff ?? fetchedData?.supplierSignOff ?? null
   const [packagingParameters, setPackagingParameters] = useState<{ [key: number]: { code: string; name: string } }>({})
   const [documentTypes, setDocumentTypes] = useState<{ [key: string]: string }>({})
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
+
+  const supplyId = supplyIdParam ? parseInt(supplyIdParam, 10) : null
+  const shouldFetch = !supply && supplyId != null && Number.isFinite(supplyId)
+
+  useEffect(() => {
+    if (!shouldFetch) return
+    let cancelled = false
+    setLoadingDetail(true)
+    setDetailError(null)
+    ;(async () => {
+      try {
+        const [
+          { data: supplyRow, error: supplyErr },
+          { data: linesData },
+          { data: batchesData },
+          { data: docsData },
+          { data: vehicleData },
+          { data: packagingChecksData },
+          { data: packagingItemsData },
+          { data: qualityChecksData },
+          { data: qualityItemsData },
+          { data: signOffData },
+          { data: suppliersData },
+          { data: warehousesData },
+          { data: productsData },
+          { data: unitsData },
+          { data: profilesData },
+          { data: qualityParamsData },
+        ] = await Promise.all([
+          supabase.from('supplies').select('*').eq('id', supplyId!).single(),
+          supabase.from('supply_lines').select('*').eq('supply_id', supplyId!),
+          supabase.from('supply_batches').select('*').eq('supply_id', supplyId!),
+          supabase.from('supply_documents').select('*').eq('supply_id', supplyId!),
+          supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId!).maybeSingle(),
+          supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId!),
+          supabase.from('supply_packaging_quality_check_items').select('*'),
+          supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId!),
+          supabase.from('supply_quality_check_items').select('*'),
+          supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId!).maybeSingle(),
+          supabase.from('suppliers').select('id, name'),
+          supabase.from('warehouses').select('id, name'),
+          supabase.from('products').select('id, name, sku'),
+          supabase.from('units').select('id, name, symbol'),
+          supabase.from('user_profiles').select('id, full_name, email'),
+          supabase.from('quality_parameters').select('id, code, name, specification'),
+        ])
+        if (cancelled) return
+        if (supplyErr || !supplyRow) {
+          setDetailError('Supply not found')
+          setLoadingDetail(false)
+          return
+        }
+        const supplyObj = supplyRow as Record<string, unknown>
+        const packagingCheckRow = (packagingChecksData as Record<string, unknown>[])?.[0] ?? null
+        const packagingCheckId = packagingCheckRow ? (packagingCheckRow as { id: number }).id : null
+        const packagingItemsFiltered = (packagingItemsData ?? []).filter(
+          (i: { packaging_check_id?: number }) => i.packaging_check_id === packagingCheckId,
+        ) as Record<string, unknown>[]
+        const qualityChecksArr = (qualityChecksData ?? []) as { id: number }[]
+        const qualityCheckIds = qualityChecksArr.map((c) => c.id)
+        const qualityItemsFiltered = (qualityItemsData ?? []).filter((i: { quality_check_id?: number }) =>
+          qualityCheckIds.includes(i.quality_check_id ?? 0),
+        ) as Record<string, unknown>[]
+
+        const supplierLookup: Record<string, unknown> = {}
+        ;(suppliersData ?? []).forEach((s: { id: number; name?: string }) => {
+          supplierLookup[String(s.id)] = s.name ?? ''
+        })
+        const warehouseLookup: Record<string, unknown> = {}
+        ;(warehousesData ?? []).forEach((w: { id: number; name?: string }) => {
+          warehouseLookup[String(w.id)] = w.name ?? ''
+        })
+        const productLookup: Record<string, unknown> = {}
+        ;(productsData ?? []).forEach((p: { id: number; name?: string; sku?: string }) => {
+          productLookup[String(p.id)] = { name: p.name ?? '', sku: p.sku ?? '' }
+        })
+        const unitLookup: Record<string, unknown> = {}
+        ;(unitsData ?? []).forEach((u: { id: number; name?: string; symbol?: string }) => {
+          unitLookup[String(u.id)] = { name: u.name ?? '', symbol: u.symbol ?? '' }
+        })
+        const profileLookup: Record<string, unknown> = {}
+        ;(profilesData ?? []).forEach((p: { id: number; full_name?: string; email?: string }) => {
+          profileLookup[String(p.id)] = { full_name: p.full_name ?? '', email: p.email ?? '' }
+        })
+        const qualityParams = ((qualityParamsData ?? []) as { id: number; code: string; name: string; specification?: string }[]).map(
+          (q) => ({ id: q.id, code: q.code, name: q.name, specification: q.specification ?? '', defaultRemarks: '' as string }),
+        )
+
+        setFetchedData({
+          supply: supplyObj,
+          supplyLines: (linesData ?? []) as Record<string, unknown>[],
+          supplyBatches: (batchesData ?? []) as Record<string, unknown>[],
+          supplyQualityChecks: (qualityChecksData ?? []) as Record<string, unknown>[],
+          supplyQualityItems: qualityItemsFiltered,
+          supplyDocuments: (docsData ?? []) as Record<string, unknown>[],
+          vehicleInspection: vehicleData as Record<string, unknown> | null,
+          packagingCheck: packagingCheckRow as Record<string, unknown> | null,
+          packagingItems: packagingItemsFiltered,
+          supplierSignOff: signOffData as Record<string, unknown> | null,
+          supplierLookup,
+          warehouseLookup,
+          productLookup,
+          unitLookup,
+          profileLookup,
+          qualityParameters: qualityParams,
+        })
+      } catch (e) {
+        if (!cancelled) {
+          setDetailError(e instanceof Error ? e.message : 'Failed to load supply')
+        }
+      } finally {
+        if (!cancelled) setLoadingDetail(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [shouldFetch, supplyId])
 
   useEffect(() => {
     const fetchPackagingParameters = async () => {
@@ -175,24 +337,24 @@ function SupplyDetail() {
   }, [packagingItems, supplyDocuments])
 
   const supplierLookup = useMemo(
-    () => new Map(Object.entries(navigationState.supplierLookup ?? {})),
-    [navigationState.supplierLookup],
+    () => new Map(Object.entries(navigationState.supplierLookup ?? fetchedData?.supplierLookup ?? {})),
+    [navigationState.supplierLookup, fetchedData?.supplierLookup],
   )
   const warehouseLookup = useMemo(
-    () => new Map(Object.entries(navigationState.warehouseLookup ?? {})),
-    [navigationState.warehouseLookup],
+    () => new Map(Object.entries(navigationState.warehouseLookup ?? fetchedData?.warehouseLookup ?? {})),
+    [navigationState.warehouseLookup, fetchedData?.warehouseLookup],
   )
   const productLookup = useMemo(
-    () => new Map(Object.entries(navigationState.productLookup ?? {})),
-    [navigationState.productLookup],
+    () => new Map(Object.entries(navigationState.productLookup ?? fetchedData?.productLookup ?? {})),
+    [navigationState.productLookup, fetchedData?.productLookup],
   )
   const unitLookup = useMemo(
-    () => new Map(Object.entries(navigationState.unitLookup ?? {})),
-    [navigationState.unitLookup],
+    () => new Map(Object.entries(navigationState.unitLookup ?? fetchedData?.unitLookup ?? {})),
+    [navigationState.unitLookup, fetchedData?.unitLookup],
   )
   const profileLookup = useMemo(
-    () => new Map(Object.entries(navigationState.profileLookup ?? {})),
-    [navigationState.profileLookup],
+    () => new Map(Object.entries(navigationState.profileLookup ?? fetchedData?.profileLookup ?? {})),
+    [navigationState.profileLookup, fetchedData?.profileLookup],
   )
 
   const qualityParameterLookup = useMemo(() => {
@@ -276,6 +438,10 @@ function SupplyDetail() {
 
   const handleBack = () => {
     navigate('/supplies')
+  }
+
+  const handleEdit = () => {
+    navigate('/supplies', { state: { editSupplyId: supply.id } })
   }
 
   const handleDownloadPDF = async () => {
@@ -744,6 +910,16 @@ function SupplyDetail() {
     }
   }
 
+  if (loadingDetail) {
+    return (
+      <PageLayout title="Supply Detail" activeItem="supplies" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-olive" />
+        </div>
+      </PageLayout>
+    )
+  }
+
   if (!supply) {
     return (
       <PageLayout
@@ -760,7 +936,7 @@ function SupplyDetail() {
           <CardHeader>
             <CardTitle className="text-text-dark">Supply not found</CardTitle>
             <CardDescription>
-              The supply document you are trying to access could not be located.
+              {detailError ?? 'The supply document you are trying to access could not be located.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1058,6 +1234,10 @@ function SupplyDetail() {
       activeItem="supplies"
       actions={
         <>
+          <Button variant="outline" onClick={handleEdit} className="gap-2">
+            <Pencil className="h-4 w-4" />
+            Edit supply
+          </Button>
           <Button 
             variant="outline" 
             onClick={handleDownloadPDF} 

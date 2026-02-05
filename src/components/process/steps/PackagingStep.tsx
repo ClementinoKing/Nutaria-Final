@@ -13,6 +13,16 @@ import type {
   PackagingWeightCheckFormData,
   PackagingWasteFormData,
 } from '@/types/processExecution'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface SortedWipRow {
   id: number
@@ -95,6 +105,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     pack_identifier: '',
     quantity_kg: '',
   })
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<
+    { type: 'weightCheck'; id: number } | { type: 'waste'; id: number } | { type: 'photo'; id: number } | { type: 'packEntry'; id: number } | null
+  >(null)
 
   const loadSortedWips = useCallback(async () => {
     const lotRunId = stepRun.process_lot_run_id
@@ -424,52 +438,53 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     e.target.value = ''
   }
 
-  const handleDeleteWeightCheck = async (checkId: number) => {
-    if (!confirm('Are you sure you want to delete this weight check?')) {
-      return
-    }
-
-    setSaving(true)
-    try {
-      await deleteWeightCheck(checkId)
-      toast.success('Weight check deleted')
-    } catch (error) {
-      console.error('Error deleting weight check:', error)
-      toast.error('Failed to delete weight check')
-    } finally {
-      setSaving(false)
-    }
+  const handleDeleteWeightCheck = (checkId: number) => {
+    setDeleteTarget({ type: 'weightCheck', id: checkId })
+    setDeleteAlertOpen(true)
   }
 
-  const handleDeleteWaste = async (wasteId: number) => {
-    if (!confirm('Are you sure you want to delete this waste record?')) {
-      return
-    }
-
-    setSaving(true)
-    try {
-      await deleteWaste(wasteId)
-      toast.success('Waste record deleted')
-    } catch (error) {
-      console.error('Error deleting waste:', error)
-      toast.error('Failed to delete waste record')
-    } finally {
-      setSaving(false)
-    }
+  const handleDeleteWaste = (wasteId: number) => {
+    setDeleteTarget({ type: 'waste', id: wasteId })
+    setDeleteAlertOpen(true)
   }
 
-  const handleDeletePhoto = async (photoId: number) => {
-    if (!confirm('Are you sure you want to delete this photo?')) {
-      return
-    }
+  const handleDeletePhoto = (photoId: number) => {
+    setDeleteTarget({ type: 'photo', id: photoId })
+    setDeleteAlertOpen(true)
+  }
 
+  const handleDeletePackEntry = (entryId: number) => {
+    setDeleteTarget({ type: 'packEntry', id: entryId })
+    setDeleteAlertOpen(true)
+  }
+
+  const performDelete = async () => {
+    if (!deleteTarget) return
     setSaving(true)
     try {
-      await deletePhoto(photoId)
-      toast.success('Photo deleted')
+      switch (deleteTarget.type) {
+        case 'weightCheck':
+          await deleteWeightCheck(deleteTarget.id)
+          toast.success('Weight check deleted')
+          break
+        case 'waste':
+          await deleteWaste(deleteTarget.id)
+          toast.success('Waste record deleted')
+          break
+        case 'photo':
+          await deletePhoto(deleteTarget.id)
+          toast.success('Photo deleted')
+          break
+        case 'packEntry':
+          await deletePackEntry(deleteTarget.id)
+          toast.success('Pack entry removed')
+          break
+      }
+      setDeleteAlertOpen(false)
+      setDeleteTarget(null)
     } catch (error) {
-      console.error('Error deleting photo:', error)
-      toast.error('Failed to delete photo')
+      console.error('Error deleting:', error)
+      toast.error('Failed to delete')
     } finally {
       setSaving(false)
     }
@@ -837,15 +852,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={async () => {
-                          if (!confirm('Remove this pack entry?')) return
-                          try {
-                            await deletePackEntry(pe.id)
-                            toast.success('Pack entry removed')
-                          } catch {
-                            toast.error('Failed to remove pack entry')
-                          }
-                        }}
+                        onClick={() => handleDeletePackEntry(pe.id)}
                         disabled={saving || externalLoading}
                         className="text-red-600 hover:text-red-700"
                       >
@@ -1449,6 +1456,36 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           </div>
         )}
       </div>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteTarget?.type === 'weightCheck' && 'Delete weight check?'}
+              {deleteTarget?.type === 'waste' && 'Delete waste record?'}
+              {deleteTarget?.type === 'photo' && 'Delete photo?'}
+              {deleteTarget?.type === 'packEntry' && 'Remove pack entry?'}
+              {!deleteTarget && 'Delete?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.type === 'weightCheck' && 'Are you sure you want to delete this weight check?'}
+              {deleteTarget?.type === 'waste' && 'Are you sure you want to delete this waste record?'}
+              {deleteTarget?.type === 'photo' && 'Are you sure you want to delete this photo?'}
+              {deleteTarget?.type === 'packEntry' && 'Remove this pack entry?'}
+              {!deleteTarget && 'This action cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => performDelete()}
+            >
+              {deleteTarget?.type === 'packEntry' ? 'Remove' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

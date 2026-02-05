@@ -10,6 +10,16 @@ import { Plus, Edit, Trash2, Package as PackageIcon, X, ChevronLeft, ChevronRigh
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 interface ShipmentItem {
   id: string
@@ -229,6 +239,8 @@ function Shipments() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState<ShipmentFormData>(createEmptyShipment())
   const [editingShipmentId, setEditingShipmentId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [shipmentToDelete, setShipmentToDelete] = useState<Shipment | null>(null)
   const [customers, setCustomers] = useState<Array<{ id: number; name: string }>>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
   const [formStep, setFormStep] = useState(1)
@@ -674,9 +686,7 @@ function Shipments() {
     openEditModal(shipment)
   }
 
-  const handleDeleteShipment = async (shipment: Shipment, event?: MouseEvent<HTMLButtonElement>) => {
-    if (event) event.stopPropagation()
-    if (!window.confirm(`Are you sure you want to delete shipment ${shipment.doc_no}?`)) return
+  const performDeleteShipment = async (shipment: Shipment) => {
     const { error: delError } = await supabase.from('shipments').delete().eq('id', shipment.id)
     if (delError) {
       toast.error(delError.message)
@@ -690,6 +700,14 @@ function Shipments() {
       setFormStep(1)
     }
     toast.success('Shipment deleted')
+    setDeleteAlertOpen(false)
+    setShipmentToDelete(null)
+  }
+
+  const handleDeleteShipment = (shipment: Shipment, event?: MouseEvent<HTMLButtonElement>) => {
+    if (event) event.stopPropagation()
+    setShipmentToDelete(shipment)
+    setDeleteAlertOpen(true)
   }
 
   const handleChange = (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -1848,6 +1866,28 @@ function Shipments() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setShipmentToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete shipment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {shipmentToDelete
+                ? `Are you sure you want to delete shipment ${shipmentToDelete.doc_no}? This cannot be undone.`
+                : 'This cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => shipmentToDelete && performDeleteShipment(shipmentToDelete)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }

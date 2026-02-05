@@ -17,6 +17,7 @@ const PackedProductDetailPage = lazy(() => import('./pages/inventory/PackedProdu
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
+const Payments = lazy(() => import('./pages/payments/Payments'))
 const ProcessView = lazy(() => import('./pages/process/ProcessView'))
 const Processes = lazy(() => import('./pages/process/Processes'))
 const ProcessDetail = lazy(() => import('./pages/process/ProcessDetail'))
@@ -185,6 +186,14 @@ function App() {
           element={
             <ProtectedRoute>
               <SupplyDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/payments"
+          element={
+            <ProtectedRoute>
+              <Payments />
             </ProtectedRoute>
           }
         />

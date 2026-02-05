@@ -167,6 +167,16 @@ const formatDateDisplay = (value: string | number | Date | null | undefined) => 
   }).format(date)
 }
 
+const toDateInputValue = (value: string | number | Date | null | undefined): string => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 const SUPPLIER_FORM_STEPS = [
   {
     id: 'basic',
@@ -305,6 +315,7 @@ function SupplierEdit() {
   const [profileId, setProfileId] = useState(null)
   const [activeStep, setActiveStep] = useState(0)
   const [documentsToDelete, setDocumentsToDelete] = useState<Set<string | number>>(new Set())
+  const [existingDocumentExpiry, setExistingDocumentExpiry] = useState<Record<string, string>>({})
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
   const [cameraForDocument, setCameraForDocument] = useState<string | null>(null)
 
@@ -378,9 +389,18 @@ function SupplierEdit() {
       }
 
       const grouped = groupDocumentRows(docRows ?? [])
+      const initialExpiry: Record<string, string> = {}
+      grouped.documents.forEach((group) => {
+        group.files.forEach((file) => {
+          if (file.id != null) {
+            initialExpiry[String(file.id)] = toDateInputValue(file.expiry_date as string | number | Date | null | undefined)
+          }
+        })
+      })
       setSupplierRecord(supplier)
       setFormData(createFormDataFromSupplier(supplier, grouped))
       setDocumentsToDelete(new Set())
+      setExistingDocumentExpiry(initialExpiry)
       setFormErrors(createEmptyFormErrors())
       setActiveStep(0)
       setLoading(false)
@@ -579,6 +599,10 @@ function SupplierEdit() {
     })
   }
 
+  const handleExistingDocumentExpiryChange = (documentId: string, value: string) => {
+    setExistingDocumentExpiry((prev) => ({ ...prev, [documentId]: value }))
+  }
+
   const validateForm = (data: FormData) => {
     const errors = createEmptyFormErrors()
     
@@ -733,6 +757,18 @@ function SupplierEdit() {
         if (deleteDocsError) {
           console.error('Error deleting supplier documents', deleteDocsError)
           toast.error('Supplier updated but some documents could not be removed.')
+        }
+      }
+
+      for (const [id, dateStr] of Object.entries(existingDocumentExpiry)) {
+        const docId = Number(id)
+        if (Number.isNaN(docId) || documentsToDelete.has(docId)) continue
+        const { error: updateErr } = await supabase
+          .from('documents')
+          .update({ expiry_date: dateStr.trim() || null })
+          .eq('id', docId)
+        if (updateErr) {
+          console.error('Error updating document expiry', id, updateErr)
         }
       }
 
@@ -1281,27 +1317,47 @@ function SupplierEdit() {
                             <ul className="space-y-1 text-sm text-text-dark">
                               {group.files.map((file: ExistingDocumentFile) => {
                                 const fileId = file.id as string | number
+                                const fileIdStr = String(file.id ?? '')
                                 const marked = isMarkedForRemoval.has(fileId)
+                                const docTypeForGroup = documentTypeMap.get(group.type)
+                                const showExpiryEdit = (docTypeForGroup?.has_expiry_date ?? group.isCertificate) && !marked
+                                const expiryValue = existingDocumentExpiry[fileIdStr] ?? toDateInputValue(file.expiry_date as string | number | Date | null | undefined)
                                 return (
                                   <li
-                                    key={String(file.id ?? '')}
-                                    className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
+                                    key={fileIdStr}
+                                    className={`flex flex-wrap items-center gap-2 rounded px-3 py-2 ${
                                       marked ? 'bg-red-50 text-red-700' : 'bg-olive-light/10 text-text-dark'
                                     }`}
                                   >
-                                    <div className="flex flex-col flex-1">
+                                    <div className="flex min-w-0 flex-1 flex-col gap-1">
                                       <span className="truncate">
                                         {String(file.name ?? 'Unknown')}{' '}
                                         {marked ? '(marked for removal)' : ''}
                                       </span>
-                                      {(() => {
-                                        const expiryDate = formatDateDisplay(file.expiry_date as string | number | Date | null | undefined)
-                                        return expiryDate ? (
-                                          <span className="text-xs text-text-dark/60">
-                                            Expires {expiryDate}
-                                          </span>
-                                        ) : null
-                                      })()}
+                                      {showExpiryEdit ? (
+                                        <div className="flex items-center gap-2">
+                                          <Label htmlFor={`existing-expiry-${fileIdStr}`} className="text-xs text-text-dark/70">
+                                            Expiry date
+                                          </Label>
+                                          <Input
+                                            id={`existing-expiry-${fileIdStr}`}
+                                            type="date"
+                                            value={expiryValue}
+                                            onChange={(e) => handleExistingDocumentExpiryChange(fileIdStr, e.target.value)}
+                                            disabled={saving}
+                                            className="h-8 w-auto min-w-[8rem] text-xs"
+                                          />
+                                        </div>
+                                      ) : (
+                                        (() => {
+                                          const expiryDate = formatDateDisplay(file.expiry_date as string | number | Date | null | undefined)
+                                          return expiryDate ? (
+                                            <span className="text-xs text-text-dark/60">
+                                              Expires {expiryDate}
+                                            </span>
+                                          ) : null
+                                        })()
+                                      )}
                                     </div>
                                     <Button
                                       type="button"
@@ -1353,6 +1409,19 @@ function SupplierEdit() {
                         ? documentTypeMap.get(documentType.document_type_code)
                         : null
                       const requiresExpiry = docType?.has_expiry_date ?? false
+                      const existingTypeCodes = new Set(
+                        formData.existingDocuments.map((g) => String(g.type).toUpperCase())
+                      )
+                      const selectedByOthers = formData.documents
+                        .filter((e) => e.clientId !== documentType.clientId)
+                        .map((e) => e.document_type_code)
+                        .filter(Boolean)
+                      const availableDocumentTypeOptions = documentTypeOptions.filter(
+                        (option) =>
+                          option.value === '' ||
+                          option.value === documentType.document_type_code ||
+                          (!existingTypeCodes.has(option.value) && !selectedByOthers.includes(option.value))
+                      )
 
                       return (
                         <div
@@ -1378,7 +1447,7 @@ function SupplierEdit() {
                                 {loadingDocumentTypes ? (
                                   <option value="">Loading document types…</option>
                                 ) : (
-                                  documentTypeOptions.map((option) => (
+                                  availableDocumentTypeOptions.map((option) => (
                                     <option key={option.value} value={option.value}>
                                       {option.label}
                                     </option>
