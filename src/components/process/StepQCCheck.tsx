@@ -39,7 +39,7 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
   const [remarks, setRemarks] = useState<Record<string, string>>({})
   const [results, setResults] = useState<Record<string, string>>({})
   const [isEvaluating, setIsEvaluating] = useState(false)
-  const [autoSaving, setAutoSaving] = useState(false)
+  const [, setAutoSaving] = useState(false)
   const [savedQC, setSavedQC] = useState<{
     qualityCheck: {
       id: number

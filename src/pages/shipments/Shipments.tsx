@@ -6,9 +6,8 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Edit, Trash2, Package as PackageIcon, X, ChevronLeft, ChevronRight, FileText, User, Truck, Package, MessageSquare } from 'lucide-react'
+import { Plus, Edit, Trash2, Package as PackageIcon, X, ChevronLeft, ChevronRight, FileText, Truck, Package, MessageSquare } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
-import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -233,8 +232,8 @@ const getPacksPerStandardCarton = (packSizeKg: number | null | undefined): numbe
 
 function Shipments() {
   const [shipments, setShipments] = useState<Shipment[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [, setLoading] = useState(true)
+  const [, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState<ShipmentFormData>(createEmptyShipment())
@@ -673,7 +672,7 @@ function Shipments() {
   }, [location, shipments, navigate, openEditModal])
 
   const handleAddShipment = () => {
-    setFormData(createEmptyShipment())
+    setFormData({ ...createEmptyShipment(), doc_no: generateDocNumber() })
     setEditingShipmentId(null)
     setFormStep(1)
     setIsModalOpen(true)
