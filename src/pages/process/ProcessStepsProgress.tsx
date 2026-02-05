@@ -2,9 +2,8 @@ import { useEffect, useMemo, useRef, useState, ChangeEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, PlayCircle, Plus, SkipForward } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, PlayCircle, Plus, SkipForward, Timer } from 'lucide-react'
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
@@ -43,7 +42,75 @@ import { DryingStep } from '@/components/process/steps/DryingStep'
 import { SortingStep } from '@/components/process/steps/SortingStep'
 import { MetalDetectionStep } from '@/components/process/steps/MetalDetectionStep'
 import { PackagingStep } from '@/components/process/steps/PackagingStep'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { ProcessStepRun, ProcessStep } from '@/types/processExecution'
+
+function ProcessStepsProgressSkeleton() {
+  return (
+    <>
+      <Card className="bg-white border-olive-light/30">
+        <CardHeader>
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="mt-2 h-4 w-64" />
+        </CardHeader>
+        <CardContent className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i}>
+              <Skeleton className="mb-1 h-3 w-20" />
+              <Skeleton className="h-5 w-16" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card className="bg-white border-olive-light/30">
+        <CardHeader>
+          <Skeleton className="h-6 w-52" />
+          <Skeleton className="mt-2 h-4 w-72" />
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="flex flex-1 flex-col items-center">
+                <Skeleton className="mb-2 h-10 w-10 rounded-full" />
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="mt-1 h-2.5 w-12" />
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-olive-light/20 pt-4 space-y-4">
+            <div className="flex justify-between">
+              <Skeleton className="h-6 w-40" />
+              <Skeleton className="h-6 w-24 rounded-full" />
+            </div>
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-6 w-32" />
+              </div>
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-6 w-32" />
+              </div>
+            </div>
+            <div className="border-t border-olive-light/20 pt-4">
+              <Skeleton className="mb-4 h-4 w-48" />
+              <div className="grid gap-4 md:grid-cols-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  )
+}
 
 interface Lot {
   id: number
@@ -73,24 +140,6 @@ interface Lot {
     name?: string
     symbol?: string
   } | null
-}
-
-const PROCESS_STATUSES: Array<ProcessStepRun['status']> = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'SKIPPED']
-
-function toLocalDateTimeInput(value: string | null | undefined): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const tzOffsetMinutes = date.getTimezoneOffset()
-  const localMillis = date.getTime() - tzOffsetMinutes * 60 * 1000
-  return new Date(localMillis).toISOString().slice(0, 16)
-}
-
-function toISOString(value: string | null | undefined): string | null {
-  if (!value) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  return date.toISOString()
 }
 
 function getLotStatusStyles(status: string | null | undefined): string {
@@ -253,9 +302,8 @@ function ProcessStepsProgress() {
 
   const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED' || step.status === 'SKIPPED')
   const canStartNextStep = useMemo(() => {
-    if (currentStepIndex === 0) return true
-    const previousStep = stepRuns[currentStepIndex - 1]
-    return previousStep?.status === 'COMPLETED'
+    const currentStep = stepRuns[currentStepIndex]
+    return currentStep?.status === 'COMPLETED' || currentStep?.status === 'SKIPPED'
   }, [currentStepIndex, stepRuns])
 
   const unresolvedNCs = useMemo(
@@ -310,16 +358,37 @@ function ProcessStepsProgress() {
 
   const goToStep = (index: number) => {
     if (index < 0 || index >= stepRuns.length) return
-    // Check if previous step is completed
     if (index > 0) {
       const previousStep = stepRuns[index - 1]
-      if (previousStep?.status !== 'COMPLETED') {
-        toast.warning('Please complete the previous step before proceeding')
+      if (previousStep?.status !== 'COMPLETED' && previousStep?.status !== 'SKIPPED') {
+        toast.warning('Please complete or skip the previous step before proceeding')
         return
       }
     }
     setCurrentStepIndex(index)
   }
+
+  // When user opens a step that is PENDING, auto-set to IN_PROGRESS and set started_at
+  const hasAutoStartedRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!activeStepRun || !user?.id || activeStepRun.status !== 'PENDING') return
+    if (hasAutoStartedRef.current === activeStepRun.id) return
+
+    hasAutoStartedRef.current = activeStepRun.id
+    const updates: Partial<ProcessStepRun> = {
+      status: 'IN_PROGRESS',
+      started_at: new Date().toISOString(),
+    }
+    if (!activeStepRun.performed_by) {
+      updates.performed_by = user.id
+    }
+    updateProcessStepRun(activeStepRun.id, updates)
+      .then(() => refreshStepRuns())
+      .catch((err) => {
+        console.error('Error auto-starting step:', err)
+        hasAutoStartedRef.current = null
+      })
+  }, [activeStepRun?.id, activeStepRun?.status, user?.id])
 
   const nextStep = () => {
     if (currentStepIndex < stepRuns.length - 1) {
@@ -435,13 +504,7 @@ function ProcessStepsProgress() {
     setSkipAlertOpen(true)
   }
 
-  const [stepFormData, setStepFormData] = useState<{
-    started_at: string
-    completed_at: string
-    location_id: string
-  }>({
-    started_at: '',
-    completed_at: '',
+  const [stepFormData, setStepFormData] = useState<{ location_id: string }>({
     location_id: '',
   })
 
@@ -451,8 +514,6 @@ function ProcessStepsProgress() {
   useEffect(() => {
     if (activeStepRun) {
       setStepFormData({
-        started_at: toLocalDateTimeInput(activeStepRun.started_at),
-        completed_at: toLocalDateTimeInput(activeStepRun.completed_at),
         location_id: String(activeStepRun.location_id ?? activeStep?.default_location_id ?? ''),
       })
       stepFormInitialized.current = true
@@ -476,8 +537,6 @@ function ProcessStepsProgress() {
     stepFormSaveTimeout.current = setTimeout(async () => {
       stepFormSaveTimeout.current = null
       const updates: Partial<ProcessStepRun> = {
-        started_at: stepFormData.started_at ? toISOString(stepFormData.started_at) : activeStepRun.started_at,
-        completed_at: stepFormData.completed_at ? toISOString(stepFormData.completed_at) : activeStepRun.completed_at,
         location_id: stepFormData.location_id ? parseInt(stepFormData.location_id, 10) : null,
       }
       if (!activeStepRun.performed_by && user?.id) {
@@ -495,7 +554,7 @@ function ProcessStepsProgress() {
     return () => {
       if (stepFormSaveTimeout.current) clearTimeout(stepFormSaveTimeout.current)
     }
-  }, [stepFormData.started_at, stepFormData.completed_at, stepFormData.location_id, activeStepRun?.id, user?.id])
+  }, [stepFormData.location_id, activeStepRun?.id, user?.id])
 
   const handleQCPass = async () => {
     toast.success('QC check passed')
@@ -573,8 +632,10 @@ function ProcessStepsProgress() {
 
   // Get warehouses for location selection
   const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
+  const [loadingWarehouses, setLoadingWarehouses] = useState(true)
 
   useEffect(() => {
+    setLoadingWarehouses(true)
     supabase
       .from('warehouses')
       .select('id, name')
@@ -583,8 +644,15 @@ function ProcessStepsProgress() {
         if (!error && data) {
           setWarehouses(data as Array<{ id: number; name: string }>)
         }
+        setLoadingWarehouses(false)
       })
   }, [])
+
+  const isPageLoading =
+    loadingDefinitions ||
+    loadingLotRun ||
+    (lotRunId !== null && loadingStepRuns) ||
+    (lotRunId !== null && loadingWarehouses)
 
   return (
     <PageLayout
@@ -617,10 +685,8 @@ function ProcessStepsProgress() {
         </Card>
       )}
 
-      {loadingDefinitions || loadingLotRun ? (
-        <Card className="bg-white border-olive-light/30">
-          <CardContent className="py-5 text-center text-sm text-text-dark/60">Loading lot details…</CardContent>
-        </Card>
+      {isPageLoading ? (
+        <ProcessStepsProgressSkeleton />
       ) : !Number.isFinite(lotId) || !selectedLot ? (
         <Card className="border-red-200 bg-red-50 text-red-700">
           <CardContent className="space-y-2 py-3">
@@ -696,7 +762,46 @@ function ProcessStepsProgress() {
             </CardHeader>
             <CardContent className="space-y-3">
               {loadingStepRuns ? (
-                <div className="py-5 text-center text-sm text-text-dark/60">Loading step runs…</div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <div key={i} className="flex flex-1 flex-col items-center">
+                        <Skeleton className="mb-2 h-10 w-10 rounded-full" />
+                        <Skeleton className="h-3 w-16" />
+                        <Skeleton className="mt-1 h-2.5 w-12" />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-olive-light/20 pt-4 space-y-4">
+                    <div className="flex justify-between">
+                      <Skeleton className="h-6 w-40" />
+                      <Skeleton className="h-6 w-24 rounded-full" />
+                    </div>
+                    <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-20" />
+                        <Skeleton className="h-10 w-full" />
+                      </div>
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-20" />
+                        <Skeleton className="h-6 w-32" />
+                      </div>
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-6 w-32" />
+                      </div>
+                    </div>
+                    <div className="border-t border-olive-light/20 pt-4">
+                      <Skeleton className="mb-4 h-4 w-48" />
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ) : stepRuns.length === 0 && lotRunId ? (
                 <div className="text-sm text-text-dark/60 py-4 text-center space-y-3">
                   <p>No process steps defined yet. Steps are automatically created when the process lot run is created.</p>
@@ -834,43 +939,10 @@ function ProcessStepsProgress() {
                           >
                             {activeStepRun.status}
                           </span>
-                          {activeStep?.can_be_skipped && 
-                           activeStepRun.status !== 'SKIPPED' && 
-                           activeStepRun.status !== 'COMPLETED' && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={handleSkipStep}
-                              disabled={saving || loadingStepRuns}
-                              className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
-                            >
-                              <SkipForward className="h-4 w-4 mr-1" />
-                              Skip
-                            </Button>
-                          )}
                         </div>
                       </div>
 
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label htmlFor="step_status">Status</Label>
-                          <select
-                            id="step_status"
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            value={activeStepRun.status}
-                            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                              handleStepStatusChange(e.target.value as ProcessStepRun['status'])
-                            }
-                            disabled={saving || loadingStepRuns}
-                          >
-                            {PROCESS_STATUSES.map((status) => (
-                              <option key={status} value={status}>
-                                {status}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
+                      <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
                         <div className="space-y-2">
                           <Label htmlFor="step_location">Location</Label>
                           <select
@@ -892,31 +964,54 @@ function ProcessStepsProgress() {
                         </div>
 
                         <div className="space-y-2">
-                          <Label htmlFor="step_started_at">Started at</Label>
-                          <Input
-                            id="step_started_at"
-                            type="datetime-local"
-                            value={stepFormData.started_at}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                              setStepFormData({ ...stepFormData, started_at: e.target.value })
-                            }
-                            disabled={saving || loadingStepRuns}
-                            className="bg-white"
-                          />
+                          <Label className="flex items-center gap-2">
+                            <Timer className="h-4 w-4 text-olive" aria-hidden />
+                            Started at
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm text-text-dark py-2 flex-1">
+                              {activeStepRun.started_at
+                                ? new Date(activeStepRun.started_at).toLocaleString()
+                                : '—'}
+                            </p>
+                            {activeStepRun.status !== 'COMPLETED' && activeStepRun.status !== 'SKIPPED' && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  if (!activeStepRun) return
+                                  setSaving(true)
+                                  try {
+                                    await updateProcessStepRun(activeStepRun.id, {
+                                      started_at: new Date().toISOString(),
+                                    })
+                                    await refreshStepRuns()
+                                    toast.success('Start time recorded')
+                                  } catch (err) {
+                                    console.error(err)
+                                    toast.error('Failed to record start time')
+                                  } finally {
+                                    setSaving(false)
+                                  }
+                                }}
+                                disabled={saving || loadingStepRuns}
+                                className="shrink-0 border-olive-light/40"
+                                title="Record current time as start"
+                              >
+                                <Timer className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
 
                         <div className="space-y-2">
-                          <Label htmlFor="step_completed_at">Completed at</Label>
-                          <Input
-                            id="step_completed_at"
-                            type="datetime-local"
-                            value={stepFormData.completed_at}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                              setStepFormData({ ...stepFormData, completed_at: e.target.value })
-                            }
-                            disabled={saving || loadingStepRuns}
-                            className="bg-white"
-                          />
+                          <Label>Completed at</Label>
+                          <p className="text-sm text-text-dark py-2">
+                            {activeStepRun.completed_at
+                              ? new Date(activeStepRun.completed_at).toLocaleString()
+                              : '—'}
+                          </p>
                         </div>
                       </div>
 
@@ -1099,15 +1194,46 @@ function ProcessStepsProgress() {
                       <ChevronLeft className="mr-2 h-4 w-4" />
                       Previous
                     </Button>
-                    <Button
-                      type="button"
-                      onClick={nextStep}
-                      disabled={currentStepIndex >= stepRuns.length - 1 || loadingStepRuns || !canStartNextStep}
-                      className="flex items-center bg-olive hover:bg-olive-dark"
-                    >
-                      Next
-                      <ChevronRight className="ml-2 h-4 w-4" />
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {activeStepRun &&
+                        activeStepRun.status !== 'COMPLETED' &&
+                        activeStepRun.status !== 'SKIPPED' && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={handleSkipStep}
+                              disabled={saving || loadingStepRuns}
+                              className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
+                            >
+                              <SkipForward className="mr-2 h-4 w-4" />
+                              Skip
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={() => handleStepStatusChange('COMPLETED')}
+                              disabled={saving || loadingStepRuns}
+                              className="bg-olive hover:bg-olive-dark"
+                            >
+                              <CheckCircle2 className="mr-2 h-4 w-4" />
+                              Complete
+                            </Button>
+                          </>
+                        )}
+                      <Button
+                        type="button"
+                        onClick={nextStep}
+                        disabled={
+                          currentStepIndex >= stepRuns.length - 1 ||
+                          loadingStepRuns ||
+                          !canStartNextStep
+                        }
+                        className="flex items-center"
+                      >
+                        Next
+                        <ChevronRight className="ml-2 h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 </>
               )}

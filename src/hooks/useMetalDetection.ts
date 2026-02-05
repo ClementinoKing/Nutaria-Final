@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { PostgrestError } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabaseClient'
-import type { ProcessMetalDetector, ProcessForeignObjectRejection } from '@/types/processExecution'
+import type {
+  ProcessMetalDetector,
+  ProcessForeignObjectRejection,
+  ProcessMetalDetectorWaste,
+} from '@/types/processExecution'
 
 interface UseMetalDetectionOptions {
   stepRunId: number | null
@@ -11,6 +15,7 @@ interface UseMetalDetectionOptions {
 interface UseMetalDetectionReturn {
   session: ProcessMetalDetector | null
   rejections: ProcessForeignObjectRejection[]
+  waste: ProcessMetalDetectorWaste[]
   loading: boolean
   error: PostgrestError | null
   refresh: () => Promise<void>
@@ -22,12 +27,15 @@ interface UseMetalDetectionReturn {
     corrective_action?: string | null
   }) => Promise<void>
   deleteRejection: (rejectionId: number) => Promise<void>
+  addWaste: (wasteData: { waste_type: string; quantity_kg: number; remarks?: string | null }) => Promise<void>
+  deleteWaste: (wasteId: number) => Promise<void>
 }
 
 export function useMetalDetection(options: UseMetalDetectionOptions): UseMetalDetectionReturn {
   const { stepRunId, enabled = true } = options
   const [session, setSession] = useState<ProcessMetalDetector | null>(null)
   const [rejections, setRejections] = useState<ProcessForeignObjectRejection[]>([])
+  const [waste, setWaste] = useState<ProcessMetalDetectorWaste[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
 
@@ -40,35 +48,45 @@ export function useMetalDetection(options: UseMetalDetectionOptions): UseMetalDe
     setLoading(true)
     setError(null)
 
-    // Fetch session
     const { data: sessionData, error: sessionError } = await supabase
       .from('process_metal_detector')
       .select('*')
       .eq('process_step_run_id', stepRunId)
+      .order('id', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (sessionError && sessionError.code !== 'PGRST116') {
       setError(sessionError)
       setSession(null)
+      setRejections([])
+      setWaste([])
     } else {
       setSession((sessionData as ProcessMetalDetector) || null)
 
-      // Fetch rejections if session exists
       if (sessionData) {
-        const { data: rejectionsData, error: rejectionsError } = await supabase
-          .from('process_foreign_object_rejections')
-          .select('*')
-          .eq('session_id', sessionData.id)
-          .order('rejection_time', { ascending: false })
-
-        if (rejectionsError) {
-          setError(rejectionsError)
-          setRejections([])
-        } else {
-          setRejections((rejectionsData as ProcessForeignObjectRejection[]) || [])
-        }
+        const [rejectionsRes, wasteRes] = await Promise.all([
+          supabase
+            .from('process_foreign_object_rejections')
+            .select('*')
+            .eq('session_id', sessionData.id)
+            .order('rejection_time', { ascending: false }),
+          supabase
+            .from('process_metal_detector_waste')
+            .select('*')
+            .eq('process_step_run_id', stepRunId)
+            .order('created_at', { ascending: false }),
+        ])
+        setRejections((rejectionsRes.data as ProcessForeignObjectRejection[]) || [])
+        setWaste((wasteRes.data as ProcessMetalDetectorWaste[]) || [])
       } else {
         setRejections([])
+        const { data: wasteData } = await supabase
+          .from('process_metal_detector_waste')
+          .select('*')
+          .eq('process_step_run_id', stepRunId)
+          .order('created_at', { ascending: false })
+        setWaste((wasteData as ProcessMetalDetectorWaste[]) || [])
       }
     }
 
@@ -81,28 +99,29 @@ export function useMetalDetection(options: UseMetalDetectionOptions): UseMetalDe
         throw new Error('Step run ID is required')
       }
 
-      if (session) {
-        // Update existing
-        const { error: updateError } = await supabase
+      let sessionId = session?.id
+      if (!sessionId) {
+        const { data: existingSession } = await supabase
           .from('process_metal_detector')
-          .update(data)
-          .eq('id', session.id)
+          .select('id')
+          .eq('process_step_run_id', stepRunId)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        sessionId = existingSession?.id ?? null
+      }
 
-        if (updateError) {
-          throw updateError
-        }
-      } else {
-        // Create new
-        const { error: insertError } = await supabase
-          .from('process_metal_detector')
-          .insert({
-            process_step_run_id: stepRunId,
-            ...data,
-          })
+      const { error } = sessionId
+        ? await supabase
+            .from('process_metal_detector')
+            .update(data)
+            .eq('id', sessionId)
+        : await supabase
+            .from('process_metal_detector')
+            .insert({ process_step_run_id: stepRunId, ...data })
 
-        if (insertError) {
-          throw insertError
-        }
+      if (error) {
+        throw error
       }
 
       await fetchData()
@@ -153,6 +172,33 @@ export function useMetalDetection(options: UseMetalDetectionOptions): UseMetalDe
     [fetchData]
   )
 
+  const addWaste = useCallback(
+    async (wasteData: { waste_type: string; quantity_kg: number; remarks?: string | null }) => {
+      if (!stepRunId) {
+        throw new Error('Step run ID is required')
+      }
+      const { error: insertError } = await supabase.from('process_metal_detector_waste').insert({
+        process_step_run_id: stepRunId,
+        ...wasteData,
+      })
+      if (insertError) throw insertError
+      await fetchData()
+    },
+    [stepRunId, fetchData]
+  )
+
+  const deleteWaste = useCallback(
+    async (wasteId: number) => {
+      const { error: deleteError } = await supabase
+        .from('process_metal_detector_waste')
+        .delete()
+        .eq('id', wasteId)
+      if (deleteError) throw deleteError
+      await fetchData()
+    },
+    [fetchData]
+  )
+
   useEffect(() => {
     fetchData()
   }, [fetchData])
@@ -160,11 +206,14 @@ export function useMetalDetection(options: UseMetalDetectionOptions): UseMetalDe
   return {
     session,
     rejections,
+    waste,
     loading,
     error,
     refresh: fetchData,
     saveSession,
     addRejection,
     deleteRejection,
+    addWaste,
+    deleteWaste,
   }
 }

@@ -50,6 +50,7 @@ export interface ProcessStep {
   step_name_id: number | null
   description: string | null
   requires_qc: boolean
+  can_be_skipped?: boolean
   default_location_id: number | null
   estimated_duration: string | null
   created_at: string
@@ -210,6 +211,15 @@ export interface ProcessDryingRun {
   updated_at: string
 }
 
+export interface ProcessDryingWaste {
+  id: number
+  drying_run_id: number
+  waste_type: string
+  quantity_kg: number
+  remarks: string | null
+  created_at: string
+}
+
 export interface DryingFormData {
   dryer_temperature_c: string
   time_in: string
@@ -219,6 +229,12 @@ export interface DryingFormData {
   crates_clean: 'Yes' | 'No' | 'NA' | ''
   insect_infestation: 'Yes' | 'No' | 'NA' | ''
   dryer_hygiene_clean: 'Yes' | 'No' | 'NA' | ''
+  remarks: string
+}
+
+export interface DryingWasteFormData {
+  waste_type: string
+  quantity_kg: string
   remarks: string
 }
 
@@ -285,11 +301,26 @@ export interface MetalDetectionFormData {
   end_time: string
 }
 
+export interface ProcessMetalDetectorWaste {
+  id: number
+  process_step_run_id: number
+  waste_type: string
+  quantity_kg: number
+  remarks: string | null
+  created_at: string
+}
+
 export interface ForeignObjectRejectionFormData {
   rejection_time: string
   object_type: string
   weight: string
   corrective_action: string
+}
+
+export interface MetalDetectorWasteFormData {
+  waste_type: string
+  quantity_kg: string
+  remarks: string
 }
 
 export interface MetalDetectorHourlyCheck {

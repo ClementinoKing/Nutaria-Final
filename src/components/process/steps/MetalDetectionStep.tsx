@@ -5,7 +5,14 @@ import { Label } from '@/components/ui/label'
 import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMetalDetection } from '@/hooks/useMetalDetection'
-import type { ProcessStepRun, MetalDetectionFormData, ForeignObjectRejectionFormData } from '@/types/processExecution'
+import type {
+  ProcessStepRun,
+  MetalDetectionFormData,
+  ForeignObjectRejectionFormData,
+  MetalDetectorWasteFormData,
+} from '@/types/processExecution'
+
+const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,10 +57,11 @@ export function MetalDetectionStep({
   availableQuantity,
   onQuantityChange,
 }: MetalDetectionStepProps) {
-  const { session, rejections, saveSession, addRejection, deleteRejection } = useMetalDetection({
-    stepRunId: stepRun.id,
-    enabled: true,
-  })
+  const { session, rejections, waste, saveSession, addRejection, deleteRejection, addWaste, deleteWaste } =
+    useMetalDetection({
+      stepRunId: stepRun.id,
+      enabled: true,
+    })
 
   const [sessionFormData, setSessionFormData] = useState<MetalDetectionFormData>({
     start_time: '',
@@ -68,9 +76,17 @@ export function MetalDetectionStep({
   })
 
   const [showRejectionForm, setShowRejectionForm] = useState(false)
+  const [showWasteForm, setShowWasteForm] = useState(false)
+  const [wasteFormData, setWasteFormData] = useState<MetalDetectorWasteFormData>({
+    waste_type: '',
+    quantity_kg: '',
+    remarks: '',
+  })
   const [saving, setSaving] = useState(false)
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
   const [rejectionToDeleteId, setRejectionToDeleteId] = useState<number | null>(null)
+  const [wasteDeleteAlertOpen, setWasteDeleteAlertOpen] = useState(false)
+  const [wasteToDeleteId, setWasteToDeleteId] = useState<number | null>(null)
 
   const sessionSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextSessionSaveRef = useRef(true)
@@ -84,6 +100,9 @@ export function MetalDetectionStep({
       skipNextSessionSaveRef.current = true
     }
   }, [session])
+
+  const sessionFormDataRef = useRef(sessionFormData)
+  sessionFormDataRef.current = sessionFormData
 
   useEffect(() => {
     if (skipNextSessionSaveRef.current) {
@@ -106,9 +125,22 @@ export function MetalDetectionStep({
       } finally {
         setSaving(false)
       }
-    }, 600)
+    }, 300)
     return () => {
-      if (sessionSaveTimeoutRef.current) clearTimeout(sessionSaveTimeoutRef.current)
+      if (sessionSaveTimeoutRef.current) {
+        clearTimeout(sessionSaveTimeoutRef.current)
+        sessionSaveTimeoutRef.current = null
+        const fd = sessionFormDataRef.current
+        if (fd.start_time) {
+          saveSession({
+            start_time: toISOString(fd.start_time)!,
+            end_time: fd.end_time ? toISOString(fd.end_time) : null,
+          }).catch((err) => {
+            console.error('Error saving session:', err)
+            toast.error('Failed to save session')
+          })
+        }
+      }
     }
   }, [sessionFormData.start_time, sessionFormData.end_time])
 
@@ -190,6 +222,52 @@ export function MetalDetectionStep({
   }
 
   const totalRejections = rejections.reduce((sum, r) => sum + (r.weight || 0), 0)
+  const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
+
+  const handleWasteSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    const quantity = parseFloat(wasteFormData.quantity_kg)
+    if (isNaN(quantity) || quantity <= 0) {
+      toast.error('Please enter a valid quantity')
+      return
+    }
+    if (!wasteFormData.waste_type.trim()) {
+      toast.error('Please select a waste type')
+      return
+    }
+    setSaving(true)
+    try {
+      await addWaste({
+        waste_type: wasteFormData.waste_type.trim(),
+        quantity_kg: quantity,
+        remarks: wasteFormData.remarks.trim() || null,
+      })
+      setWasteFormData({ waste_type: '', quantity_kg: '', remarks: '' })
+      setShowWasteForm(false)
+      toast.success('Waste record added')
+    } catch (error) {
+      console.error('Error adding waste:', error)
+      toast.error('Failed to add waste record')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const performDeleteWaste = async () => {
+    if (wasteToDeleteId == null) return
+    setSaving(true)
+    try {
+      await deleteWaste(wasteToDeleteId)
+      toast.success('Waste record deleted')
+      setWasteDeleteAlertOpen(false)
+      setWasteToDeleteId(null)
+    } catch (error) {
+      console.error('Error deleting waste:', error)
+      toast.error('Failed to delete waste record')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -450,6 +528,126 @@ export function MetalDetectionStep({
         )}
       </div>
 
+      {/* Waste Section */}
+      <div className="border-t border-olive-light/20 pt-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-semibold text-text-dark">Waste Records</h4>
+            <p className="text-xs text-text-dark/60 mt-1">Total Waste: {totalWaste.toFixed(2)} kg</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowWasteForm(!showWasteForm)}
+            disabled={saving || externalLoading}
+            className="border-olive-light/30"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add Waste
+          </Button>
+        </div>
+        {showWasteForm && (
+          <form onSubmit={handleWasteSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="metal_waste_type">Waste Type</Label>
+                <select
+                  id="metal_waste_type"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={wasteFormData.waste_type}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, waste_type: e.target.value })}
+                  required
+                  disabled={saving || externalLoading}
+                >
+                  <option value="">Select type</option>
+                  {WASTE_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="metal_waste_quantity">Quantity (kg)</Label>
+                <Input
+                  id="metal_waste_quantity"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={wasteFormData.quantity_kg}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, quantity_kg: e.target.value })}
+                  placeholder="0.00"
+                  required
+                  disabled={saving || externalLoading}
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="metal_waste_remarks">Remarks</Label>
+                <Input
+                  id="metal_waste_remarks"
+                  value={wasteFormData.remarks}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, remarks: e.target.value })}
+                  placeholder="Optional"
+                  disabled={saving || externalLoading}
+                  className="bg-white"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowWasteForm(false)
+                  setWasteFormData({ waste_type: '', quantity_kg: '', remarks: '' })
+                }}
+                disabled={saving || externalLoading}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
+                Add Waste
+              </Button>
+            </div>
+          </form>
+        )}
+        {waste.length === 0 ? (
+          <p className="text-sm text-text-dark/60 py-4 text-center">No waste records yet</p>
+        ) : (
+          <div className="space-y-2">
+            {waste.map((w) => (
+              <div
+                key={w.id}
+                className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
+              >
+                <div className="flex items-center gap-4">
+                  <span className="text-sm font-medium text-text-dark">{w.waste_type}</span>
+                  <span className="text-sm text-text-dark/70">{w.quantity_kg} kg</span>
+                  {w.remarks && (
+                    <span className="text-xs text-text-dark/50 italic">{w.remarks}</span>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setWasteToDeleteId(w.id)
+                    setWasteDeleteAlertOpen(true)
+                  }}
+                  disabled={saving || externalLoading}
+                  className="text-red-600 hover:text-red-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setRejectionToDeleteId(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -464,6 +662,21 @@ export function MetalDetectionStep({
               className="bg-red-600 text-white hover:bg-red-700"
               onClick={() => performDeleteRejection()}
             >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={wasteDeleteAlertOpen} onOpenChange={(open) => { setWasteDeleteAlertOpen(open); if (!open) setWasteToDeleteId(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete waste record?</AlertDialogTitle>
+            <AlertDialogDescription>Are you sure you want to delete this waste record?</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-red-600 text-white hover:bg-red-700" onClick={performDeleteWaste}>
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>

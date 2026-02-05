@@ -71,6 +71,8 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       .from('process_packaging_runs')
       .select('*')
       .eq('process_step_run_id', stepRunId)
+      .order('id', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (runError && runError.code !== 'PGRST116') {
@@ -168,31 +170,32 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       // Remove id and timestamps from update data
       const { id, created_at, updated_at, process_step_run_id, ...updateData } = data
 
-      if (packagingRun) {
-        // Update existing
+      let runId = packagingRun?.id
+      if (!runId) {
+        const { data: existingRun } = await supabase
+          .from('process_packaging_runs')
+          .select('id')
+          .eq('process_step_run_id', stepRunId)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        runId = existingRun?.id ?? null
+      }
+
+      if (runId) {
         const { error: updateError } = await supabase
           .from('process_packaging_runs')
           .update(updateData)
-          .eq('id', packagingRun.id)
-
-        if (updateError) {
-          throw updateError
-        }
+          .eq('id', runId)
+        if (updateError) throw updateError
       } else {
-        // Create new (idempotent)
         const { error: insertError } = await supabase
           .from('process_packaging_runs')
-          .upsert(
-            {
-              process_step_run_id: stepRunId,
-              ...updateData,
-            },
-            { onConflict: 'process_step_run_id' }
-          )
-
-        if (insertError) {
-          throw insertError
-        }
+          .insert({
+            process_step_run_id: stepRunId,
+            ...updateData,
+          })
+        if (insertError) throw insertError
       }
 
       await fetchData()

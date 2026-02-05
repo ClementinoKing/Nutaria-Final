@@ -515,23 +515,29 @@ export async function saveProcessStepQualityCheck(
     remarks: Record<string, string>
     qualityParameters: Array<{ id: number; code: string }>
     evaluatedBy?: string | null
+    isFinal?: boolean
   }
 ): Promise<void> {
-  const { scores, results, remarks, qualityParameters, evaluatedBy } = qualityCheckData
+  const { scores, results, remarks, qualityParameters, evaluatedBy, isFinal = false } = qualityCheckData
 
   // Calculate overall score (average of all scores, excluding N/A which is 4)
   const validScores = Object.values(scores).filter((score) => score > 0 && score !== 4)
   const overallScore =
     validScores.length > 0 ? validScores.reduce((sum, score) => sum + score, 0) / validScores.length : null
 
+  const allScored = qualityParameters.every((param) => {
+    const score = scores[param.code]
+    return score !== undefined && score > 0
+  })
+
   // Determine status based on scores
   const hasFailures = Object.values(scores).some((score) => score > 0 && score < 3 && score !== 4)
-  const status = hasFailures ? 'FAIL' : 'PASS'
+  const status = isFinal || allScored ? (hasFailures ? 'FAIL' : 'PASS') : 'IN_PROGRESS'
 
   // Check if quality check already exists for this step run
   const { data: existingCheck, error: checkError } = await supabase
     .from('process_step_quality_checks')
-    .select('id')
+    .select('id, status, overall_score, evaluated_at, evaluated_by')
     .eq('process_step_run_id', stepRunId)
     .maybeSingle()
 
@@ -560,16 +566,18 @@ export async function saveProcessStepQualityCheck(
   let qualityCheckId: number
 
   if (existingCheck) {
+    const shouldUpdateFinal = isFinal || allScored
+    const updatePayload = {
+      status: shouldUpdateFinal ? status : existingCheck.status || status,
+      overall_score: shouldUpdateFinal ? overallScore : existingCheck.overall_score,
+      evaluated_by: shouldUpdateFinal ? evaluatedBy || null : existingCheck.evaluated_by,
+      evaluated_at: shouldUpdateFinal ? new Date().toISOString() : existingCheck.evaluated_at,
+      updated_at: new Date().toISOString(),
+    }
     // Update existing check
     const { data: updatedCheck, error: updateError } = await supabase
       .from('process_step_quality_checks')
-      .update({
-        status,
-        overall_score: overallScore,
-        evaluated_by: evaluatedBy || null,
-        evaluated_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', existingCheck.id)
       .select('id')
       .single()
@@ -583,15 +591,16 @@ export async function saveProcessStepQualityCheck(
     // Delete existing items
     await supabase.from('process_step_quality_check_items').delete().eq('quality_check_id', qualityCheckId)
   } else {
+    const shouldFinalize = isFinal || allScored
     // Create new check
     const { data: newCheck, error: createError } = await supabase
       .from('process_step_quality_checks')
       .insert({
         process_step_run_id: stepRunId,
-        status,
-        overall_score: overallScore,
-        evaluated_by: evaluatedBy || null,
-        evaluated_at: new Date().toISOString(),
+        status: shouldFinalize ? status : 'IN_PROGRESS',
+        overall_score: shouldFinalize ? overallScore : null,
+        evaluated_by: shouldFinalize ? evaluatedBy || null : null,
+        evaluated_at: shouldFinalize ? new Date().toISOString() : null,
       })
       .select('id')
       .single()

@@ -276,6 +276,38 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextSaveRef = useRef(true)
+  const formDataRef = useRef(formData)
+  formDataRef.current = formData
+
+  const flushSavePackaging = useCallback(() => {
+    const fd = formDataRef.current
+    savePackagingRun({
+      visual_status: fd.visual_status.trim() || null,
+      rework_destination: fd.rework_destination.trim() || null,
+      pest_status: fd.pest_status.trim() || null,
+      foreign_object_status: fd.foreign_object_status.trim() || null,
+      mould_status: fd.mould_status.trim() || null,
+      damaged_kernels_pct: fd.damaged_kernels_pct ? parseFloat(fd.damaged_kernels_pct) : null,
+      insect_damaged_kernels_pct: fd.insect_damaged_kernels_pct
+        ? parseFloat(fd.insect_damaged_kernels_pct)
+        : null,
+      nitrogen_used: fd.nitrogen_used ? parseFloat(fd.nitrogen_used) : null,
+      nitrogen_batch_number: fd.nitrogen_batch_number.trim() || null,
+      primary_packaging_type: fd.primary_packaging_type.trim() || null,
+      primary_packaging_batch: fd.primary_packaging_batch.trim() || null,
+      secondary_packaging: fd.secondary_packaging.trim() || null,
+      secondary_packaging_type: fd.secondary_packaging_type.trim() || null,
+      secondary_packaging_batch: fd.secondary_packaging_batch.trim() || null,
+      label_correct: fd.label_correct ? (fd.label_correct as 'Yes' | 'No' | 'NA') : null,
+      label_legible: fd.label_legible ? (fd.label_legible as 'Yes' | 'No' | 'NA') : null,
+      pallet_integrity: fd.pallet_integrity ? (fd.pallet_integrity as 'Yes' | 'No' | 'NA') : null,
+      allergen_swab_result: fd.allergen_swab_result.trim() || null,
+      remarks: fd.remarks.trim() || null,
+    }).catch((err) => {
+      console.error('Error saving packaging data:', err)
+      toast.error('Failed to save packaging data')
+    })
+  }, [savePackagingRun])
 
   const performSavePackaging = async () => {
     setSaving(true)
@@ -320,11 +352,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
       performSavePackaging()
-    }, 600)
+    }, 300)
     return () => {
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+        flushSavePackaging()
+      }
     }
-  }, [formData])
+  }, [formData, flushSavePackaging])
 
   useEffect(() => {
     if (packagingRun || loading || externalLoading || saving || autoCreateAttemptedRef.current) {
@@ -1362,109 +1398,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         )}
       </div>
 
-      {/* Waste Section */}
-      <div className="border-t border-olive-light/20 pt-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-text-dark">Waste Records</h4>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowWasteForm(!showWasteForm)}
-            disabled={saving || externalLoading || !packagingRun}
-            className="border-olive-light/30"
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Add Waste
-          </Button>
-        </div>
-
-        {showWasteForm && (
-          <form onSubmit={handleWasteSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="waste_type">Waste Type *</Label>
-                <select
-                  id="waste_type"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={wasteFormData.waste_type}
-                  onChange={(e) => setWasteFormData({ ...wasteFormData, waste_type: e.target.value })}
-                  required
-                  disabled={saving || externalLoading}
-                >
-                  <option value="">Select type</option>
-                  {WASTE_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="waste_quantity">Quantity (kg) *</Label>
-                <Input
-                  id="waste_quantity"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={wasteFormData.quantity_kg}
-                  onChange={(e) => setWasteFormData({ ...wasteFormData, quantity_kg: e.target.value })}
-                  placeholder="0.00"
-                  required
-                  disabled={saving || externalLoading}
-                  className="bg-white"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 mt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setShowWasteForm(false)
-                  setWasteFormData({ waste_type: '', quantity_kg: '' })
-                }}
-                disabled={saving || externalLoading}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
-                Add Waste
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {waste.length === 0 ? (
-          <p className="text-sm text-text-dark/60 py-4 text-center">No waste records yet</p>
-        ) : (
-          <div className="space-y-2">
-            {waste.map((w) => (
-              <div
-                key={w.id}
-                className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
-              >
-                <div className="flex items-center gap-4">
-                  <span className="text-sm font-medium text-text-dark">{w.waste_type}</span>
-                  <span className="text-sm text-text-dark/70">{w.quantity_kg} kg</span>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDeleteWaste(w.id)}
-                  disabled={saving || externalLoading}
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Waste recording disabled for Packaging step per requirements */}
 
       <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setDeleteTarget(null) }}>
         <AlertDialogContent>

@@ -31,13 +31,14 @@ export function useProcessStepRuns(options: UseProcessStepRunsOptions): UseProce
     setLoading(true)
     setError(null)
 
-    // First, try with joins - if that fails, fall back to separate queries
+    // First, try a single joined query for speed. If it fails, fall back to separate queries.
     let data: any[] | null = null
     let fetchError: PostgrestError | null = null
 
-    const { data: stepRunsData, error: stepRunsError } = await supabase
+    const { data: joinedData, error: joinedError } = await supabase
       .from('process_step_runs')
-      .select(`
+      .select(
+        `
         id,
         process_lot_run_id,
         process_step_id,
@@ -45,128 +46,161 @@ export function useProcessStepRuns(options: UseProcessStepRunsOptions): UseProce
         started_at,
         completed_at,
         performed_by,
-        location_id
-      `)
+        location_id,
+        process_step:process_steps (
+          id,
+          process_id,
+          seq,
+          step_name_id,
+          description,
+          requires_qc,
+          default_location_id,
+          estimated_duration,
+          step_name:process_step_names ( id, code, name )
+        ),
+        location:warehouses ( id, name )
+      `
+      )
       .eq('process_lot_run_id', lotRunId)
 
-    if (stepRunsError) {
-      fetchError = stepRunsError
-    } else if (stepRunsData && stepRunsData.length > 0) {
-      // Fetch related data separately
-      const stepIds = stepRunsData
-        .map((sr) => sr.process_step_id)
-        .filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
-      
-      const locationIds = stepRunsData
-        .map((sr) => sr.location_id)
-        .filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
-
-      let processStepsResult = { data: [] as any[], error: null as any }
-      let stepNamesResult = { data: [] as any[], error: null as any }
-      let warehousesResult = { data: [] as any[], error: null as any }
-
-      // Fetch process steps first - use individual queries if .in() fails
-      if (stepIds.length > 0) {
-        try {
-          // Try using .in() first
-          processStepsResult = await supabase
-            .from('process_steps')
-            .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
-            .in('id', stepIds)
-          
-          if (processStepsResult.error) {
-            console.warn('Error with .in() query, trying individual queries:', processStepsResult.error)
-            // Fallback: fetch each step individually
-            const individualResults = await Promise.all(
-              stepIds.map((id) =>
-                supabase
-                  .from('process_steps')
-                  .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
-                  .eq('id', id)
-                  .maybeSingle()
-              )
-            )
-            processStepsResult.data = individualResults
-              .map((r) => r.data)
-              .filter((d): d is any => d !== null)
-            processStepsResult.error = null
-          }
-        } catch (err) {
-          console.error('Exception fetching process_steps:', err)
-          processStepsResult = { data: [], error: err as any }
+    if (!joinedError) {
+      data = (joinedData || []).map((sr: any) => {
+        const stepName = sr.process_step?.step_name
+        return {
+          ...sr,
+          process_step: sr.process_step
+            ? {
+                ...sr.process_step,
+                step_name: stepName?.name ?? null,
+                step_code: stepName?.code ?? sr.process_step.step_code ?? null,
+              }
+            : null,
+          location: sr.location ?? null,
         }
-      }
-
-      // Fetch step names separately if we have step_name_ids
-      const stepNameIds = (processStepsResult.data || [])
-        .map((ps: any) => ps.step_name_id)
-        .filter((id: any): id is number => id !== null && id !== undefined && typeof id === 'number')
-
-      if (stepNameIds.length > 0) {
-        try {
-          stepNamesResult = await supabase
-            .from('process_step_names')
-            .select('id, code, name')
-            .in('id', stepNameIds)
-          
-          if (stepNamesResult.error) {
-            console.warn('Error fetching process_step_names:', stepNamesResult.error)
-            stepNamesResult.data = []
-          }
-        } catch (err) {
-          console.error('Exception fetching process_step_names:', err)
-          stepNamesResult = { data: [], error: err as any }
-        }
-      }
-
-      // Fetch warehouses
-      if (locationIds.length > 0) {
-        try {
-          warehousesResult = await supabase
-            .from('warehouses')
-            .select('id, name')
-            .in('id', locationIds)
-          
-          if (warehousesResult.error) {
-            console.warn('Error fetching warehouses:', warehousesResult.error)
-            warehousesResult.data = []
-          }
-        } catch (err) {
-          console.error('Exception fetching warehouses:', err)
-          warehousesResult = { data: [], error: err as any }
-        }
-      }
-
-      // Combine the data
-      const stepNamesMap = new Map(
-        (stepNamesResult.data || []).map((sn: any) => [sn.id, sn])
-      )
-      const warehousesMap = new Map(
-        (warehousesResult.data || []).map((wh: any) => [wh.id, wh])
-      )
-
-      const processStepsMap = new Map(
-        (processStepsResult.data || []).map((ps: any) => {
-          const stepName = ps.step_name_id ? stepNamesMap.get(ps.step_name_id) : null
-          
-          return [
-            ps.id,
-            {
-              ...ps,
-              step_name: stepName?.name || null,
-              step_code: stepName?.code || ps.step_code || null,
-            },
-          ]
-        })
-      )
-
-      data = stepRunsData.map((sr: any) => ({
-        ...sr,
-        process_step: processStepsMap.get(sr.process_step_id) || null,
-        location: sr.location_id ? warehousesMap.get(sr.location_id) || null : null,
-      }))
+      })
     } else {
-      data = stepRunsData || []
+      // Fallback to multi-query if joins aren't available
+      const { data: stepRunsData, error: stepRunsError } = await supabase
+        .from('process_step_runs')
+        .select(`
+          id,
+          process_lot_run_id,
+          process_step_id,
+          status,
+          started_at,
+          completed_at,
+          performed_by,
+          location_id
+        `)
+        .eq('process_lot_run_id', lotRunId)
+
+      if (stepRunsError) {
+        fetchError = stepRunsError
+      } else if (stepRunsData && stepRunsData.length > 0) {
+        const stepIds = stepRunsData
+          .map((sr) => sr.process_step_id)
+          .filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
+
+        const locationIds = stepRunsData
+          .map((sr) => sr.location_id)
+          .filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
+
+        let processStepsResult = { data: [] as any[], error: null as any }
+        let stepNamesResult = { data: [] as any[], error: null as any }
+        let warehousesResult = { data: [] as any[], error: null as any }
+
+        if (stepIds.length > 0) {
+          try {
+            processStepsResult = await supabase
+              .from('process_steps')
+              .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
+              .in('id', stepIds)
+
+            if (processStepsResult.error) {
+              console.warn('Error with .in() query, trying individual queries:', processStepsResult.error)
+              const individualResults = await Promise.all(
+                stepIds.map((id) =>
+                  supabase
+                    .from('process_steps')
+                    .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
+                    .eq('id', id)
+                    .maybeSingle()
+                )
+              )
+              processStepsResult.data = individualResults
+                .map((r) => r.data)
+                .filter((d): d is any => d !== null)
+              processStepsResult.error = null
+            }
+          } catch (err) {
+            console.error('Exception fetching process_steps:', err)
+            processStepsResult = { data: [], error: err as any }
+          }
+        }
+
+        const stepNameIds = (processStepsResult.data || [])
+          .map((ps: any) => ps.step_name_id)
+          .filter((id: any): id is number => id !== null && id !== undefined && typeof id === 'number')
+
+        if (stepNameIds.length > 0) {
+          try {
+            stepNamesResult = await supabase
+              .from('process_step_names')
+              .select('id, code, name')
+              .in('id', stepNameIds)
+
+            if (stepNamesResult.error) {
+              console.warn('Error fetching process_step_names:', stepNamesResult.error)
+              stepNamesResult.data = []
+            }
+          } catch (err) {
+            console.error('Exception fetching process_step_names:', err)
+            stepNamesResult = { data: [], error: err as any }
+          }
+        }
+
+        if (locationIds.length > 0) {
+          try {
+            warehousesResult = await supabase
+              .from('warehouses')
+              .select('id, name')
+              .in('id', locationIds)
+
+            if (warehousesResult.error) {
+              console.warn('Error fetching warehouses:', warehousesResult.error)
+              warehousesResult.data = []
+            }
+          } catch (err) {
+            console.error('Exception fetching warehouses:', err)
+            warehousesResult = { data: [], error: err as any }
+          }
+        }
+
+        const stepNamesMap = new Map((stepNamesResult.data || []).map((sn: any) => [sn.id, sn]))
+        const warehousesMap = new Map((warehousesResult.data || []).map((wh: any) => [wh.id, wh]))
+
+        const processStepsMap = new Map(
+          (processStepsResult.data || []).map((ps: any) => {
+            const stepName = ps.step_name_id ? stepNamesMap.get(ps.step_name_id) : null
+            return [
+              ps.id,
+              {
+                ...ps,
+                step_name: stepName?.name || null,
+                step_code: stepName?.code || ps.step_code || null,
+              },
+            ]
+          })
+        )
+
+        data = stepRunsData.map((sr: any) => ({
+          ...sr,
+          process_step: processStepsMap.get(sr.process_step_id) || null,
+          location: sr.location_id ? warehousesMap.get(sr.location_id) || null : null,
+        }))
+      } else {
+        data = stepRunsData || []
+      }
     }
 
     // Sort by seq from joined process_step

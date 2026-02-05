@@ -1,9 +1,23 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, FormEvent } from 'react'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDryingRun } from '@/hooks/useDryingRun'
-import type { ProcessStepRun, DryingFormData } from '@/types/processExecution'
+import type { ProcessStepRun, DryingFormData, DryingWasteFormData } from '@/types/processExecution'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+
+const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
 
 interface DryingStepProps {
   stepRun: ProcessStepRun
@@ -43,10 +57,19 @@ export function DryingStep({
   loading: externalLoading = false,
   availableQuantity,
 }: DryingStepProps) {
-  const { dryingRun, saveDryingRun } = useDryingRun({
+  const { dryingRun, waste, saveDryingRun, addWaste, deleteWaste } = useDryingRun({
     stepRunId: stepRun.id,
     enabled: true,
   })
+
+  const [wasteFormData, setWasteFormData] = useState<DryingWasteFormData>({
+    waste_type: '',
+    quantity_kg: '',
+    remarks: '',
+  })
+  const [showWasteForm, setShowWasteForm] = useState(false)
+  const [wasteToDeleteId, setWasteToDeleteId] = useState<number | null>(null)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
 
   const [formData, setFormData] = useState<DryingFormData>({
     dryer_temperature_c: '',
@@ -109,6 +132,30 @@ export function DryingStep({
     }
   }
 
+  const formDataRef = useRef(formData)
+  formDataRef.current = formData
+
+  const flushSave = useCallback(() => {
+    const fd = formDataRef.current
+    const moistureIn = fd.moisture_in ? parseFloat(fd.moisture_in) : null
+    const moistureOut = fd.moisture_out ? parseFloat(fd.moisture_out) : null
+    if (moistureIn !== null && moistureOut !== null && moistureOut > moistureIn) return
+    saveDryingRun({
+      dryer_temperature_c: fd.dryer_temperature_c ? parseFloat(fd.dryer_temperature_c) : null,
+      time_in: fd.time_in ? toISOString(fd.time_in) : null,
+      time_out: fd.time_out ? toISOString(fd.time_out) : null,
+      moisture_in: moistureIn,
+      moisture_out: moistureOut,
+      crates_clean: fd.crates_clean ? (fd.crates_clean as 'Yes' | 'No' | 'NA') : null,
+      insect_infestation: fd.insect_infestation ? (fd.insect_infestation as 'Yes' | 'No' | 'NA') : null,
+      dryer_hygiene_clean: fd.dryer_hygiene_clean ? (fd.dryer_hygiene_clean as 'Yes' | 'No' | 'NA') : null,
+      remarks: fd.remarks.trim() || null,
+    }).catch((err) => {
+      console.error('Error saving drying data:', err)
+      toast.error('Failed to save drying data')
+    })
+  }, [saveDryingRun])
+
   useEffect(() => {
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false
@@ -118,9 +165,13 @@ export function DryingStep({
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
       performSave()
-    }, 600)
+    }, 300)
     return () => {
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+        flushSave()
+      }
     }
   }, [
     formData.dryer_temperature_c,
@@ -133,6 +184,53 @@ export function DryingStep({
     formData.dryer_hygiene_clean,
     formData.remarks,
   ])
+
+  const handleWasteSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    const quantity = parseFloat(wasteFormData.quantity_kg)
+    if (isNaN(quantity) || quantity <= 0) {
+      toast.error('Please enter a valid quantity')
+      return
+    }
+    if (!wasteFormData.waste_type.trim()) {
+      toast.error('Please select a waste type')
+      return
+    }
+    setSaving(true)
+    try {
+      await addWaste({
+        waste_type: wasteFormData.waste_type.trim(),
+        quantity_kg: quantity,
+        remarks: wasteFormData.remarks.trim() || null,
+      })
+      setWasteFormData({ waste_type: '', quantity_kg: '', remarks: '' })
+      setShowWasteForm(false)
+      toast.success('Waste record added')
+    } catch (error) {
+      console.error('Error adding waste:', error)
+      toast.error('Failed to add waste record')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const performDeleteWaste = async () => {
+    if (wasteToDeleteId == null) return
+    setSaving(true)
+    try {
+      await deleteWaste(wasteToDeleteId)
+      toast.success('Waste record deleted')
+      setDeleteAlertOpen(false)
+      setWasteToDeleteId(null)
+    } catch (error) {
+      console.error('Error deleting waste:', error)
+      toast.error('Failed to delete waste record')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
 
   return (
     <div className="space-y-6">
@@ -160,6 +258,7 @@ export function DryingStep({
             placeholder="0.0"
             disabled={saving || externalLoading}
             className="bg-white"
+            required
           />
         </div>
 
@@ -172,6 +271,7 @@ export function DryingStep({
             onChange={(e) => setFormData({ ...formData, time_in: e.target.value })}
             disabled={saving || externalLoading}
             className="bg-white"
+            required
           />
         </div>
 
@@ -184,6 +284,7 @@ export function DryingStep({
             onChange={(e) => setFormData({ ...formData, time_out: e.target.value })}
             disabled={saving || externalLoading}
             className="bg-white"
+            required
           />
         </div>
 
@@ -200,6 +301,7 @@ export function DryingStep({
             placeholder="0.00"
             disabled={saving || externalLoading}
             className="bg-white"
+            required
           />
         </div>
 
@@ -216,6 +318,7 @@ export function DryingStep({
             placeholder="0.00"
             disabled={saving || externalLoading}
             className="bg-white"
+            required
           />
         </div>
       </div>
@@ -229,8 +332,9 @@ export function DryingStep({
               id="crates_clean"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={formData.crates_clean}
-              onChange={(e) => setFormData({ ...formData, crates_clean: e.target.value as '' | 'Yes' | 'No' | 'NA' })}
+              onChange={(e) => setFormData({ ...formData, crates_clean: e.target.value as 'Yes' | 'No' | 'NA' })}
               disabled={saving || externalLoading}
+              required
             >
               {YES_NO_NA_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -247,9 +351,10 @@ export function DryingStep({
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={formData.insect_infestation}
               onChange={(e) =>
-                setFormData({ ...formData, insect_infestation: e.target.value as '' | 'Yes' | 'No' | 'NA' })
+                setFormData({ ...formData, insect_infestation: e.target.value as 'Yes' | 'No' | 'NA' })
               }
               disabled={saving || externalLoading}
+              required
             >
               {YES_NO_NA_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -266,9 +371,10 @@ export function DryingStep({
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={formData.dryer_hygiene_clean}
               onChange={(e) =>
-                setFormData({ ...formData, dryer_hygiene_clean: e.target.value as '' | 'Yes' | 'No' | 'NA' })
+                setFormData({ ...formData, dryer_hygiene_clean: e.target.value as 'Yes' | 'No' | 'NA' })
               }
               disabled={saving || externalLoading}
+              required
             >
               {YES_NO_NA_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -292,6 +398,140 @@ export function DryingStep({
         />
       </div>
 
+      {/* Waste Section */}
+      <div className="border-t border-olive-light/20 pt-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-semibold text-text-dark">Waste Records</h4>
+            <p className="text-xs text-text-dark/60 mt-1">Total Waste: {totalWaste.toFixed(2)} kg</p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowWasteForm(!showWasteForm)}
+            disabled={saving || externalLoading || !dryingRun}
+            className="border-olive-light/30"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add Waste
+          </Button>
+        </div>
+        {showWasteForm && (
+          <form onSubmit={handleWasteSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="drying_waste_type">Waste Type</Label>
+                <select
+                  id="drying_waste_type"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={wasteFormData.waste_type}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, waste_type: e.target.value })}
+                  required
+                  disabled={saving || externalLoading}
+                >
+                  <option value="">Select type</option>
+                  {WASTE_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="drying_waste_quantity">Quantity (kg)</Label>
+                <Input
+                  id="drying_waste_quantity"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={wasteFormData.quantity_kg}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, quantity_kg: e.target.value })}
+                  placeholder="0.00"
+                  required
+                  disabled={saving || externalLoading}
+                  className="bg-white"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="drying_waste_remarks">Remarks</Label>
+                <Input
+                  id="drying_waste_remarks"
+                  value={wasteFormData.remarks}
+                  onChange={(e) => setWasteFormData({ ...wasteFormData, remarks: e.target.value })}
+                  placeholder="Optional"
+                  disabled={saving || externalLoading}
+                  className="bg-white"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowWasteForm(false)
+                  setWasteFormData({ waste_type: '', quantity_kg: '', remarks: '' })
+                }}
+                disabled={saving || externalLoading}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
+                Add Waste
+              </Button>
+            </div>
+          </form>
+        )}
+        {waste.length === 0 ? (
+          <p className="text-sm text-text-dark/60 py-4 text-center">No waste records yet</p>
+        ) : (
+          <div className="space-y-2">
+            {waste.map((w) => (
+              <div
+                key={w.id}
+                className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
+              >
+                <div className="flex items-center gap-4">
+                  <span className="text-sm font-medium text-text-dark">{w.waste_type}</span>
+                  <span className="text-sm text-text-dark/70">{w.quantity_kg} kg</span>
+                  {w.remarks && (
+                    <span className="text-xs text-text-dark/50 italic">{w.remarks}</span>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setWasteToDeleteId(w.id)
+                    setDeleteAlertOpen(true)
+                  }}
+                  disabled={saving || externalLoading}
+                  className="text-red-600 hover:text-red-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setWasteToDeleteId(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete waste record?</AlertDialogTitle>
+            <AlertDialogDescription>Are you sure you want to delete this waste record?</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={performDeleteWaste}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
     </div>
   )

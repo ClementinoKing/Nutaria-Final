@@ -13,7 +13,9 @@ export async function calculateAvailableQuantity(
   totalWaste: number
   breakdown: {
     washingWaste: number
+    dryingWaste: number
     metalRejections: number
+    metalWaste: number
     sortingWaste: number
     packagingWaste: number
   }
@@ -60,7 +62,9 @@ export async function calculateAvailableQuantity(
       totalWaste: 0,
       breakdown: {
         washingWaste: 0,
+        dryingWaste: 0,
         metalRejections: 0,
+        metalWaste: 0,
         sortingWaste: 0,
         packagingWaste: 0,
       },
@@ -130,7 +134,9 @@ export async function calculateAvailableQuantity(
 
   const breakdown = {
     washingWaste: 0,
+    dryingWaste: 0,
     metalRejections: 0,
+    metalWaste: 0,
     sortingWaste: 0,
     packagingWaste: 0,
   }
@@ -158,8 +164,25 @@ export async function calculateAvailableQuantity(
           breakdown.washingWaste += totalWaste
         }
       }
+    } else if (stepCode === 'DRY') {
+      const { data: dryingRun } = await supabase
+        .from('process_drying_runs')
+        .select('id')
+        .eq('process_step_run_id', stepRun.id)
+        .maybeSingle()
+
+      if (dryingRun) {
+        const { data: waste } = await supabase
+          .from('process_drying_waste')
+          .select('quantity_kg')
+          .eq('drying_run_id', dryingRun.id)
+
+        if (waste) {
+          const totalWaste = waste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
+          breakdown.dryingWaste += totalWaste
+        }
+      }
     } else if (stepCode === 'METAL') {
-      // Get metal detection session and its rejections
       const { data: session } = await supabase
         .from('process_metal_detector')
         .select('id')
@@ -179,6 +202,16 @@ export async function calculateAvailableQuantity(
           )
           breakdown.metalRejections += totalRejections
         }
+      }
+
+      const { data: metalWaste } = await supabase
+        .from('process_metal_detector_waste')
+        .select('quantity_kg')
+        .eq('process_step_run_id', stepRun.id)
+
+      if (metalWaste) {
+        const totalMetalWaste = metalWaste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
+        breakdown.metalWaste += totalMetalWaste
       }
     } else if (stepCode === 'SORT') {
       // Sorting step: outputs, reworks, and waste are handled within the sorting step UI
@@ -233,8 +266,9 @@ export async function calculateAvailableQuantity(
   // within the sorting step with sequential deduction: outputs → reworks → waste
   const totalWaste =
     breakdown.washingWaste +
+    breakdown.dryingWaste +
     breakdown.metalRejections +
-    // sortingWaste is NOT included - handled in sorting step UI
+    breakdown.metalWaste +
     breakdown.packagingWaste
 
   // Available quantity = initial - waste from previous steps (before sorting)

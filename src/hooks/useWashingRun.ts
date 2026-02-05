@@ -45,6 +45,8 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
       .from('process_washing_runs')
       .select('*')
       .eq('process_step_run_id', stepRunId)
+      .order('id', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (runError && runError.code !== 'PGRST116') {
@@ -87,28 +89,29 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
         throw new Error('Step run ID is required')
       }
 
-      if (washingRun) {
-        // Update existing
-        const { error: updateError } = await supabase
+      let runId = washingRun?.id
+      if (!runId) {
+        const { data: existingRun } = await supabase
           .from('process_washing_runs')
-          .update(data)
-          .eq('id', washingRun.id)
+          .select('id')
+          .eq('process_step_run_id', stepRunId)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        runId = existingRun?.id ?? null
+      }
 
-        if (updateError) {
-          throw updateError
-        }
-      } else {
-        // Create new
-        const { error: insertError } = await supabase
-          .from('process_washing_runs')
-          .insert({
-            process_step_run_id: stepRunId,
-            ...data,
-          })
+      const { error } = runId
+        ? await supabase
+            .from('process_washing_runs')
+            .update(data)
+            .eq('id', runId)
+        : await supabase
+            .from('process_washing_runs')
+            .insert({ process_step_run_id: stepRunId, ...data })
 
-        if (insertError) {
-          throw insertError
-        }
+      if (error) {
+        throw error
       }
 
       await fetchData()

@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect, useRef } from 'react'
+import { useState, FormEvent, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -60,6 +60,9 @@ export function WashingStep({
   const [saving, setSaving] = useState(false)
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextSaveRef = useRef(true)
+  const formDataRef = useRef(formData)
+
+  formDataRef.current = formData
 
   useEffect(() => {
     if (washingRun) {
@@ -72,6 +75,19 @@ export function WashingStep({
       skipNextSaveRef.current = true
     }
   }, [washingRun])
+
+  const flushSave = useCallback(() => {
+    const fd = formDataRef.current
+    saveWashingRun({
+      washing_water_litres: fd.washing_water_litres ? parseFloat(fd.washing_water_litres) : null,
+      oxy_acid_ml: fd.oxy_acid_ml ? parseFloat(fd.oxy_acid_ml) : null,
+      moisture_percent: fd.moisture_percent ? parseFloat(fd.moisture_percent) : null,
+      remarks: fd.remarks.trim() || null,
+    }).catch((err) => {
+      console.error('Error saving washing data:', err)
+      toast.error('Failed to save washing data')
+    })
+  }, [saveWashingRun])
 
   // Save on field change (debounced), then hook refetches in background
   useEffect(() => {
@@ -96,9 +112,13 @@ export function WashingStep({
       } finally {
         setSaving(false)
       }
-    }, 600)
+    }, 300)
     return () => {
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+        flushSave()
+      }
     }
   }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks])
 
@@ -192,6 +212,7 @@ export function WashingStep({
               placeholder="0.00"
               disabled={saving || externalLoading}
               className="bg-white"
+              required
             />
           </div>
 
@@ -207,6 +228,7 @@ export function WashingStep({
               placeholder="0.00"
               disabled={saving || externalLoading}
               className="bg-white"
+              required
             />
           </div>
 
@@ -223,6 +245,7 @@ export function WashingStep({
               placeholder="0.00"
               disabled={saving || externalLoading}
               className="bg-white"
+              required
             />
           </div>
         </div>

@@ -1,10 +1,11 @@
-import { useState, FormEvent, useEffect } from 'react'
+import { useState, FormEvent, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Shield, CheckCircle2, XCircle, Eye } from 'lucide-react'
+import { Shield, CheckCircle2, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
-import { getProcessStepQualityCheck } from '@/lib/processExecution'
+import { getProcessStepQualityCheck, saveProcessStepQualityCheck } from '@/lib/processExecution'
 import type { QualityParameter } from '@/hooks/useQualityParameters'
+import { useAuth } from '@/context/AuthContext'
 
 interface StepQCCheckProps {
   stepRunId: number
@@ -33,10 +34,12 @@ const SCORE_OPTIONS = [
 ]
 
 export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, loading = false }: StepQCCheckProps) {
+  const { user } = useAuth()
   const [scores, setScores] = useState<Record<string, number>>({})
   const [remarks, setRemarks] = useState<Record<string, string>>({})
   const [results, setResults] = useState<Record<string, string>>({})
   const [isEvaluating, setIsEvaluating] = useState(false)
+  const [autoSaving, setAutoSaving] = useState(false)
   const [savedQC, setSavedQC] = useState<{
     qualityCheck: {
       id: number
@@ -59,12 +62,18 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
       }
     }>
   } | null>(null)
-  const [showSavedQC, setShowSavedQC] = useState(false)
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextAutoSaveRef = useRef(false)
+  const lastSavedHashRef = useRef<string>('')
 
   // Load saved QC checks
   useEffect(() => {
     const loadSavedQC = async () => {
       try {
+        setScores({})
+        setRemarks({})
+        setResults({})
+        lastSavedHashRef.current = ''
         const qcData = await getProcessStepQualityCheck(stepRunId)
         setSavedQC(qcData)
 
@@ -86,7 +95,9 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
           setScores(newScores)
           setRemarks(newRemarks)
           setResults(newResults)
+          lastSavedHashRef.current = JSON.stringify({ scores: newScores, results: newResults, remarks: newRemarks })
         }
+        skipNextAutoSaveRef.current = true
       } catch (error) {
         // Silently fail if table doesn't exist yet
         if ((error as any)?.code !== 'PGRST205' && (error as any)?.code !== 'PGRST116') {
@@ -96,6 +107,17 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
     }
 
     loadSavedQC()
+  }, [stepRunId])
+
+  const refreshSavedQC = useCallback(async () => {
+    try {
+      const qcData = await getProcessStepQualityCheck(stepRunId)
+      setSavedQC(qcData)
+    } catch (error) {
+      if ((error as any)?.code !== 'PGRST205' && (error as any)?.code !== 'PGRST116') {
+        console.error('Error refreshing saved QC check:', error)
+      }
+    }
   }, [stepRunId])
 
   const handleScoreChange = (code: string, score: number | string) => {
@@ -110,6 +132,61 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
   const handleResultsChange = (code: string, value: string) => {
     setResults({ ...results, [code]: value })
   }
+
+  const hasFinalStatus = savedQC?.qualityCheck?.status === 'PASS' || savedQC?.qualityCheck?.status === 'FAIL'
+
+  // Auto-save QC changes (debounced)
+  useEffect(() => {
+    if (qualityParameters.length === 0) return
+    if (hasFinalStatus) return
+    const hasAnyInput =
+      Object.values(scores).some((score) => score > 0) ||
+      Object.values(results).some((value) => value?.trim()) ||
+      Object.values(remarks).some((value) => value?.trim())
+    if (!hasAnyInput) return
+
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false
+      return
+    }
+
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current)
+    }
+
+    const payloadHash = JSON.stringify({ scores, results, remarks })
+    if (payloadHash === lastSavedHashRef.current) return
+
+    autoSaveTimeoutRef.current = setTimeout(async () => {
+      autoSaveTimeoutRef.current = null
+      setAutoSaving(true)
+      try {
+        await saveProcessStepQualityCheck(stepRunId, {
+          scores,
+          results,
+          remarks,
+          qualityParameters: qualityParameters.map((p) => ({ id: p.id, code: p.code })),
+          evaluatedBy: user?.id ?? null,
+          isFinal: false,
+        })
+        lastSavedHashRef.current = payloadHash
+        await refreshSavedQC()
+      } catch (error) {
+        if ((error as any)?.code !== 'PGRST205' && (error as any)?.code !== 'PGRST116') {
+          console.error('Error auto-saving QC check:', error)
+        }
+      } finally {
+        setAutoSaving(false)
+      }
+    }, 600)
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current)
+        autoSaveTimeoutRef.current = null
+      }
+    }
+  }, [scores, results, remarks, qualityParameters, stepRunId, user?.id, refreshSavedQC, hasFinalStatus])
 
   const handleEvaluate = async (e: FormEvent) => {
     e.preventDefault()
@@ -147,6 +224,15 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
     }
 
     try {
+      await saveProcessStepQualityCheck(stepRunId, {
+        scores,
+        results,
+        remarks,
+        qualityParameters: qualityParameters.map((p) => ({ id: p.id, code: p.code })),
+        evaluatedBy: user?.id ?? null,
+        isFinal: true,
+      })
+      await refreshSavedQC()
       if (failedParameters.length === 0) {
         await onPass(qcData)
         toast.success('QC check passed')
@@ -173,8 +259,6 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
   })
 
   const hasSavedQC = savedQC?.qualityCheck !== null
-  // Auto-show saved QC if it exists
-  const shouldShowSavedQC = hasSavedQC && (showSavedQC || (savedQC?.items && savedQC.items.length > 0))
 
   return (
     <div className="space-y-4">
@@ -190,100 +274,7 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
             )}
           </h4>
         </div>
-        {hasSavedQC && (
-          <button
-            type="button"
-            onClick={() => setShowSavedQC(!showSavedQC)}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-text-dark/70 hover:bg-olive-light/20 hover:text-text-dark transition-colors"
-            title={showSavedQC ? 'Hide saved QC' : 'Show saved QC'}
-          >
-            <Eye className="h-4 w-4" />
-            {showSavedQC ? 'Hide' : 'Show'}
-          </button>
-        )}
       </div>
-
-      {/* Display saved QC check */}
-      {shouldShowSavedQC && savedQC && savedQC.qualityCheck && (() => {
-        const qc = savedQC.qualityCheck
-        return (
-          <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h5 className="text-sm font-semibold text-text-dark">Saved Quality Control Check</h5>
-                <p className="text-xs text-text-dark/60 mt-0.5">
-                  Status: <span className="font-medium">{qc.status}</span>
-                  {qc.overall_score !== null && (
-                    <> · Overall Score: <span className="font-medium">{qc.overall_score}</span></>
-                  )}
-                  {qc.evaluated_at && (
-                    <> · Evaluated: <span className="font-medium">{new Date(qc.evaluated_at).toLocaleString()}</span></>
-                  )}
-                </p>
-              </div>
-              <span
-                className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
-                  qc.status === 'PASS'
-                    ? 'bg-green-100 text-green-800'
-                    : qc.status === 'FAIL'
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-yellow-100 text-yellow-800'
-                }`}
-              >
-                {qc.status}
-              </span>
-            </div>
-
-          <div className="overflow-hidden rounded-xl border border-olive-light/40">
-            <table className="min-w-full divide-y divide-olive-light/30">
-              <thead className="bg-olive-light/20">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    Parameter
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    Result
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    Score
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    Remarks
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-olive-light/30 bg-white">
-                {savedQC.items.map((item) => {
-                  const isFailed = item.score > 0 && item.score < 3 && item.score !== 4
-                  const scoreLabel = SCORE_OPTIONS.find((opt) => opt.value === item.score)?.label || item.score.toString()
-                  return (
-                    <tr key={item.id} className={isFailed ? 'bg-red-50' : ''}>
-                      <td className="px-4 py-2">
-                        <p className="font-medium text-text-dark">{item.quality_parameter?.name || 'Unknown'}</p>
-                        <p className="text-xs text-text-dark/50 mt-0.5 font-mono">{item.quality_parameter?.code || 'N/A'}</p>
-                      </td>
-                      <td className="px-4 py-2">
-                        <p className="text-sm text-text-dark/70">{item.results || '—'}</p>
-                      </td>
-                      <td className="px-4 py-2">
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          isFailed ? 'bg-red-100 text-red-800' : item.score === 4 ? 'bg-gray-100 text-gray-800' : 'bg-green-100 text-green-800'
-                        }`}>
-                          {item.score === 4 ? 'N/A' : scoreLabel}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2">
-                        <p className="text-sm text-text-dark/70">{item.remarks || '—'}</p>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          </div>
-        )
-      })()}
 
       <form onSubmit={handleEvaluate} className="space-y-4">
         <div className="overflow-hidden rounded-xl border border-olive-light/40">

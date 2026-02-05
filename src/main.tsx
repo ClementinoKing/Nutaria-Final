@@ -1,4 +1,4 @@
-import { StrictMode, Suspense, lazy } from 'react'
+import { Suspense, lazy, Fragment } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'
@@ -14,8 +14,10 @@ if (!rootElement) {
   throw new Error('Root element not found')
 }
 
+const RootWrapper = import.meta.env.DEV ? Fragment : Fragment
+
 createRoot(rootElement).render(
-  <StrictMode>
+  <RootWrapper>
     <BrowserRouter>
       <AuthProvider>
         <ThemeProvider>
@@ -28,5 +30,5 @@ createRoot(rootElement).render(
     <Suspense fallback={null}>
       <Toaster position="top-right" richColors closeButton duration={5000} />
     </Suspense>
-  </StrictMode>
+  </RootWrapper>
 )
