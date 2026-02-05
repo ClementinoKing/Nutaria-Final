@@ -1612,17 +1612,6 @@ function Supplies() {
       }
 
       // COA available
-      if (supplyDocuments.coaAvailable) {
-        supplyDocumentsPayload.push({
-          supply_id: newSupplyId,
-          document_type_code: 'COA',
-          value: null,
-          date_value: null,
-          boolean_value: supplyDocuments.coaAvailable === 'YES',
-          document_id: null,
-        })
-      }
-
       if (supplyDocumentsPayload.length > 0) {
         const { error: documentsError } = await supabase
           .from('supply_documents')
@@ -1827,7 +1816,6 @@ function Supplies() {
         batchNumber: '',
         productionDate: '',
         expiryDate: '',
-        coaAvailable: '',
         invoiceFile: null,
       })
       setVehicleInspection({
@@ -1897,7 +1885,6 @@ function Supplies() {
         throw insertError
       }
       setSupplierCoaStatus('available')
-      setSupplyDocuments((prev) => ({ ...prev, coaAvailable: 'YES' }))
       setAddCoaModalOpen(false)
       setAddCoaFile(null)
       setAddCoaExpiry('')
@@ -1983,14 +1970,12 @@ function Supplies() {
         const batchDoc = getDoc('BATCH_NUMBER')
         const prodDoc = getDoc('PRODUCTION_DATE')
         const expDoc = getDoc('EXPIRY_DATE')
-        const coaDoc = getDoc('COA')
         setSupplyDocuments({
           invoiceNumber: (invDoc?.value as string) ?? '',
           driverLicenseName: (driverDoc?.value as string) ?? '',
           batchNumber: (batchDoc?.value as string) ?? '',
           productionDate: (prodDoc?.date_value as string) ?? '',
           expiryDate: (expDoc?.date_value as string) ?? '',
-          coaAvailable: coaDoc?.boolean_value === true ? 'YES' : coaDoc?.boolean_value === false ? 'NO' : '',
           invoiceFile: null,
         })
         setVehicleInspection({
@@ -2069,7 +2054,6 @@ function Supplies() {
       batchNumber: '',
       productionDate: '',
       expiryDate: '',
-      coaAvailable: '',
       invoiceFile: null,
     })
     setVehicleInspection({
@@ -2182,7 +2166,6 @@ function Supplies() {
       batchNumber: '',
       productionDate: '',
       expiryDate: '',
-      coaAvailable: '',
       invoiceFile: null,
     })
     setVehicleInspection({
@@ -2425,7 +2408,7 @@ function Supplies() {
     }
   }, [location.state, location.pathname, navigate])
 
-  // Fetch supplier COA status only when on the documents step (step 1) to avoid re-renders/jitter when selecting supplier on step 0
+  // Fetch supplier COA status only when on the documents step (step 1). Avoid synchronous setState to prevent extra render.
   useEffect(() => {
     if (currentStep !== 1) {
       return
@@ -2437,7 +2420,6 @@ function Supplies() {
       return
     }
     let cancelled = false
-    setSupplierCoaLoading(true)
     supabase
       .from('documents')
       .select('id, expiry_date')
@@ -2873,19 +2855,24 @@ function Supplies() {
                             COA available
                           </span>
                         ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setAddCoaFile(null)
-                              setAddCoaExpiry('')
-                              setAddCoaModalOpen(true)
-                            }}
-                            disabled={isSubmitting}
-                          >
-                            Add a new COA
-                          </Button>
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setAddCoaFile(null)
+                                setAddCoaExpiry('')
+                                setAddCoaModalOpen(true)
+                              }}
+                              disabled={isSubmitting}
+                            >
+                              Add a new COA
+                            </Button>
+                            <p className="text-xs text-text-dark/60">
+                              Use when the supplier&apos;s COA is expired or missing.
+                            </p>
+                          </>
                         )}
                       </div>
                     )}
@@ -3036,26 +3023,14 @@ function Supplies() {
                     </div>
 
                     <div className={sectionCardClass}>
-                      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
-                            Supply batches
-                          </h3>
-                          <p className="text-sm text-text-dark/70 dark:text-slate-300">
-                            Enter each batch after completing quality evaluation, then allocate accepted and rejected
-                            quantities.
-                          </p>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={addSupplyBatch}
-                          className="border-olive-light/60 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-900/60"
-                          disabled={isSubmitting}
-                        >
-                          Add batch
-                        </Button>
+                      <div className="mb-6">
+                        <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
+                          Supply batches
+                        </h3>
+                        <p className="text-sm text-text-dark/70 dark:text-slate-300">
+                          Enter each batch after completing quality evaluation, then allocate accepted and rejected
+                          quantities.
+                        </p>
                       </div>
 
                       <div className="space-y-6">
@@ -3217,6 +3192,19 @@ function Supplies() {
                             </div>
                           </div>
                         ))}
+                      </div>
+
+                      <div className="mt-6 flex justify-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={addSupplyBatch}
+                          className="border-olive-light/60 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-900/60"
+                          disabled={isSubmitting}
+                        >
+                          Add batch
+                        </Button>
                       </div>
                     </div>
 

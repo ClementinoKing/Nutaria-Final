@@ -45,8 +45,7 @@ export function useProcessStepRuns(options: UseProcessStepRunsOptions): UseProce
         started_at,
         completed_at,
         performed_by,
-        location_id,
-        notes
+        location_id
       `)
       .eq('process_lot_run_id', lotRunId)
 

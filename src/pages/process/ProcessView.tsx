@@ -19,7 +19,6 @@ interface StepProgress {
   operator?: string
   quantity_in?: string | number
   quantity_out?: string | number
-  notes?: string
   [key: string]: unknown
 }
 
@@ -31,7 +30,6 @@ interface ProcessStepRun {
   completed_at: string | null
   performed_by: string | null
   location_id: number | null
-  notes: string | null
   process_steps?: {
     id: number
     seq: number
@@ -126,7 +124,7 @@ interface TimelineItem {
   location?: string | undefined
   quantity_in: string | number | undefined
   quantity_out: string | number | undefined
-  notes: string | undefined
+  notes?: string | undefined
   nonConformances?: ProcessNonConformance[]
 }
 
@@ -219,7 +217,7 @@ function ProcessView() {
     const lotRunIds = runsData.map((run) => run.id)
     const { data: stepRunsData, error: stepRunsError } = await supabase
       .from('process_step_runs')
-      .select('id, process_lot_run_id, process_step_id, status, started_at, completed_at, performed_by, location_id, notes')
+      .select('id, process_lot_run_id, process_step_id, status, started_at, completed_at, performed_by, location_id')
       .in('process_lot_run_id', lotRunIds)
 
     if (stepRunsError) {
@@ -428,7 +426,6 @@ function ProcessView() {
             location: locationName,
             quantity_in: undefined,
             quantity_out: undefined,
-            notes: stepRun.notes ?? undefined,
             measurements: [],
             nonConformances: stepRun.process_non_conformances || [],
           }
@@ -457,7 +454,6 @@ function ProcessView() {
             operator: step.operator,
             quantity_in: step.quantity_in,
             quantity_out: step.quantity_out,
-            notes: step.notes,
           }
         })
       }
@@ -918,11 +914,6 @@ function ProcessView() {
                                 </div>
                               )}
 
-                              {item.notes && (
-                                <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-4 py-3 text-sm text-text-dark/80">
-                                  <span className="font-medium text-text-dark">Notes:</span> {item.notes}
-                                </div>
-                              )}
                             </div>
                           </div>
                         </div>

@@ -1,8 +1,8 @@
-import { useState, FormEvent, useEffect, useMemo } from 'react'
+import { useState, FormEvent, useEffect, useMemo, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, Save } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMetalDetection } from '@/hooks/useMetalDetection'
 import type { ProcessStepRun, MetalDetectionFormData, ForeignObjectRejectionFormData } from '@/types/processExecution'
@@ -50,7 +50,7 @@ export function MetalDetectionStep({
   availableQuantity,
   onQuantityChange,
 }: MetalDetectionStepProps) {
-  const { session, rejections, loading, saveSession, addRejection, deleteRejection } = useMetalDetection({
+  const { session, rejections, saveSession, addRejection, deleteRejection } = useMetalDetection({
     stepRunId: stepRun.id,
     enabled: true,
   })
@@ -72,14 +72,45 @@ export function MetalDetectionStep({
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
   const [rejectionToDeleteId, setRejectionToDeleteId] = useState<number | null>(null)
 
+  const sessionSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextSessionSaveRef = useRef(true)
+
   useEffect(() => {
     if (session) {
       setSessionFormData({
         start_time: toLocalDateTimeInput(session.start_time),
         end_time: toLocalDateTimeInput(session.end_time),
       })
+      skipNextSessionSaveRef.current = true
     }
   }, [session])
+
+  useEffect(() => {
+    if (skipNextSessionSaveRef.current) {
+      skipNextSessionSaveRef.current = false
+      return
+    }
+    if (!sessionFormData.start_time) return
+    if (sessionSaveTimeoutRef.current) clearTimeout(sessionSaveTimeoutRef.current)
+    sessionSaveTimeoutRef.current = setTimeout(async () => {
+      sessionSaveTimeoutRef.current = null
+      setSaving(true)
+      try {
+        await saveSession({
+          start_time: toISOString(sessionFormData.start_time)!,
+          end_time: sessionFormData.end_time ? toISOString(sessionFormData.end_time) : null,
+        })
+      } catch (error) {
+        console.error('Error saving session:', error)
+        toast.error('Failed to save session')
+      } finally {
+        setSaving(false)
+      }
+    }, 600)
+    return () => {
+      if (sessionSaveTimeoutRef.current) clearTimeout(sessionSaveTimeoutRef.current)
+    }
+  }, [sessionFormData.start_time, sessionFormData.end_time])
 
   // Generate hourly checks based on session times
   const hourlyChecks = useMemo(() => {
@@ -102,29 +133,6 @@ export function MetalDetectionStep({
 
     return hours
   }, [session])
-
-  const handleSessionSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-
-    if (!sessionFormData.start_time) {
-      toast.error('Start time is required')
-      return
-    }
-
-    setSaving(true)
-    try {
-      await saveSession({
-        start_time: toISOString(sessionFormData.start_time)!,
-        end_time: sessionFormData.end_time ? toISOString(sessionFormData.end_time) : null,
-      })
-      toast.success('Session saved successfully')
-    } catch (error) {
-      console.error('Error saving session:', error)
-      toast.error('Failed to save session')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const handleRejectionSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -202,8 +210,8 @@ export function MetalDetectionStep({
           </div>
         </div>
       )}
-      {/* Session Form */}
-      <form onSubmit={handleSessionSubmit} className="space-y-4">
+      {/* Session times */}
+      <div className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="start_time">Start Time *</Label>
@@ -212,7 +220,6 @@ export function MetalDetectionStep({
               type="datetime-local"
               value={sessionFormData.start_time}
               onChange={(e) => setSessionFormData({ ...sessionFormData, start_time: e.target.value })}
-              required
               disabled={saving || externalLoading}
               className="bg-white"
             />
@@ -230,14 +237,7 @@ export function MetalDetectionStep({
             />
           </div>
         </div>
-
-        <div className="flex justify-end">
-          <Button type="submit" disabled={saving || externalLoading || loading} className="bg-olive hover:bg-olive-dark">
-            <Save className="mr-2 h-4 w-4" />
-            Save Session
-          </Button>
-        </div>
-      </form>
+      </div>
 
       {/* Hourly Verification Grid */}
       {session && hourlyChecks.length > 0 && (

@@ -1,8 +1,8 @@
-import { useState, FormEvent, useEffect } from 'react'
+import { useState, FormEvent, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, Save } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useWashingRun } from '@/hooks/useWashingRun'
 import type { ProcessStepRun, WashingFormData, WashingWasteFormData } from '@/types/processExecution'
@@ -58,6 +58,8 @@ export function WashingStep({
 
   const [showWasteForm, setShowWasteForm] = useState(false)
   const [saving, setSaving] = useState(false)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextSaveRef = useRef(true)
 
   useEffect(() => {
     if (washingRun) {
@@ -67,28 +69,38 @@ export function WashingStep({
         moisture_percent: washingRun.moisture_percent?.toString() || '',
         remarks: washingRun.remarks || '',
       })
+      skipNextSaveRef.current = true
     }
   }, [washingRun])
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-
-    try {
-      await saveWashingRun({
-        washing_water_litres: formData.washing_water_litres ? parseFloat(formData.washing_water_litres) : null,
-        oxy_acid_ml: formData.oxy_acid_ml ? parseFloat(formData.oxy_acid_ml) : null,
-        moisture_percent: formData.moisture_percent ? parseFloat(formData.moisture_percent) : null,
-        remarks: formData.remarks.trim() || null,
-      })
-      toast.success('Washing data saved successfully')
-    } catch (error) {
-      console.error('Error saving washing data:', error)
-      toast.error('Failed to save washing data')
-    } finally {
-      setSaving(false)
+  // Save on field change (debounced), then hook refetches in background
+  useEffect(() => {
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false
+      return
     }
-  }
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(async () => {
+      saveTimeoutRef.current = null
+      setSaving(true)
+      try {
+        await saveWashingRun({
+          washing_water_litres: formData.washing_water_litres ? parseFloat(formData.washing_water_litres) : null,
+          oxy_acid_ml: formData.oxy_acid_ml ? parseFloat(formData.oxy_acid_ml) : null,
+          moisture_percent: formData.moisture_percent ? parseFloat(formData.moisture_percent) : null,
+          remarks: formData.remarks.trim() || null,
+        })
+      } catch (error) {
+        console.error('Error saving washing data:', error)
+        toast.error('Failed to save washing data')
+      } finally {
+        setSaving(false)
+      }
+    }, 600)
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    }
+  }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks])
 
   const handleWasteSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -166,7 +178,7 @@ export function WashingStep({
           </div>
         </div>
       )}
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="washing_water_litres">Washing Water (Litres)</Label>
@@ -226,14 +238,7 @@ export function WashingStep({
             disabled={saving || externalLoading}
           />
         </div>
-
-        <div className="flex justify-end">
-          <Button type="submit" disabled={saving || externalLoading || loading} className="bg-olive hover:bg-olive-dark">
-            <Save className="mr-2 h-4 w-4" />
-            Save Washing Data
-          </Button>
-        </div>
-      </form>
+      </div>
 
       {/* Waste Section */}
       <div className="border-t border-olive-light/20 pt-4 space-y-4">

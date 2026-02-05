@@ -21,7 +21,6 @@ export interface ProcessStepRun {
   completed_at: string | null
   performed_by: string | null // UUID
   location_id: number | null
-  notes: string | null
   skipped_at?: string | null
   skipped_by?: string | null // UUID
   // Joined fields
@@ -157,7 +156,6 @@ export interface StepExecutionFormData {
   started_at: string | null
   completed_at: string | null
   location_id: string
-  notes: string
   quantity_out: string
 }
 

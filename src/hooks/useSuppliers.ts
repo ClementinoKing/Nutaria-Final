@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PostgrestError } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -23,14 +23,18 @@ interface UseSuppliersReturn {
   refresh: (override?: UseSuppliersOptions) => Promise<{ error?: PostgrestError; data?: Supplier[] }>
 }
 
-export function useSuppliers(options: UseSuppliersOptions = {}): UseSuppliersReturn {
+const EMPTY_OPTIONS: UseSuppliersOptions = {}
+
+export function useSuppliers(options: UseSuppliersOptions = EMPTY_OPTIONS): UseSuppliersReturn {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
   const [totalCount, setTotalCount] = useState(0)
+  const optionsRef = useRef(options)
+  optionsRef.current = options
 
   const fetchSuppliers = useCallback(async (override: UseSuppliersOptions = {}) => {
-    const merged = { ...options, ...override }
+    const merged = { ...optionsRef.current, ...override }
     const searchQuery = merged.searchQuery?.trim() || null
     const filterType = merged.filterType?.trim() || null
     const filterCountry = merged.filterCountry?.trim() || null
@@ -69,7 +73,7 @@ export function useSuppliers(options: UseSuppliersOptions = {}): UseSuppliersRet
     setTotalCount((prev) => (rows.length === 0 && offset > 0 ? prev : nextTotal))
     setLoading(false)
     return { data: cleaned }
-  }, [options])
+  }, [])
 
   useEffect(() => {
     fetchSuppliers()

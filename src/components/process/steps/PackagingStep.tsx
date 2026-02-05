@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { Plus, Trash2, Save, Upload, Package as PackageIcon } from 'lucide-react'
+import { Plus, Trash2, Upload, Package as PackageIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
@@ -270,8 +270,61 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         allergen_swab_result: packagingRun.allergen_swab_result || '',
         remarks: packagingRun.remarks || '',
       })
+      skipNextSaveRef.current = true
     }
   }, [packagingRun])
+
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextSaveRef = useRef(true)
+
+  const performSavePackaging = async () => {
+    setSaving(true)
+    try {
+      await savePackagingRun({
+        visual_status: formData.visual_status.trim() || null,
+        rework_destination: formData.rework_destination.trim() || null,
+        pest_status: formData.pest_status.trim() || null,
+        foreign_object_status: formData.foreign_object_status.trim() || null,
+        mould_status: formData.mould_status.trim() || null,
+        damaged_kernels_pct: formData.damaged_kernels_pct ? parseFloat(formData.damaged_kernels_pct) : null,
+        insect_damaged_kernels_pct: formData.insect_damaged_kernels_pct
+          ? parseFloat(formData.insect_damaged_kernels_pct)
+          : null,
+        nitrogen_used: formData.nitrogen_used ? parseFloat(formData.nitrogen_used) : null,
+        nitrogen_batch_number: formData.nitrogen_batch_number.trim() || null,
+        primary_packaging_type: formData.primary_packaging_type.trim() || null,
+        primary_packaging_batch: formData.primary_packaging_batch.trim() || null,
+        secondary_packaging: formData.secondary_packaging.trim() || null,
+        secondary_packaging_type: formData.secondary_packaging_type.trim() || null,
+        secondary_packaging_batch: formData.secondary_packaging_batch.trim() || null,
+        label_correct: formData.label_correct ? (formData.label_correct as 'Yes' | 'No' | 'NA') : null,
+        label_legible: formData.label_legible ? (formData.label_legible as 'Yes' | 'No' | 'NA') : null,
+        pallet_integrity: formData.pallet_integrity ? (formData.pallet_integrity as 'Yes' | 'No' | 'NA') : null,
+        allergen_swab_result: formData.allergen_swab_result.trim() || null,
+        remarks: formData.remarks.trim() || null,
+      })
+    } catch (error) {
+      console.error('Error saving packaging data:', error)
+      toast.error('Failed to save packaging data')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  useEffect(() => {
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false
+      return
+    }
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null
+      performSavePackaging()
+    }, 600)
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    }
+  }, [formData])
 
   useEffect(() => {
     if (packagingRun || loading || externalLoading || saving || autoCreateAttemptedRef.current) {
@@ -312,43 +365,6 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         setAutoCreatingRun(false)
       })
   }, [packagingRun, loading, externalLoading, saving, savePackagingRun])
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-
-    try {
-      await savePackagingRun({
-        visual_status: formData.visual_status.trim() || null,
-        rework_destination: formData.rework_destination.trim() || null,
-        pest_status: formData.pest_status.trim() || null,
-        foreign_object_status: formData.foreign_object_status.trim() || null,
-        mould_status: formData.mould_status.trim() || null,
-        damaged_kernels_pct: formData.damaged_kernels_pct ? parseFloat(formData.damaged_kernels_pct) : null,
-        insect_damaged_kernels_pct: formData.insect_damaged_kernels_pct
-          ? parseFloat(formData.insect_damaged_kernels_pct)
-          : null,
-        nitrogen_used: formData.nitrogen_used ? parseFloat(formData.nitrogen_used) : null,
-        nitrogen_batch_number: formData.nitrogen_batch_number.trim() || null,
-        primary_packaging_type: formData.primary_packaging_type.trim() || null,
-        primary_packaging_batch: formData.primary_packaging_batch.trim() || null,
-        secondary_packaging: formData.secondary_packaging.trim() || null,
-        secondary_packaging_type: formData.secondary_packaging_type.trim() || null,
-        secondary_packaging_batch: formData.secondary_packaging_batch.trim() || null,
-        label_correct: formData.label_correct ? (formData.label_correct as 'Yes' | 'No' | 'NA') : null,
-        label_legible: formData.label_legible ? (formData.label_legible as 'Yes' | 'No' | 'NA') : null,
-        pallet_integrity: formData.pallet_integrity ? (formData.pallet_integrity as 'Yes' | 'No' | 'NA') : null,
-        allergen_swab_result: formData.allergen_swab_result.trim() || null,
-        remarks: formData.remarks.trim() || null,
-      })
-      toast.success('Packaging data saved successfully')
-    } catch (error) {
-      console.error('Error saving packaging data:', error)
-      toast.error('Failed to save packaging data')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const handleWeightCheckSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -867,7 +883,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="space-y-4">
         {/* Visual Inspection */}
         <div className="border-b border-olive-light/20 pb-4">
           <h4 className="text-sm font-semibold text-text-dark mb-4">Visual Inspection</h4>
@@ -1176,14 +1192,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             disabled={saving || externalLoading}
           />
         </div>
-
-        <div className="flex justify-end">
-          <Button type="submit" disabled={saving || externalLoading || loading} className="bg-olive hover:bg-olive-dark">
-            <Save className="mr-2 h-4 w-4" />
-            Save Packaging Data
-          </Button>
-        </div>
-      </form>
+      </div>
 
       {/* Weight Verification */}
       <div className="border-t border-olive-light/20 pt-4 space-y-4">

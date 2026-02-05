@@ -1,8 +1,6 @@
-import { useState, FormEvent, useEffect } from 'react'
-import { Button } from '@/components/ui/button'
+import { useState, useEffect, useRef } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDryingRun } from '@/hooks/useDryingRun'
 import type { ProcessStepRun, DryingFormData } from '@/types/processExecution'
@@ -45,7 +43,7 @@ export function DryingStep({
   loading: externalLoading = false,
   availableQuantity,
 }: DryingStepProps) {
-  const { dryingRun, loading, saveDryingRun } = useDryingRun({
+  const { dryingRun, saveDryingRun } = useDryingRun({
     stepRunId: stepRun.id,
     enabled: true,
   })
@@ -63,6 +61,8 @@ export function DryingStep({
   })
 
   const [saving, setSaving] = useState(false)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const skipNextSaveRef = useRef(true)
 
   useEffect(() => {
     if (dryingRun) {
@@ -77,21 +77,17 @@ export function DryingStep({
         dryer_hygiene_clean: dryingRun.dryer_hygiene_clean || '',
         remarks: dryingRun.remarks || '',
       })
+      skipNextSaveRef.current = true
     }
   }, [dryingRun])
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-
-    // Validation: moisture_out cannot exceed moisture_in
+  const performSave = async () => {
     const moistureIn = formData.moisture_in ? parseFloat(formData.moisture_in) : null
     const moistureOut = formData.moisture_out ? parseFloat(formData.moisture_out) : null
-
     if (moistureIn !== null && moistureOut !== null && moistureOut > moistureIn) {
       toast.error('Moisture out cannot exceed moisture in')
       return
     }
-
     setSaving(true)
     try {
       await saveDryingRun({
@@ -105,7 +101,6 @@ export function DryingStep({
         dryer_hygiene_clean: formData.dryer_hygiene_clean ? (formData.dryer_hygiene_clean as 'Yes' | 'No' | 'NA') : null,
         remarks: formData.remarks.trim() || null,
       })
-      toast.success('Drying data saved successfully')
     } catch (error) {
       console.error('Error saving drying data:', error)
       toast.error('Failed to save drying data')
@@ -113,6 +108,31 @@ export function DryingStep({
       setSaving(false)
     }
   }
+
+  useEffect(() => {
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false
+      return
+    }
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null
+      performSave()
+    }, 600)
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    }
+  }, [
+    formData.dryer_temperature_c,
+    formData.time_in,
+    formData.time_out,
+    formData.moisture_in,
+    formData.moisture_out,
+    formData.crates_clean,
+    formData.insect_infestation,
+    formData.dryer_hygiene_clean,
+    formData.remarks,
+  ])
 
   return (
     <div className="space-y-6">
@@ -127,7 +147,7 @@ export function DryingStep({
           </div>
         </div>
       )}
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="dryer_temperature_c">Dryer Temperature (°C)</Label>
@@ -272,13 +292,7 @@ export function DryingStep({
         />
       </div>
 
-      <div className="flex justify-end">
-        <Button type="submit" disabled={saving || externalLoading || loading} className="bg-olive hover:bg-olive-dark">
-          <Save className="mr-2 h-4 w-4" />
-          Save Drying Data
-        </Button>
-      </div>
-    </form>
+    </div>
     </div>
   )
 }

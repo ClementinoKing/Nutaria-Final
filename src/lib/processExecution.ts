@@ -211,7 +211,6 @@ export async function updateProcessStepRun(
     completed_at?: string | null
     performed_by?: string | null
     location_id?: number | null
-    notes?: string | null
   }
 ): Promise<ProcessStepRun> {
   const { data, error } = await supabase

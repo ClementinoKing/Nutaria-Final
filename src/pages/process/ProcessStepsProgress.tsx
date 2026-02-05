@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState, ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, ChangeEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, Save, Plus, SkipForward } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin, PlayCircle, Plus, SkipForward } from 'lucide-react'
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
@@ -439,13 +439,14 @@ function ProcessStepsProgress() {
     started_at: string
     completed_at: string
     location_id: string
-    notes: string
   }>({
     started_at: '',
     completed_at: '',
     location_id: '',
-    notes: '',
   })
+
+  const stepFormInitialized = useRef(false)
+  const stepFormSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (activeStepRun) {
@@ -453,37 +454,48 @@ function ProcessStepsProgress() {
         started_at: toLocalDateTimeInput(activeStepRun.started_at),
         completed_at: toLocalDateTimeInput(activeStepRun.completed_at),
         location_id: String(activeStepRun.location_id ?? activeStep?.default_location_id ?? ''),
-        notes: activeStepRun.notes ?? '',
       })
+      stepFormInitialized.current = true
+      stepFormSaveSkippedFirst.current = false
     }
   }, [activeStepRun, activeStep])
 
-  const handleSaveStep = async () => {
-    if (!activeStepRun) return
-
-    const updates: Partial<ProcessStepRun> = {
-      started_at: stepFormData.started_at ? toISOString(stepFormData.started_at) : activeStepRun.started_at,
-      completed_at: stepFormData.completed_at ? toISOString(stepFormData.completed_at) : activeStepRun.completed_at,
-      location_id: stepFormData.location_id ? parseInt(stepFormData.location_id, 10) : null,
-      notes: stepFormData.notes,
+  const stepFormSaveSkippedFirst = useRef(false)
+  // Auto-save step details on field change (debounced), then refresh in background
+  useEffect(() => {
+    if (!activeStepRun || !stepFormInitialized.current) return
+    if (!stepFormSaveSkippedFirst.current) {
+      stepFormSaveSkippedFirst.current = true
+      return
     }
 
-    if (!activeStepRun.performed_by && user?.id) {
-      updates.performed_by = user.id
+    if (stepFormSaveTimeout.current) {
+      clearTimeout(stepFormSaveTimeout.current)
     }
 
-    setSaving(true)
-    try {
-      await updateProcessStepRun(activeStepRun.id, updates)
-      await refreshStepRuns()
-      toast.success('Step details saved')
-    } catch (error) {
-      console.error('Error saving step:', error)
-      toast.error('Failed to save step details')
-    } finally {
-      setSaving(false)
+    stepFormSaveTimeout.current = setTimeout(async () => {
+      stepFormSaveTimeout.current = null
+      const updates: Partial<ProcessStepRun> = {
+        started_at: stepFormData.started_at ? toISOString(stepFormData.started_at) : activeStepRun.started_at,
+        completed_at: stepFormData.completed_at ? toISOString(stepFormData.completed_at) : activeStepRun.completed_at,
+        location_id: stepFormData.location_id ? parseInt(stepFormData.location_id, 10) : null,
+      }
+      if (!activeStepRun.performed_by && user?.id) {
+        updates.performed_by = user.id
+      }
+      try {
+        await updateProcessStepRun(activeStepRun.id, updates)
+        await refreshStepRuns()
+      } catch (error) {
+        console.error('Error saving step:', error)
+        toast.error('Failed to save step details')
+      }
+    }, 600)
+
+    return () => {
+      if (stepFormSaveTimeout.current) clearTimeout(stepFormSaveTimeout.current)
     }
-  }
+  }, [stepFormData.started_at, stepFormData.completed_at, stepFormData.location_id, activeStepRun?.id, user?.id])
 
   const handleQCPass = async () => {
     toast.success('QC check passed')
@@ -622,24 +634,19 @@ function ProcessStepsProgress() {
           </CardContent>
         </Card>
       ) : !lotRunId ? (
-        <Card className="border-yellow-200 bg-yellow-50 text-yellow-800">
-          <CardContent className="space-y-4 py-4">
-            <div className="space-y-2">
-              <CardTitle className="text-base">No Process Lot Run</CardTitle>
-              <p className="text-sm text-yellow-800/80">
-                No process lot run exists for this batch. Process lot runs are automatically created when supply batches
-                are created with quality status PASSED. You can create one manually if the batch is ready for processing.
-              </p>
-            </div>
-            <Button
-              onClick={handleCreateLotRun}
-              disabled={creatingLotRun || !selectedLot}
-              className="bg-yellow-600 hover:bg-yellow-700 text-white"
-            >
-              {creatingLotRun ? 'Creating...' : 'Create Process Lot Run'}
-            </Button>
-          </CardContent>
-        </Card>
+        <div className="flex min-h-[calc(100vh-12rem)] flex-col items-center justify-center gap-6 px-4">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-olive/10 text-olive">
+            <PlayCircle className="h-10 w-10" strokeWidth={1.5} aria-hidden />
+          </div>
+          <Button
+            size="lg"
+            onClick={handleCreateLotRun}
+            disabled={creatingLotRun || !selectedLot}
+            className="bg-olive hover:bg-olive-dark text-white px-8 text-base font-medium"
+          >
+            {creatingLotRun ? 'Starting…' : 'Start Process'}
+          </Button>
+        </div>
       ) : (
         <>
           <Card className="bg-white border-olive-light/30">
@@ -913,20 +920,6 @@ function ProcessStepsProgress() {
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label htmlFor="step_notes">Notes</Label>
-                        <textarea
-                          id="step_notes"
-                          className="min-h-[70px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          value={stepFormData.notes}
-                          onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                            setStepFormData({ ...stepFormData, notes: e.target.value })
-                          }
-                          placeholder="Add context, QC remarks or deviations…"
-                          disabled={saving || loadingStepRuns}
-                        />
-                      </div>
-
                       {/* Step-Specific Components */}
                       <div className="border-t border-olive-light/20 pt-4">
                         <div className="mb-4">
@@ -1045,19 +1038,6 @@ function ProcessStepsProgress() {
                           onResolve={resolveNonConformance}
                           loading={saving}
                         />
-                      </div>
-
-                      <div className="flex justify-end">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={handleSaveStep}
-                          disabled={saving || loadingStepRuns}
-                          className="border-olive-light/30"
-                        >
-                          <Save className="mr-2 h-4 w-4" />
-                          Save Step Details
-                        </Button>
                       </div>
                     </div>
                   )}
