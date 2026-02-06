@@ -87,12 +87,20 @@ interface ShipmentFormItem {
 
 interface PackedEntryOption {
   id: number
+  packaging_allocation_id: number
+  storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+  units_count: number
+  packs_per_unit: number
+  total_packs: number
+  total_quantity_kg: number
+  available_units: number
+  unit_quantity_kg: number
+  pack_entry_id: number
   product_id: number
   product_name: string
   product_sku: string
   pack_identifier: string
   pack_size_kg: number | null
-  pack_count: number | null
   lot_no: string | null
   created_at: string | null
 }
@@ -133,8 +141,8 @@ const statusOptions = [
 const SHIPMENT_FORM_STEPS = [
   { key: 1, label: 'Details', icon: FileText },
   { key: 2, label: 'Warehouse & Carrier', icon: Truck },
-  { key: 3, label: 'Allocation', icon: Package },
-  { key: 4, label: 'Boxing & Review', icon: MessageSquare },
+  { key: 3, label: 'Stored Packs', icon: Package },
+  { key: 4, label: 'Review', icon: MessageSquare },
 ] as const
 const TOTAL_STEPS = SHIPMENT_FORM_STEPS.length
 
@@ -245,6 +253,7 @@ function Shipments() {
   const [formStep, setFormStep] = useState(1)
   const [packedEntries, setPackedEntries] = useState<PackedEntryOption[]>([])
   const [loadingPackedEntries, setLoadingPackedEntries] = useState(false)
+  const [editingOriginalUnitsByAllocation, setEditingOriginalUnitsByAllocation] = useState<Record<number, number>>({})
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 20
   const location = useLocation()
@@ -380,7 +389,7 @@ function Shipments() {
 
   const allocationTotals = useMemo(() => {
     const byEntry = new Map<number, number>()
-    let totalPacks = 0
+    let totalUnits = 0
     let totalKg = 0
     formData.allocations.forEach((alloc) => {
       const entryId = Number(alloc.pack_entry_id)
@@ -388,12 +397,12 @@ function Shipments() {
       if (!entryId || count <= 0) return
       const entry = packEntryMap.get(entryId)
       byEntry.set(entryId, (byEntry.get(entryId) ?? 0) + count)
-      totalPacks += count
-      if (entry?.pack_size_kg) {
-        totalKg += count * entry.pack_size_kg
+      totalUnits += count
+      if (entry?.unit_quantity_kg) {
+        totalKg += count * entry.unit_quantity_kg
       }
     })
-    return { byEntry, totalPacks, totalKg }
+    return { byEntry, totalUnits, totalKg }
   }, [formData.allocations, packEntryMap])
 
   const boxingTotals = useMemo(() => {
@@ -452,50 +461,89 @@ function Shipments() {
   const loadPackedEntries = useCallback(async () => {
     setLoadingPackedEntries(true)
     try {
-      const { data: entries, error: entriesError } = await supabase
-        .from('process_packaging_pack_entries')
+      const { data: allocations, error: allocationsError } = await supabase
+        .from('process_packaging_storage_allocations')
         .select(`
           id,
-          pack_identifier,
-          pack_size_kg,
-          pack_count,
+          storage_type,
+          units_count,
+          packs_per_unit,
+          total_packs,
+          total_quantity_kg,
           created_at,
-          sorting_output:process_sorting_outputs(
+          pack_entry_id,
+          pack_entry:process_packaging_pack_entries(
+            id,
             product_id,
-            product:products(id, name, sku)
-          ),
-          packaging_run:process_packaging_runs(
-            process_step_runs(
-              process_lot_runs(
-                supply_batches(lot_no)
+            pack_identifier,
+            pack_size_kg,
+            sorting_output:process_sorting_outputs(
+              product_id,
+              product:products(id, name, sku)
+            ),
+            packaging_run:process_packaging_runs(
+              process_step_runs(
+                process_lot_runs(
+                  supply_batches(lot_no)
+                )
               )
             )
           )
         `)
         .order('created_at', { ascending: false })
 
-      if (entriesError) {
+      if (allocationsError) {
         setPackedEntries([])
         setLoadingPackedEntries(false)
         return
       }
 
-      const list = (entries ?? []) as Array<{
+      const { data: shipmentUsageRows } = await supabase
+        .from('shipment_pack_items')
+        .select(`
+          packaging_allocation_id,
+          units_count,
+          shipment:shipments(doc_status)
+        `)
+
+      const usedUnitsByAllocation = new Map<number, number>()
+      ;((shipmentUsageRows ?? []) as Array<{
+        packaging_allocation_id: number | null
+        units_count: number | null
+        shipment: { doc_status?: string | null } | null
+      }>).forEach((row) => {
+        if (!row.packaging_allocation_id) return
+        const status = row.shipment?.doc_status ?? null
+        if (status === 'CANCELLED') return
+        const used = Number(row.units_count) || 0
+        usedUnitsByAllocation.set(row.packaging_allocation_id, (usedUnitsByAllocation.get(row.packaging_allocation_id) ?? 0) + used)
+      })
+
+      const list = (allocations ?? []) as Array<{
         id: number
-        pack_identifier: string
-        pack_size_kg: number | null
-        pack_count: number | null
+        storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+        units_count: number
+        packs_per_unit: number
+        total_packs: number
+        total_quantity_kg: number
         created_at: string | null
-        sorting_output: {
-          product_id?: number
-          product?: { name?: string | null; sku?: string | null }
-        } | null
-        packaging_run: {
-          process_step_runs?: {
-            process_lot_runs?: {
-              supply_batches?: { lot_no?: string | null } | null
-            } | null
-          } | { process_lot_runs?: { supply_batches?: { lot_no?: string | null } | null } | null }[] | null
+        pack_entry_id: number
+        pack_entry: {
+          id: number
+          product_id: number | null
+          pack_identifier: string
+          pack_size_kg: number | null
+          sorting_output: {
+            product_id?: number
+            product?: { name?: string | null; sku?: string | null }
+          } | null
+          packaging_run: {
+            process_step_runs?: {
+              process_lot_runs?: {
+                supply_batches?: { lot_no?: string | null } | null
+              } | null
+            } | { process_lot_runs?: { supply_batches?: { lot_no?: string | null } | null } | null }[] | null
+          } | null
         } | null
       }>
 
@@ -503,24 +551,38 @@ function Shipments() {
         Array.isArray(value) ? value[0] ?? null : value ?? null
 
       const result = list
-        .map((entry) => {
-          const productId = entry.sorting_output?.product_id
+        .map((allocation) => {
+          const productId = allocation.pack_entry?.sorting_output?.product_id
           if (!productId) return null
-          if (entry.pack_count == null || entry.pack_count <= 0) return null
-          const productName = entry.sorting_output?.product?.name ?? 'Unknown'
-          const productSku = entry.sorting_output?.product?.sku ?? ''
-          const stepRun = unwrap(entry.packaging_run?.process_step_runs)
+          const productName = allocation.pack_entry?.sorting_output?.product?.name ?? 'Unknown'
+          const productSku = allocation.pack_entry?.sorting_output?.product?.sku ?? ''
+          const stepRun = unwrap(allocation.pack_entry?.packaging_run?.process_step_runs)
           const lotNo = (stepRun as any)?.process_lot_runs?.supply_batches?.lot_no ?? null
+          const usedUnits = usedUnitsByAllocation.get(allocation.id) ?? 0
+          const availableUnits = Math.max(0, (Number(allocation.units_count) || 0) - usedUnits)
+          const unitQuantityKg =
+            (Number(allocation.units_count) || 0) > 0
+              ? (Number(allocation.total_quantity_kg) || 0) / (Number(allocation.units_count) || 1)
+              : 0
+          if (availableUnits <= 0) return null
           return {
-            id: entry.id,
+            id: allocation.id,
+            packaging_allocation_id: allocation.id,
+            storage_type: allocation.storage_type,
+            units_count: Number(allocation.units_count) || 0,
+            packs_per_unit: Number(allocation.packs_per_unit) || 0,
+            total_packs: Number(allocation.total_packs) || 0,
+            total_quantity_kg: Number(allocation.total_quantity_kg) || 0,
+            available_units: availableUnits,
+            unit_quantity_kg: unitQuantityKg,
+            pack_entry_id: allocation.pack_entry_id,
             product_id: productId,
             product_name: productName,
             product_sku: productSku,
-            pack_identifier: entry.pack_identifier,
-            pack_size_kg: entry.pack_size_kg ?? null,
-            pack_count: entry.pack_count ?? null,
+            pack_identifier: allocation.pack_entry?.pack_identifier ?? '',
+            pack_size_kg: allocation.pack_entry?.pack_size_kg ?? null,
             lot_no: lotNo,
-            created_at: entry.created_at ?? null,
+            created_at: allocation.created_at ?? null,
           } as PackedEntryOption
         })
         .filter((entry): entry is PackedEntryOption => entry !== null)
@@ -562,49 +624,47 @@ function Shipments() {
   const loadShipmentPackItems = useCallback(async (shipmentId: number) => {
     const { data } = await supabase
       .from('shipment_pack_items')
-      .select('id, pack_entry_id, pack_count, box_count, box_label, pack_entry:process_packaging_pack_entries(pack_size_kg)')
+      .select('id, packaging_allocation_id, units_count, pack_entry_id, pack_count, box_count, box_label')
       .eq('shipment_id', shipmentId)
       .order('id')
 
     const items = (data ?? []) as Array<{
       id: number
+      packaging_allocation_id: number | null
+      units_count: number | null
       pack_entry_id: number
       pack_count: number
       box_count: number | null
       box_label: string | null
-      pack_entry: { pack_size_kg?: number | null } | null
     }>
     const allocationMap = new Map<number, number>()
+    const originalByAllocation: Record<number, number> = {}
     items.forEach((item) => {
-      if (!item.pack_entry_id) return
-      const current = allocationMap.get(item.pack_entry_id) ?? 0
-      allocationMap.set(item.pack_entry_id, current + (item.pack_count ?? 0))
+      if (!item.packaging_allocation_id) return
+      const current = allocationMap.get(item.packaging_allocation_id) ?? 0
+      const units = item.units_count ?? 0
+      allocationMap.set(item.packaging_allocation_id, current + units)
+      originalByAllocation[item.packaging_allocation_id] = (originalByAllocation[item.packaging_allocation_id] ?? 0) + units
     })
+    setEditingOriginalUnitsByAllocation(originalByAllocation)
     setFormData((prev) => ({
       ...prev,
       pack_items:
         items.length > 0
           ? items.map((item) => ({
               id: `pack-${item.id}`,
-              pack_entry_id: String(item.pack_entry_id),
-              box_count:
-                item.box_count != null
-                  ? String(item.box_count)
-                  : (() => {
-                      const packsPerBox = getPacksPerStandardCarton(item.pack_entry?.pack_size_kg ?? null)
-                      if (!packsPerBox || !item.pack_count) return ''
-                      return String(Math.floor(item.pack_count / packsPerBox))
-                    })(),
-              pack_count: item.pack_count ? String(item.pack_count) : '',
+              pack_entry_id: String(item.packaging_allocation_id ?? ''),
+              box_count: item.box_count != null ? String(item.box_count) : '',
+              pack_count: item.units_count != null ? String(item.units_count) : '',
               box_label: item.box_label ?? '',
             }))
           : [createEmptyPackItem()],
       allocations:
         allocationMap.size > 0
-          ? Array.from(allocationMap.entries()).map(([pack_entry_id, pack_count]) => ({
-              id: `alloc-${pack_entry_id}`,
-              pack_entry_id: String(pack_entry_id),
-              pack_count: pack_count ? String(pack_count) : '',
+          ? Array.from(allocationMap.entries()).map(([allocation_id, units_count]) => ({
+              id: `alloc-${allocation_id}`,
+              pack_entry_id: String(allocation_id),
+              pack_count: units_count ? String(units_count) : '',
             }))
           : [createEmptyAllocation()],
     }))
@@ -674,6 +734,7 @@ function Shipments() {
   const handleAddShipment = () => {
     setFormData({ ...createEmptyShipment(), doc_no: generateDocNumber() })
     setEditingShipmentId(null)
+    setEditingOriginalUnitsByAllocation({})
     setFormStep(1)
     setIsModalOpen(true)
   }
@@ -695,6 +756,7 @@ function Shipments() {
     if (editingShipmentId === shipment.id) {
       setIsModalOpen(false)
       setEditingShipmentId(null)
+      setEditingOriginalUnitsByAllocation({})
       setFormData(createEmptyShipment())
       setFormStep(1)
     }
@@ -830,9 +892,8 @@ function Shipments() {
             return { ...item, pack_entry_id: value, pack_count: '' }
           }
           const entry = packEntryMap.get(entryId)
-          const available = entry?.pack_count ?? 0
-          const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
-          const suggested = packsPerBox ? Math.min(packsPerBox, available) : 0
+          const available = (entry?.available_units ?? 0) + (editingOriginalUnitsByAllocation[entryId] ?? 0)
+          const suggested = available > 0 ? 1 : 0
           return {
             ...item,
             pack_entry_id: value,
@@ -843,7 +904,7 @@ function Shipments() {
           const entryId = Number(item.pack_entry_id)
           if (!entryId) return { ...item, pack_count: value }
           const entry = packEntryMap.get(entryId)
-          const available = entry?.pack_count ?? 0
+          const available = (entry?.available_units ?? 0) + (editingOriginalUnitsByAllocation[entryId] ?? 0)
           const allocatedOther = prev.allocations.reduce((sum, row) => {
             if (row.id === itemId) return sum
             if (Number(row.pack_entry_id) !== entryId) return sum
@@ -918,35 +979,35 @@ function Shipments() {
     const normalizedAllocations = formData.allocations
       .filter((item) => item.pack_entry_id || item.pack_count)
       .map((item) => ({
-        pack_entry_id: Number(item.pack_entry_id),
-        pack_count: Number(item.pack_count) || 0,
+        packaging_allocation_id: Number(item.pack_entry_id),
+        units_count: Number(item.pack_count) || 0,
       }))
 
     const invalidAllocation = normalizedAllocations.find(
-      (item) => !item.pack_entry_id || item.pack_count <= 0
+      (item) => !item.packaging_allocation_id || item.units_count <= 0
     )
     if (invalidAllocation) {
-      toast.error('Please complete all pack allocation rows with a pack entry and pack count.')
+      toast.error('Please complete all storage allocation rows with an allocation and units count.')
       setSaving(false)
       return
     }
 
     const allocationMap = new Map<number, number>()
     normalizedAllocations.forEach((item) => {
-      allocationMap.set(item.pack_entry_id, (allocationMap.get(item.pack_entry_id) ?? 0) + item.pack_count)
+      allocationMap.set(item.packaging_allocation_id, (allocationMap.get(item.packaging_allocation_id) ?? 0) + item.units_count)
     })
 
     if (allocationMap.size === 0) {
-      toast.error('Add at least one pack allocation before saving.')
+      toast.error('Add at least one stored-pack allocation before saving.')
       setSaving(false)
       return
     }
 
-    for (const [entryId, totalAllocated] of allocationMap.entries()) {
-      const entry = packEntryMap.get(entryId)
-      const available = entry?.pack_count ?? 0
-      if (totalAllocated > available) {
-        toast.error(`Allocated packs exceed available packs for ${entry?.product_name ?? 'selected entry'}.`)
+    for (const [allocationId, requestedUnits] of allocationMap.entries()) {
+      const entry = packEntryMap.get(allocationId)
+      const available = (entry?.available_units ?? 0) + (editingOriginalUnitsByAllocation[allocationId] ?? 0)
+      if (requestedUnits > available) {
+        toast.error(`Requested units exceed available units for ${entry?.product_name ?? 'selected allocation'}.`)
         setSaving(false)
         return
       }
@@ -961,48 +1022,24 @@ function Shipments() {
         unit_id: item.unit ? Number(item.unit) : null, // unit_id is integer FK to units
       }))
 
-    const normalizedPackItems = formData.pack_items
-      .filter((item) => item.pack_entry_id && (Number(item.box_count) || Number(item.pack_count) || 0) > 0)
-      .map((item) => {
-        const entryId = Number(item.pack_entry_id)
-        const entry = packEntryMap.get(entryId)
-        const packsPerBox = getPacksPerStandardCarton(entry?.pack_size_kg ?? null)
-        const boxCount = Number(item.box_count) || 0
-        const packCount =
-          packsPerBox != null ? boxCount * packsPerBox : Number(item.pack_count) || 0
-        return {
-          pack_entry_id: entryId,
-          pack_count: packCount,
-          box_count: boxCount > 0 ? boxCount : null,
-          box_label: item.box_label?.trim() || null,
-        }
-      })
-
-    const boxedMap = new Map<number, number>()
-    normalizedPackItems.forEach((item) => {
-      boxedMap.set(item.pack_entry_id, (boxedMap.get(item.pack_entry_id) ?? 0) + item.pack_count)
+    const normalizedPackItems = normalizedAllocations.map((item) => {
+      const allocation = packEntryMap.get(item.packaging_allocation_id)
+      const packCount = item.units_count * (allocation?.packs_per_unit ?? 0)
+      return {
+        packaging_allocation_id: item.packaging_allocation_id,
+        units_count: item.units_count,
+        storage_type: allocation?.storage_type ?? null,
+        pack_entry_id: allocation?.pack_entry_id ?? null,
+        pack_count: packCount,
+        box_count: allocation?.storage_type === 'BOX' ? item.units_count : null,
+        box_label: null as string | null,
+      }
     })
 
-    if (normalizedPackItems.length === 0) {
-      toast.error('Boxing details are required before saving.')
+    if (normalizedPackItems.some((item) => !item.pack_entry_id || item.pack_count <= 0)) {
+      toast.error('Invalid storage allocation selection. Refresh and try again.')
       setSaving(false)
       return
-    }
-
-    const invalidBoxing = normalizedPackItems.find((item) => item.pack_count <= 0)
-    if (invalidBoxing) {
-      toast.error('Boxing rows must include a valid box count or pack count.')
-      setSaving(false)
-      return
-    }
-
-    for (const [entryId, allocated] of allocationMap.entries()) {
-      const boxed = boxedMap.get(entryId) ?? 0
-      if (boxed !== allocated) {
-        toast.error('Boxing totals must match allocated packs for each pack entry.')
-        setSaving(false)
-        return
-      }
     }
 
     const normalizeDateValue = (value: string): string | null => (value ? new Date(value).toISOString() : null)
@@ -1089,6 +1126,7 @@ function Shipments() {
 
       setIsModalOpen(false)
       setEditingShipmentId(null)
+      setEditingOriginalUnitsByAllocation({})
       setFormData(createEmptyShipment())
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to save shipment')
@@ -1447,16 +1485,16 @@ function Shipments() {
 
                 {formStep === 3 && (
                   <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                    <h3 className="text-lg font-semibold text-text-dark">Pack Allocation</h3>
+                    <h3 className="text-lg font-semibold text-text-dark">Stored Packed Products</h3>
                     <p className="text-sm text-text-dark/70">
-                      Allocate packs from packed stock to this shipment.
+                      Select finalized packaging storage allocations and ship whole units.
                     </p>
                     {loadingPackedEntries && (
                       <p className="mt-2 text-sm text-text-dark/60">Loading packed entries…</p>
                     )}
                     {!loadingPackedEntries && packedEntries.length === 0 && (
                       <p className="mt-2 text-sm text-amber-700">
-                        No pack entries available. Add pack entries in the packaging step first.
+                        No storage allocations available. Add storage allocations in the packaging step first.
                       </p>
                     )}
                     <div className="mt-4 space-y-4">
@@ -1471,18 +1509,22 @@ function Shipments() {
                           if (Number(row.pack_entry_id) !== entryId) return sum
                           return sum + (Number(row.pack_count) || 0)
                         }, 0)
-                        const availablePacks = Math.max(0, (selectedEntry?.pack_count ?? 0) - allocatedOther)
+                        const availableUnits = Math.max(
+                          0,
+                          (selectedEntry?.available_units ?? 0) +
+                          (selectedEntry ? (editingOriginalUnitsByAllocation[selectedEntry.id] ?? 0) : 0) -
+                          allocatedOther
+                        )
                         const packSize = selectedEntry?.pack_size_kg ?? 0
-                        const packsPerBox = getPacksPerStandardCarton(selectedEntry?.pack_size_kg ?? null)
-                        const enteredPacks = Number(allocation.pack_count) || 0
-                        const totalKg = packSize > 0 ? enteredPacks * packSize : 0
+                        const enteredUnits = Number(allocation.pack_count) || 0
+                        const totalKg = selectedEntry ? enteredUnits * selectedEntry.unit_quantity_kg : 0
                         return (
                           <div
                             key={allocation.id}
                             className="grid gap-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 sm:grid-cols-4"
                           >
                             <div className="space-y-2 sm:col-span-2">
-                              <Label htmlFor={`allocation-entry-${allocation.id}`}>Pack entry *</Label>
+                              <Label htmlFor={`allocation-entry-${allocation.id}`}>Storage allocation *</Label>
                               <select
                                 id={`allocation-entry-${allocation.id}`}
                                 value={allocation.pack_entry_id}
@@ -1494,30 +1536,25 @@ function Shipments() {
                                 {packedEntries.map((entry) => (
                                   <option key={entry.id} value={entry.id}>
                                     {entry.product_name}
-                                    {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.pack_identifier}
-                                    {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg)` : ''} · {entry.pack_count ?? 0} packs
+                                    {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.storage_type}
+                                    {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg/pack)` : ''} · {entry.available_units} units available
                                     {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
                                   </option>
                                 ))}
                               </select>
                               {selectedEntry && (
                                 <p className="text-xs text-text-dark/60">
-                                  Available: {availablePacks} packs · Pack size:{' '}
-                                  {packSize > 0 ? `${packSize} kg` : selectedEntry.pack_identifier}
-                                </p>
-                              )}
-                              {packsPerBox && (
-                                <p className="text-xs text-text-dark/60">
-                                  Standard 10 kg carton: {packsPerBox} packs per box
+                                  Available: {availableUnits} units · {selectedEntry.packs_per_unit} packs/unit · Unit size:{' '}
+                                  {selectedEntry.unit_quantity_kg > 0 ? `${selectedEntry.unit_quantity_kg.toFixed(2)} kg` : (packSize > 0 ? `${packSize} kg/pack` : selectedEntry.pack_identifier)}
                                 </p>
                               )}
                             </div>
                             <div className="space-y-2">
                               <Label htmlFor={`allocation-count-${allocation.id}`}>
-                                Packs allocated *
+                                Units to ship *
                                 {selectedEntry && (
                                   <span className="ml-1 text-xs font-normal text-text-dark/50">
-                                    (max {availablePacks})
+                                    (max {availableUnits})
                                   </span>
                                 )}
                               </Label>
@@ -1525,7 +1562,7 @@ function Shipments() {
                                 id={`allocation-count-${allocation.id}`}
                                 type="number"
                                 min="0"
-                                max={selectedEntry ? availablePacks : undefined}
+                                max={selectedEntry ? availableUnits : undefined}
                                 step="1"
                                 value={allocation.pack_count}
                                 onChange={(event) => handleAllocationChange(allocation.id, 'pack_count', event.target.value)}
@@ -1534,7 +1571,7 @@ function Shipments() {
                               />
                               {selectedEntry && packSize > 0 && (
                                 <p className="text-xs text-text-dark/60">
-                                  ≈ {totalKg.toFixed(2)} kg total
+                                  ≈ {totalKg.toFixed(2)} kg total ({enteredUnits * (selectedEntry.packs_per_unit || 0)} packs)
                                 </p>
                               )}
                             </div>
@@ -1560,7 +1597,7 @@ function Shipments() {
                         disabled={loadingPackedEntries || packedEntries.length === 0}
                       >
                         <PackageIcon className="mr-2 h-4 w-4" />
-                        Add Allocation
+                        Add Storage Allocation
                       </Button>
                     </div>
                   </section>
@@ -1569,208 +1606,27 @@ function Shipments() {
                 {formStep === 4 && (
                   <section className="space-y-6">
                     <div className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                      <h3 className="text-lg font-semibold text-text-dark">Boxing</h3>
-                      <p className="text-sm text-text-dark/70">
-                        Put allocated packs into boxes. Boxing totals must match allocations.
-                      </p>
-                      {formData.allocations.length === 0 && (
-                        <p className="mt-2 text-sm text-amber-700">
-                          Add pack allocations first to start boxing.
-                        </p>
-                      )}
-                      <div className="mt-4 space-y-4">
-                        {formData.pack_items.map((packItem) => {
-                          const selectedEntry = packItem.pack_entry_id
-                            ? packedEntries.find((entry) => entry.id === Number(packItem.pack_entry_id))
-                            : null
-                              const entryId = selectedEntry?.id ?? 0
-                              const allocated = allocationTotals.byEntry.get(entryId) ?? 0
-                              const boxedOther = formData.pack_items.reduce((sum, row) => {
-                                if (row.id === packItem.id) return sum
-                                if (!row.pack_entry_id) return sum
-                                if (Number(row.pack_entry_id) !== entryId) return sum
-                                const rowEntry = packEntryMap.get(entryId)
-                                const rowPacksPerBox = getPacksPerStandardCarton(rowEntry?.pack_size_kg ?? null)
-                                if (rowPacksPerBox != null) {
-                                  return sum + (Number(row.box_count) || 0) * rowPacksPerBox + (Number(row.pack_count) || 0)
-                                }
-                                return sum + (Number(row.pack_count) || 0)
-                              }, 0)
-                              const availableToBox = Math.max(0, allocated - boxedOther)
-                              const packSize = selectedEntry?.pack_size_kg ?? 0
-                              const packsPerBox = getPacksPerStandardCarton(selectedEntry?.pack_size_kg ?? null)
-                              const boxCount = Number(packItem.box_count) || 0
-                              const enteredPacks =
-                                packsPerBox != null
-                                  ? boxCount * packsPerBox + (Number(packItem.pack_count) || 0)
-                                  : Number(packItem.pack_count) || 0
-                              const totalKg = packSize > 0 ? enteredPacks * packSize : 0
-                              const remainingAfterBoxes =
-                                packsPerBox != null ? Math.max(0, availableToBox - boxCount * packsPerBox) : availableToBox
-                          return (
-                            <div
-                              key={packItem.id}
-                              className="grid gap-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 sm:grid-cols-4"
-                            >
-                              <div className="space-y-2 sm:col-span-2">
-                                <Label htmlFor={`pack-entry-${packItem.id}`}>Allocated pack entry *</Label>
-                                <select
-                                  id={`pack-entry-${packItem.id}`}
-                                  value={packItem.pack_entry_id}
-                                  onChange={(e) => handlePackItemChange(packItem.id, 'pack_entry_id', e.target.value)}
-                                  required
-                                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  <option value="">Select allocated entry</option>
-                                  {formData.allocations
-                                    .filter((alloc) => alloc.pack_entry_id)
-                                    .map((alloc) => Number(alloc.pack_entry_id))
-                                    .filter((value, index, self) => self.indexOf(value) === index)
-                                    .map((entryId) => {
-                                      const entry = packedEntries.find((item) => item.id === entryId)
-                                      if (!entry) return null
-                                      const allocatedCount = allocationTotals.byEntry.get(entryId) ?? 0
-                                      return (
-                                        <option key={entry.id} value={entry.id}>
-                                          {entry.product_name}
-                                          {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.pack_identifier}
-                                          {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg)` : ''} · {allocatedCount} packs
-                                          {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
-                                        </option>
-                                      )
-                                    })}
-                                </select>
-                              {selectedEntry && (
-                                <p className="text-xs text-text-dark/60">
-                                  Remaining to box: {availableToBox} packs · Pack size:{' '}
-                                  {packSize > 0 ? `${packSize} kg` : selectedEntry.pack_identifier}
-                                </p>
-                              )}
-                              {packsPerBox && (
-                                <p className="text-xs text-text-dark/60">
-                                  Standard 10 kg carton: {packsPerBox} packs per box
-                                </p>
-                              )}
-                            </div>
-                            <div className="space-y-2">
-                              <Label htmlFor={`box-count-${packItem.id}`}>
-                                Boxes packed *
-                                {selectedEntry && (
-                                  <span className="ml-1 text-xs font-normal text-text-dark/50">
-                                    (max {packsPerBox ? Math.floor(availableToBox / packsPerBox) : availableToBox})
-                                  </span>
-                                )}
-                              </Label>
-                              <Input
-                                id={`box-count-${packItem.id}`}
-                                type="number"
-                                min="0"
-                                max={selectedEntry ? (packsPerBox ? Math.floor(availableToBox / packsPerBox) : availableToBox) : undefined}
-                                step="1"
-                                value={packItem.box_count}
-                                onChange={(event) => handlePackItemChange(packItem.id, 'box_count', event.target.value)}
-                                placeholder="0"
-                                disabled={!entryId || packsPerBox == null}
-                              />
-                              <Label htmlFor={`pack-count-${packItem.id}`} className="text-xs text-text-dark/60">
-                                Remainder packs
-                              </Label>
-                              <Input
-                                id={`pack-count-${packItem.id}`}
-                                type="number"
-                                min="0"
-                                max={selectedEntry ? remainingAfterBoxes : undefined}
-                                step="1"
-                                value={packItem.pack_count}
-                                onChange={(event) => handlePackItemChange(packItem.id, 'pack_count', event.target.value)}
-                                placeholder="0"
-                                disabled={!entryId}
-                              />
-                              {selectedEntry && packSize > 0 && (
-                                <p className="text-xs text-text-dark/60">
-                                  ≈ {totalKg.toFixed(2)} kg total
-                                </p>
-                              )}
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor={`box-label-${packItem.id}`}>Box label</Label>
-                                <Input
-                                  id={`box-label-${packItem.id}`}
-                                  value={packItem.box_label}
-                                  onChange={(event) => handlePackItemChange(packItem.id, 'box_label', event.target.value)}
-                                  placeholder="Box A, Pallet 1, etc."
-                                />
-                              </div>
-                              <div className="flex items-end justify-end sm:col-span-4">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  className="text-red-600 hover:text-red-700"
-                                  onClick={() => handleRemovePackItem(packItem.id)}
-                                  disabled={formData.pack_items.length === 1}
-                                >
-                                  <Trash2 className="mr-2 h-4 w-4" />
-                                  Remove Box
-                                </Button>
-                              </div>
-                            </div>
-                          )
-                        })}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={handleAddPackItem}
-                          disabled={allocationTotals.totalPacks === 0}
-                        >
-                          <PackageIcon className="mr-2 h-4 w-4" />
-                          Add Box
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
                       <h3 className="text-lg font-semibold text-text-dark">Review</h3>
-                      <p className="text-sm text-text-dark/70">Confirm totals before saving.</p>
-                      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                      <p className="text-sm text-text-dark/70">Confirm stored-unit totals before saving.</p>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
                         <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Allocated packs</p>
-                          <p className="text-lg font-semibold text-text-dark">{allocationTotals.totalPacks}</p>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Allocated units</p>
+                          <p className="text-lg font-semibold text-text-dark">{allocationTotals.totalUnits}</p>
                           <p className="text-xs text-text-dark/60">
                             {allocationTotals.totalKg > 0 ? `${allocationTotals.totalKg.toFixed(2)} kg` : '—'}
                           </p>
                         </div>
-                        <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Boxes packed</p>
-                          <p className="text-lg font-semibold text-text-dark">
-                            {Array.from(boxingTotals.boxesByEntry.values()).reduce((sum, value) => sum + value, 0)}
-                          </p>
-                          <p className="text-xs text-text-dark/60">
-                            {boxingTotals.totalPacks} packs · {boxingTotals.totalKg > 0 ? `${boxingTotals.totalKg.toFixed(2)} kg` : '—'}
-                          </p>
-                        </div>
-                        <div className="rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Status</p>
-                          <p className="text-lg font-semibold text-text-dark">
-                            {allocationTotals.totalPacks === boxingTotals.totalPacks ? 'Balanced' : 'Mismatch'}
-                          </p>
-                          <p className="text-xs text-text-dark/60">
-                            {allocationTotals.totalPacks === boxingTotals.totalPacks
-                              ? 'Ready to save'
-                              : 'Fix boxing totals'}
-                          </p>
-                        </div>
                       </div>
                       <div className="mt-4 space-y-2 text-sm text-text-dark/70">
-                        {Array.from(allocationTotals.byEntry.entries()).map(([entryId, allocated]) => {
+                        {Array.from(allocationTotals.byEntry.entries()).map(([entryId, units]) => {
                           const entry = packEntryMap.get(entryId)
-                          const boxed = boxingTotals.byEntry.get(entryId) ?? 0
                           return (
                             <div key={`review-${entryId}`} className="flex flex-wrap items-center justify-between gap-2">
                               <span>
-                                {entry?.product_name ?? 'Entry'} · {entry?.pack_identifier ?? 'Pack'} {entry?.lot_no ? `· Lot ${entry.lot_no}` : ''}
+                                {entry?.product_name ?? 'Allocation'} · {entry?.storage_type ?? 'Type'} · {entry?.pack_identifier ?? 'Pack'} {entry?.lot_no ? `· Lot ${entry.lot_no}` : ''}
                               </span>
-                              <span className={boxed === allocated ? 'text-olive' : 'text-red-600'}>
-                                {boxed}/{allocated} packs boxed
+                              <span className="text-olive">
+                                {units} units ({units * (entry?.packs_per_unit ?? 0)} packs)
                               </span>
                             </div>
                           )
@@ -1835,6 +1691,7 @@ function Shipments() {
                   onClick={() => {
                     setIsModalOpen(false)
                     setEditingShipmentId(null)
+                    setEditingOriginalUnitsByAllocation({})
                     setFormData(createEmptyShipment())
                     setFormStep(1)
                   }}

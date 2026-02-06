@@ -9,6 +9,7 @@ import type {
   ProcessPackagingPackEntry,
   ProcessPackagingMetalCheck,
   ProcessPackagingMetalCheckRejection,
+  ProcessPackagingStorageAllocation,
 } from '@/types/processExecution'
 
 interface UsePackagingRunOptions {
@@ -44,6 +45,7 @@ interface UsePackagingRunReturn {
   addWaste: (wasteData: { waste_type: string; quantity_kg: number }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
   packEntries: ProcessPackagingPackEntry[]
+  storageAllocations: ProcessPackagingStorageAllocation[]
   addPackEntry: (data: {
     sorting_output_id: number
     product_id: number | null
@@ -53,6 +55,22 @@ interface UsePackagingRunReturn {
     pack_size_kg?: number | null
   }) => Promise<void>
   deletePackEntry: (id: number) => Promise<void>
+  addStorageAllocation: (data: {
+    pack_entry_id: number
+    storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+    units_count: number
+    packs_per_unit: number
+    notes?: string | null
+  }) => Promise<void>
+  updateStorageAllocation: (id: number, data: {
+    storage_type?: 'BOX' | 'BAG' | 'SHOP_PACKING'
+    units_count?: number
+    packs_per_unit?: number
+    notes?: string | null
+  }) => Promise<void>
+  deleteStorageAllocation: (id: number) => Promise<void>
+  getAllocatedPacksByEntry: (packEntryId: number) => number
+  getRemainingPackCountByEntry: (packEntryId: number) => number
   metalChecksBySortingOutput: Record<number, ProcessPackagingMetalCheck[]>
   getLatestMetalCheck: (sortingOutputId: number) => ProcessPackagingMetalCheck | null
   getFailedRejectedWeightBySortingOutput: (sortingOutputId: number) => number
@@ -64,6 +82,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   const { stepRunId, enabled = true } = options
   const [packagingRun, setPackagingRun] = useState<ProcessPackagingRun | null>(null)
   const [packEntries, setPackEntries] = useState<ProcessPackagingPackEntry[]>([])
+  const [storageAllocations, setStorageAllocations] = useState<ProcessPackagingStorageAllocation[]>([])
   const [metalChecksBySortingOutput, setMetalChecksBySortingOutput] = useState<Record<number, ProcessPackagingMetalCheck[]>>({})
   const [weightChecks, setWeightChecks] = useState<ProcessPackagingWeightCheck[]>([])
   const [photos, setPhotos] = useState<ProcessPackagingPhoto[]>([])
@@ -138,6 +157,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       setError(runError)
       setPackagingRun(null)
       setPackEntries([])
+      setStorageAllocations([])
       setMetalChecksBySortingOutput({})
       setWeightChecks([])
       setPhotos([])
@@ -159,6 +179,18 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         setPackEntries([])
       } else {
         setPackEntries((packEntriesData as ProcessPackagingPackEntry[]) || [])
+      }
+
+      const { data: storageAllocationsData, error: storageAllocationsError } = await supabase
+        .from('process_packaging_storage_allocations')
+        .select('*')
+        .eq('packaging_run_id', runData.id)
+        .order('created_at', { ascending: false })
+
+      if (storageAllocationsError) {
+        setStorageAllocations([])
+      } else {
+        setStorageAllocations((storageAllocationsData as ProcessPackagingStorageAllocation[]) || [])
       }
 
       await fetchMetalChecks(runData.id)
@@ -203,6 +235,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       }
     } else {
       setPackEntries([])
+      setStorageAllocations([])
       setMetalChecksBySortingOutput({})
       setWeightChecks([])
       setPhotos([])
@@ -523,6 +556,131 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     [fetchData]
   )
 
+  const getAllocatedPacksByEntry = useCallback(
+    (packEntryId: number): number => {
+      return storageAllocations
+        .filter((allocation) => allocation.pack_entry_id === packEntryId)
+        .reduce((sum, allocation) => sum + (Number(allocation.total_packs) || 0), 0)
+    },
+    [storageAllocations]
+  )
+
+  const getRemainingPackCountByEntry = useCallback(
+    (packEntryId: number): number => {
+      const entry = packEntries.find((item) => item.id === packEntryId)
+      const produced = Number(entry?.pack_count) || 0
+      return Math.max(0, produced - getAllocatedPacksByEntry(packEntryId))
+    },
+    [packEntries, getAllocatedPacksByEntry]
+  )
+
+  const addStorageAllocation = useCallback(
+    async (data: {
+      pack_entry_id: number
+      storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+      units_count: number
+      packs_per_unit: number
+      notes?: string | null
+    }) => {
+      if (!packagingRun) {
+        throw new Error('Packaging run must be created before adding storage allocations')
+      }
+
+      const packEntry = packEntries.find((entry) => entry.id === data.pack_entry_id)
+      if (!packEntry) {
+        throw new Error('Selected pack entry was not found')
+      }
+      if ((Number(packEntry.pack_size_kg) || 0) <= 0) {
+        throw new Error('Pack entry must have a valid pack size to allocate storage')
+      }
+
+      const totalPacks = data.units_count * data.packs_per_unit
+      const remaining = getRemainingPackCountByEntry(data.pack_entry_id)
+      if (totalPacks > remaining) {
+        throw new Error(`Storage allocation exceeds remaining packs (${remaining}) for this pack entry`)
+      }
+
+      const totalQuantityKg = totalPacks * (Number(packEntry.pack_size_kg) || 0)
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const { error } = await supabase
+        .from('process_packaging_storage_allocations')
+        .insert({
+          packaging_run_id: packagingRun.id,
+          pack_entry_id: data.pack_entry_id,
+          storage_type: data.storage_type,
+          units_count: data.units_count,
+          packs_per_unit: data.packs_per_unit,
+          total_packs: totalPacks,
+          total_quantity_kg: totalQuantityKg,
+          notes: data.notes?.trim() || null,
+          created_by: userId,
+        })
+
+      if (error) throw error
+      await fetchData()
+    },
+    [packagingRun, packEntries, getRemainingPackCountByEntry, fetchData]
+  )
+
+  const updateStorageAllocation = useCallback(
+    async (id: number, data: {
+      storage_type?: 'BOX' | 'BAG' | 'SHOP_PACKING'
+      units_count?: number
+      packs_per_unit?: number
+      notes?: string | null
+    }) => {
+      const existing = storageAllocations.find((row) => row.id === id)
+      if (!existing) throw new Error('Storage allocation not found')
+
+      const nextUnits = data.units_count ?? existing.units_count
+      const nextPacksPerUnit = data.packs_per_unit ?? existing.packs_per_unit
+      const totalPacks = nextUnits * nextPacksPerUnit
+
+      const packEntry = packEntries.find((entry) => entry.id === existing.pack_entry_id)
+      if (!packEntry) throw new Error('Pack entry for allocation was not found')
+
+      const allocatedWithoutThis = storageAllocations
+        .filter((row) => row.pack_entry_id === existing.pack_entry_id && row.id !== id)
+        .reduce((sum, row) => sum + (Number(row.total_packs) || 0), 0)
+      const produced = Number(packEntry.pack_count) || 0
+      const remainingForThis = Math.max(0, produced - allocatedWithoutThis)
+      if (totalPacks > remainingForThis) {
+        throw new Error(`Storage allocation exceeds remaining packs (${remainingForThis}) for this pack entry`)
+      }
+
+      const totalQuantityKg = totalPacks * (Number(packEntry.pack_size_kg) || 0)
+      const { error } = await supabase
+        .from('process_packaging_storage_allocations')
+        .update({
+          storage_type: data.storage_type ?? existing.storage_type,
+          units_count: nextUnits,
+          packs_per_unit: nextPacksPerUnit,
+          total_packs: totalPacks,
+          total_quantity_kg: totalQuantityKg,
+          notes: data.notes !== undefined ? (data.notes?.trim() || null) : existing.notes,
+        })
+        .eq('id', id)
+
+      if (error) throw error
+      await fetchData()
+    },
+    [storageAllocations, packEntries, fetchData]
+  )
+
+  const deleteStorageAllocation = useCallback(
+    async (id: number) => {
+      const { error } = await supabase
+        .from('process_packaging_storage_allocations')
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      await fetchData()
+    },
+    [fetchData]
+  )
+
   useEffect(() => {
     fetchData()
   }, [fetchData])
@@ -530,6 +688,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   return {
     packagingRun,
     packEntries,
+    storageAllocations,
     metalChecksBySortingOutput,
     getLatestMetalCheck,
     getFailedRejectedWeightBySortingOutput,
@@ -551,5 +710,10 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     deleteWaste,
     addPackEntry,
     deletePackEntry,
+    addStorageAllocation,
+    updateStorageAllocation,
+    deleteStorageAllocation,
+    getAllocatedPacksByEntry,
+    getRemainingPackCountByEntry,
   }
 }

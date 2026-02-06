@@ -22,6 +22,8 @@ interface ShipmentPackItem {
   pack_identifier: string | null
   pack_size_kg: number | null
   pack_count: number | null
+  units_count: number | null
+  storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING' | null
   box_count: number | null
   box_label: string | null
 }
@@ -189,6 +191,8 @@ function ShipmentDetail() {
           .from('shipment_pack_items')
           .select(`
             id,
+            units_count,
+            storage_type,
             pack_count,
             box_count,
             box_label,
@@ -229,6 +233,8 @@ function ShipmentDetail() {
 
       const packItemsList = (packItemsRes.data ?? []) as Array<{
         id: number
+        units_count: number | null
+        storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING' | null
         pack_count: number | null
         box_count: number | null
         box_label: string | null
@@ -244,6 +250,8 @@ function ShipmentDetail() {
         product_sku: item.pack_entry?.sorting_output?.product?.sku ?? null,
         pack_identifier: item.pack_entry?.pack_identifier ?? null,
         pack_size_kg: item.pack_entry?.pack_size_kg ?? null,
+        units_count: item.units_count ?? null,
+        storage_type: item.storage_type ?? null,
         pack_count: item.pack_count ?? null,
         box_count: item.box_count ?? null,
         box_label: item.box_label ?? null,
@@ -378,7 +386,7 @@ function ShipmentDetail() {
   }
 
   const totalItems = shipment.items.reduce((count: number, item: ShipmentItem) => count + (item.quantity ?? 0), 0)
-  const totalPackBoxes = shipment.pack_items.reduce((count, item) => count + (item.box_count ?? 0), 0)
+  const totalPackUnits = shipment.pack_items.reduce((count, item) => count + (item.units_count ?? item.box_count ?? 0), 0)
 
   return (
     <PageLayout
@@ -470,7 +478,7 @@ function ShipmentDetail() {
               </p>
               <p className="text-xs text-text-dark/60">Packed boxes</p>
               <p className="text-sm font-medium text-text-dark">
-                {shipment.pack_items.length} box{shipment.pack_items.length === 1 ? '' : 'es'} · {totalPackBoxes} boxes
+                {shipment.pack_items.length} lines · {totalPackUnits} units
               </p>
               <p className="text-xs text-text-dark/60">Warehouse</p>
               <p className="text-sm font-medium text-text-dark">{shipment.warehouse_name || 'Not specified'}</p>
@@ -570,10 +578,10 @@ function ShipmentDetail() {
                         Product
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                        Pack size
+                        Storage
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                        Boxes
+                        Units
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-text-dark/60">
                         Packs
@@ -591,11 +599,13 @@ function ShipmentDetail() {
                           {item.product_sku ? ` (${item.product_sku})` : ''}
                         </td>
                         <td className="px-4 py-3 text-sm text-text-dark/80">
+                          {item.storage_type || 'LEGACY'}
+                          {' · '}
                           {item.pack_identifier || '—'}
-                          {item.pack_size_kg ? ` (${item.pack_size_kg} kg)` : ''}
+                          {item.pack_size_kg ? ` (${item.pack_size_kg} kg/pack)` : ''}
                         </td>
                         <td className="px-4 py-3 text-right text-sm text-text-dark/80">
-                          {item.box_count ?? '-'}
+                          {item.units_count ?? '-'}
                         </td>
                         <td className="px-4 py-3 text-right text-sm text-text-dark/80">
                           {item.pack_count ?? '-'}

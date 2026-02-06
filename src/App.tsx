@@ -19,6 +19,7 @@ const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
 const Payments = lazy(() => import('./pages/payments/Payments'))
+const Reports = lazy(() => import('./pages/reports/Reports'))
 const ProcessView = lazy(() => import('./pages/process/ProcessView'))
 const Processes = lazy(() => import('./pages/process/Processes'))
 const ProcessDetail = lazy(() => import('./pages/process/ProcessDetail'))
@@ -211,6 +212,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Payments />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute>
+              <Reports />
             </ProtectedRoute>
           }
         />

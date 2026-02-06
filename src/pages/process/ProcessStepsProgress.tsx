@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, ChangeEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -7,7 +7,6 @@ import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
-import { useProcessDefinitions } from '@/hooks/useProcessDefinitions'
 import { useProcessLotRun } from '@/hooks/useProcessLotRun'
 import { useProcessStepRuns } from '@/hooks/useProcessStepRuns'
 import { useNonConformances } from '@/hooks/useNonConformances'
@@ -172,40 +171,112 @@ function ProcessStepsProgress() {
   const [showNCForm, setShowNCForm] = useState(false)
   const [showSignoffs, setShowSignoffs] = useState(false)
   const [creatingLotRun, setCreatingLotRun] = useState(false)
+  const [selectedLot, setSelectedLot] = useState<Lot | null>(null)
+  const [loadingSelectedLot, setLoadingSelectedLot] = useState(true)
+  const [selectedLotError, setSelectedLotError] = useState<string | null>(null)
 
-  const {
-    lots,
-    loading: loadingDefinitions,
-    error: definitionsError,
-    refresh,
-  } = useProcessDefinitions({ includeProcessedLots: true })
+  const refreshSelectedLot = useCallback(async () => {
+    if (!Number.isFinite(lotId)) {
+      setSelectedLot(null)
+      setLoadingSelectedLot(false)
+      setSelectedLotError(null)
+      return
+    }
 
-  const selectedLot = useMemo(
-    () => (Number.isFinite(lotId) ? lots.find((lot: Lot) => lot.id === lotId) ?? null : null),
-    [lotId, lots],
-  )
+    setLoadingSelectedLot(true)
+    setSelectedLotError(null)
+
+    const { data, error } = await supabase
+      .from('supply_batches')
+      .select(
+        `
+        id,
+        lot_no,
+        supply_id,
+        product_id,
+        unit_id,
+        received_qty,
+        accepted_qty,
+        rejected_qty,
+        current_qty,
+        process_status,
+        quality_status,
+        expiry_date,
+        created_at,
+        supplies (
+          doc_no,
+          received_at,
+          supplier_id,
+          warehouse_id
+        ),
+        products (
+          name,
+          sku
+        ),
+        units (
+          name,
+          symbol
+        )
+      `,
+      )
+      .eq('id', lotId)
+      .maybeSingle()
+
+    if (error) {
+      setSelectedLot(null)
+      setSelectedLotError(error.message ?? 'Failed to load lot details')
+    } else {
+      setSelectedLot((data as Lot | null) ?? null)
+    }
+
+    setLoadingSelectedLot(false)
+  }, [lotId])
+
+  useEffect(() => {
+    refreshSelectedLot()
+  }, [refreshSelectedLot])
 
   const [lotRunId, setLotRunId] = useState<number | null>(null)
+  const [checkingLotRun, setCheckingLotRun] = useState(false)
+  const lotRunLookupRequestId = useRef(0)
+  const [checkedLotId, setCheckedLotId] = useState<number | null>(null)
+  const [initialLoadCompleted, setInitialLoadCompleted] = useState(false)
 
   useEffect(() => {
     if (!selectedLot) {
       setLotRunId(null)
+      setCheckingLotRun(false)
+      setCheckedLotId(null)
       return
     }
 
-    // Check if process lot run exists
+    let isCancelled = false
+    const requestId = ++lotRunLookupRequestId.current
+    setCheckingLotRun(true)
+
+    // Check if a process lot run already exists before deciding which screen to render.
     supabase
       .from('process_lot_runs')
       .select('id')
       .eq('supply_batch_id', selectedLot.id)
       .maybeSingle()
       .then(({ data, error }) => {
+        if (isCancelled || requestId !== lotRunLookupRequestId.current) return
         if (!error && data) {
           setLotRunId(data.id)
         } else {
           setLotRunId(null)
         }
+        setCheckedLotId(selectedLot.id)
       })
+      .finally(() => {
+        if (isCancelled || requestId !== lotRunLookupRequestId.current) return
+        setCheckingLotRun(false)
+      })
+
+    return () => {
+      isCancelled = true
+    }
   }, [selectedLot])
 
   const { lotRun, loading: loadingLotRun, refresh: refreshLotRun } = useProcessLotRun({
@@ -327,7 +398,7 @@ function ProcessStepsProgress() {
       if (lotRun) {
         setLotRunId(lotRun.id)
         toast.success('Process lot run created successfully')
-        await refresh() // Refresh the lots list
+        await refreshSelectedLot()
       } else {
         toast.info('Process lot run already exists for this batch')
         // Refresh to get the existing lot run ID
@@ -586,7 +657,7 @@ function ProcessStepsProgress() {
     try {
       await completeProcessLotRun(lotRunId)
       toast.success('Process completed successfully. Production batch created.')
-      await refresh()
+      await refreshSelectedLot()
       navigate('/process/process-steps', { replace: true })
       setFinishWithNCAlertOpen(false)
     } catch (error) {
@@ -648,11 +719,25 @@ function ProcessStepsProgress() {
       })
   }, [])
 
-  const isPageLoading =
-    loadingDefinitions ||
-    loadingLotRun ||
-    (lotRunId !== null && loadingStepRuns) ||
-    (lotRunId !== null && loadingWarehouses)
+  const lotRunCheckPending =
+    !loadingSelectedLot &&
+    Number.isFinite(lotId) &&
+    selectedLot !== null &&
+    (checkingLotRun || checkedLotId !== selectedLot.id)
+
+  const initialLoadReady =
+    !loadingSelectedLot &&
+    !lotRunCheckPending &&
+    (!lotRunId || (!loadingLotRun && !loadingStepRuns && !loadingWarehouses))
+
+  useEffect(() => {
+    if (initialLoadCompleted) return
+    if (initialLoadReady) {
+      setInitialLoadCompleted(true)
+    }
+  }, [initialLoadCompleted, initialLoadReady])
+
+  const isPageLoading = !initialLoadCompleted
 
   return (
     <PageLayout
@@ -677,10 +762,10 @@ function ProcessStepsProgress() {
         )}
       </div>
 
-      {definitionsError && (
+      {selectedLotError && (
         <Card className="border-red-300 bg-red-50 text-red-700">
           <CardContent className="py-4">
-            We could not load process definitions. Please try refreshing the page.
+            We could not load this lot. Please try refreshing the page.
           </CardContent>
         </Card>
       )}
@@ -761,7 +846,7 @@ function ProcessStepsProgress() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {loadingStepRuns ? (
+              {loadingStepRuns && stepRuns.length === 0 ? (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     {[1, 2, 3, 4, 5].map((i) => (

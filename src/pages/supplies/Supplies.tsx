@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { CalendarRange, Camera, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
+import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { useAuth } from '@/context/AuthContext'
@@ -43,6 +43,7 @@ interface SupplyBatch {
 }
 
 interface FormData {
+  category_code: 'PRODUCT' | 'SERVICE'
   doc_no: string
   warehouse_id: string
   supplier_id: string
@@ -54,6 +55,7 @@ interface FormData {
 
 interface Supply {
   id: number
+  category_code?: 'PRODUCT' | 'SERVICE'
   doc_no?: string
   supplier_id?: number
   warehouse_id?: number
@@ -119,6 +121,18 @@ interface QualityParameterWithId {
   name: string
   specification: string
   defaultRemarks: string
+}
+
+interface SupplierTypeCategory {
+  code: string
+  category_code: 'PRODUCT' | 'SERVICE'
+}
+
+interface CategoryOption {
+  code: 'PRODUCT' | 'SERVICE'
+  name: string
+  description: string
+  icon: typeof Package
 }
 
 function formatDateTime(value: string | Date | number | null | undefined): string {
@@ -239,6 +253,7 @@ function getMonthGrid(monthDate: Date): Date[] {
 const WEEK_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
 const STEPS = [
+  'Supplier category',
   'Basic information',
   'Supply documents',
   'Vehicle inspections',
@@ -246,6 +261,21 @@ const STEPS = [
   'Quality evaluation',
   'Supply batches & submit',
   'Supplier sign-off',
+]
+
+const CATEGORY_OPTIONS: CategoryOption[] = [
+  {
+    code: 'PRODUCT',
+    name: 'Product Supplier',
+    description: 'Use the full receiving workflow for raw/material supplies.',
+    icon: Package,
+  },
+  {
+    code: 'SERVICE',
+    name: 'Operational Supplier',
+    description: 'Operational supplier form will be added in a future update.',
+    icon: Briefcase,
+  },
 ]
 
 function createInitialQualityEntries(parameters: QualityParameterWithId[] = []): QualityEntries {
@@ -312,6 +342,7 @@ function Supplies() {
   const [units, setUnits] = useState<Unit[]>([])
   const [userProfiles, setUserProfiles] = useState<UserProfile[]>([])
   const [qualityParameters, setQualityParameters] = useState<QualityParameterWithId[]>([])
+  const [supplierTypeCategories, setSupplierTypeCategories] = useState<SupplierTypeCategory[]>([])
   const [qualityEntries, setQualityEntries] = useState<QualityEntries>(() => createInitialQualityEntries())
   const [supplyDocuments, setSupplyDocuments] = useState<SupplyDocument>(() => ({
     invoiceNumber: '',
@@ -353,6 +384,8 @@ function Supplies() {
   const [loadingData, setLoadingData] = useState(true)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  type SupplyTabId = 'product' | 'operational'
+  const [activeSupplyTab, setActiveSupplyTab] = useState<SupplyTabId>('product')
   const [receivedFrom, setReceivedFrom] = useState('')
   const [receivedTo, setReceivedTo] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
@@ -405,6 +438,7 @@ function Supplies() {
 
   const getInitialFormData = useCallback(
     (): FormData => ({
+      category_code: 'PRODUCT',
       doc_no: computeNextDocNumber(),
       warehouse_id: '',
       supplier_id: '',
@@ -422,12 +456,37 @@ function Supplies() {
 
   const supplierList = useMemo(() => (Array.isArray(supplierOptions) ? supplierOptions : []), [supplierOptions])
 
+  const supplierTypeCategoryMap = useMemo(() => {
+    const map = new Map<string, 'PRODUCT' | 'SERVICE'>()
+    supplierTypeCategories.forEach((entry) => {
+      if (entry?.code && entry?.category_code) {
+        map.set(entry.code, entry.category_code)
+      }
+    })
+    if (!map.has('GS')) map.set('GS', 'PRODUCT')
+    if (!map.has('NS')) map.set('NS', 'PRODUCT')
+    if (!map.has('SS')) map.set('SS', 'PRODUCT')
+    if (!map.has('OS')) map.set('OS', 'SERVICE')
+    return map
+  }, [supplierTypeCategories])
+
+  const filteredSupplierList = useMemo(() => {
+    return supplierList.filter((supplier) => {
+      const supplierType = String(supplier?.supplier_type ?? '')
+      if (!supplierType) {
+        return formData.category_code === 'PRODUCT'
+      }
+      const supplierCategory = supplierTypeCategoryMap.get(supplierType)
+      return supplierCategory ? supplierCategory === formData.category_code : formData.category_code === 'PRODUCT'
+    })
+  }, [supplierList, supplierTypeCategoryMap, formData.category_code])
+
   const supplierSelectOptions = useMemo(() => {
-    return supplierList.map((supplier) => ({
+    return filteredSupplierList.map((supplier) => ({
       value: String(supplier.id),
       label: String(supplier.name ?? ''),
     }))
-  }, [supplierList])
+  }, [filteredSupplierList])
 
   const supplierLabelMap = useMemo(() => {
     const map = new Map<number, string>()
@@ -478,12 +537,22 @@ function Supplies() {
     })),
   [supplies, supplierLabelMap, warehouseLabelMap])
 
+  const tabSupplies = useMemo(() => {
+    return displaySupplies.filter((supply) => {
+      const category = String(supply.category_code ?? 'PRODUCT').toUpperCase()
+      if (activeSupplyTab === 'operational') {
+        return category === 'SERVICE'
+      }
+      return category !== 'SERVICE'
+    })
+  }, [displaySupplies, activeSupplyTab])
+
   const filteredSupplies = useMemo(() => {
     const normalised = searchTerm.trim().toLowerCase()
     const fromDate = toDate(receivedFrom)
     const toDateValue = toDateEndOfDay(receivedTo)
 
-    return displaySupplies.filter((supply) => {
+    return tabSupplies.filter((supply) => {
       const supplierNameLower = (supply.supplier_name ?? '').toLowerCase()
       const warehouseNameLower = (supply.warehouse_name ?? '').toLowerCase()
       const docNoLower = (supply.doc_no ?? '').toLowerCase()
@@ -500,7 +569,7 @@ function Supplies() {
 
       return matchesSearch && matchesFrom && matchesTo
     })
-  }, [searchTerm, receivedFrom, receivedTo, displaySupplies])
+  }, [searchTerm, receivedFrom, receivedTo, tabSupplies])
 
   const totalPages = Math.max(1, Math.ceil(filteredSupplies.length / pageSize))
   const paginatedSupplies = useMemo(() => {
@@ -510,7 +579,7 @@ function Supplies() {
 
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchTerm, receivedFrom, receivedTo])
+  }, [searchTerm, receivedFrom, receivedTo, activeSupplyTab])
 
   useEffect(() => {
     setCurrentPage((page) => Math.min(page, totalPages))
@@ -648,7 +717,7 @@ function Supplies() {
   }, [currentUserName])
 
   useEffect(() => {
-    if (currentStep !== 5) {
+    if (currentStep !== 6) {
       return
     }
 
@@ -779,6 +848,21 @@ function Supplies() {
     }))
   }
 
+  useEffect(() => {
+    if (!formData.supplier_id) {
+      return
+    }
+    const supplierStillAvailable = filteredSupplierList.some(
+      (supplier) => String(supplier.id) === formData.supplier_id,
+    )
+    if (!supplierStillAvailable) {
+      setFormData((previous) => ({
+        ...previous,
+        supplier_id: '',
+      }))
+    }
+  }, [formData.supplier_id, filteredSupplierList])
+
   const getBatchProductOptions = useCallback(
     (currentProductId: string) => {
       if (!currentProductId) {
@@ -905,6 +989,17 @@ function Supplies() {
   const validateStep = useCallback(
     (step: number): boolean => {
       if (step === 0) {
+        if (!formData.category_code) {
+          toast.error('Select a supplier category before continuing.')
+          return false
+        }
+        if (formData.category_code === 'SERVICE') {
+          toast.info('Operational supplier form is not available yet.')
+          return false
+        }
+      }
+
+      if (step === 1) {
         if (
           !formData.warehouse_id ||
           !formData.supplier_id ||
@@ -915,7 +1010,7 @@ function Supplies() {
         }
       }
 
-      if (step === 1) {
+      if (step === 2) {
         // Supply documents validation
         if (!supplyDocuments.invoiceNumber || !supplyDocuments.driverLicenseName || !supplyDocuments.batchNumber) {
           toast.error('Complete all required document fields before continuing.')
@@ -923,7 +1018,7 @@ function Supplies() {
         }
       }
 
-      if (step === 2) {
+      if (step === 3) {
         // Vehicle inspections validation
         if (
           vehicleInspection.vehicleClean === '' ||
@@ -935,7 +1030,7 @@ function Supplies() {
         }
       }
 
-      if (step === 3) {
+      if (step === 4) {
         // Packaging quality parameters validation
         if (
           packagingQuality.inaccurateLabelling === '' ||
@@ -949,7 +1044,7 @@ function Supplies() {
         }
       }
 
-      if (step === 4) {
+      if (step === 5) {
         // Quality evaluation validation
         const missingScore = qualityParameters.find((parameter) => {
           const entry = qualityEntries[parameter.code]
@@ -968,7 +1063,7 @@ function Supplies() {
         }
       }
 
-      if (step === 5) {
+      if (step === 6) {
         // Supply batches validation
         if (formData.supply_batches.length === 0) {
           toast.error('Add at least one batch to continue.')
@@ -1014,7 +1109,7 @@ function Supplies() {
         }
       }
 
-      if (step === 6) {
+      if (step === 7) {
         // Supplier sign-off validation
         if (!supplierSignOff.signatureType) {
           toast.error('Select a signature type before submitting.')
@@ -1120,6 +1215,7 @@ function Supplies() {
         const { error: updateSupplyError } = await supabase
           .from('supplies')
           .update({
+            category_code: formData.category_code,
             warehouse_id: warehouseId,
             supplier_id: supplierId,
             received_at: receivedAtISO,
@@ -1381,6 +1477,7 @@ function Supplies() {
       const { data: insertedSupply, error: insertSupplyError } = await supabase
         .from('supplies')
         .insert({
+          category_code: formData.category_code,
           doc_no: formData.doc_no || computeNextDocNumber(),
           warehouse_id: warehouseId,
           supplier_id: supplierId,
@@ -1977,6 +2074,7 @@ function Supplies() {
 
         const getDoc = (code: string) => docs.find((d) => d.document_type_code === code)
         setFormData({
+          category_code: (supply.category_code as 'PRODUCT' | 'SERVICE') ?? 'PRODUCT',
           doc_no: String(supply.doc_no ?? ''),
           warehouse_id: String(supply.warehouse_id ?? ''),
           supplier_id: String(supply.supplier_id ?? ''),
@@ -2274,6 +2372,7 @@ function Supplies() {
         productsResponse,
         unitsResponse,
         qualityParametersResponse,
+        supplierTypesResponse,
       ] = await Promise.all([
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
         supabase.from('products').select('id, name, sku, product_type').order('name', { ascending: true }),
@@ -2281,16 +2380,23 @@ function Supplies() {
         supabase.from('quality_parameters').select('id, code, name').order('id', {
           ascending: true,
         }),
+        supabase.from('supplier_types').select('code, category_code'),
       ])
 
       if (warehousesResponse.error) throw warehousesResponse.error
       if (productsResponse.error) throw productsResponse.error
       if (unitsResponse.error) throw unitsResponse.error
       if (qualityParametersResponse.error) throw qualityParametersResponse.error
+      if (supplierTypesResponse.error) throw supplierTypesResponse.error
 
       setWarehouses((warehousesResponse.data ?? []) as Warehouse[])
       setProducts((productsResponse.data ?? []) as Product[])
       setUnits((unitsResponse.data ?? []) as Unit[])
+      setSupplierTypeCategories(
+        ((supplierTypesResponse.data ?? []) as Array<{ code: string; category_code: 'PRODUCT' | 'SERVICE' | null }>)
+          .filter((entry) => !!entry.code && !!entry.category_code)
+          .map((entry) => ({ code: entry.code, category_code: entry.category_code as 'PRODUCT' | 'SERVICE' })),
+      )
 
       const qualityData = qualityParametersResponse.data ?? []
       if (qualityData.length > 0) {
@@ -2333,7 +2439,7 @@ function Supplies() {
       ] = await Promise.all([
         supabase
           .from('supplies')
-          .select('id, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
+          .select('id, category_code, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
         supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty, unit_price'),
@@ -2444,9 +2550,9 @@ function Supplies() {
     }
   }, [location.state, location.pathname, navigate])
 
-  // Fetch supplier COA status only when on the documents step (step 1). Avoid synchronous setState to prevent extra render.
+  // Fetch supplier COA status only when on the documents step (step 2). Avoid synchronous setState to prevent extra render.
   useEffect(() => {
-    if (currentStep !== 1) {
+    if (currentStep !== 2) {
       return
     }
     const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
@@ -2555,6 +2661,34 @@ function Supplies() {
                 Track inbound receipts. Click a record to open the detailed supply page.
               </CardDescription>
             </CardHeader>
+            <div className="border-b border-olive-light/40">
+              <nav className="flex gap-0 px-6" aria-label="Supply category tabs">
+                <button
+                  type="button"
+                  onClick={() => setActiveSupplyTab('product')}
+                  className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                    activeSupplyTab === 'product'
+                      ? 'border-olive text-olive-dark text-text-dark'
+                      : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+                  }`}
+                >
+                  <Package className="h-4 w-4" />
+                  Product Suppliers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSupplyTab('operational')}
+                  className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                    activeSupplyTab === 'operational'
+                      ? 'border-olive text-olive-dark text-text-dark'
+                      : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+                  }`}
+                >
+                  <Briefcase className="h-4 w-4" />
+                  Operational Suppliers
+                </button>
+              </nav>
+            </div>
             <CardContent className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="lg:col-span-2">
@@ -2781,6 +2915,53 @@ function Supplies() {
               <div className="space-y-6 p-5 sm:p-6 lg:p-8">
                 {currentStep === 0 && (
                   <section className={sectionCardClass}>
+                    <div className="mb-6">
+                      <h3 className="text-lg font-semibold text-text-dark">Supplier category</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Select the supplier category to start the correct supply workflow.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      {CATEGORY_OPTIONS.map((option) => {
+                        const active = formData.category_code === option.code
+                        const Icon = option.icon
+                        return (
+                          <button
+                            key={option.code}
+                            type="button"
+                            className={`rounded-xl border p-5 text-left transition ${
+                              active
+                                ? 'border-olive bg-olive-light/30 shadow-sm'
+                                : 'border-olive-light/40 bg-white hover:border-olive-light/70'
+                            }`}
+                            onClick={() =>
+                              setFormData((previous) => ({
+                                ...previous,
+                                category_code: option.code,
+                                supplier_id: '',
+                              }))
+                            }
+                            disabled={isSubmitting}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Icon className="h-5 w-5 text-olive-dark" />
+                              <p className="text-base font-semibold text-text-dark">{option.name}</p>
+                            </div>
+                            <p className="mt-2 text-sm text-text-dark/70">{option.description}</p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {formData.category_code === 'SERVICE' && (
+                      <p className="mt-4 text-sm font-medium text-text-dark/80">
+                        Operational supplier form is not available yet. Please select Product Supplier for now.
+                      </p>
+                    )}
+                  </section>
+                )}
+
+                {currentStep === 1 && (
+                  <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Basic Information</h3>
@@ -2831,7 +3012,13 @@ function Supplies() {
                           placeholder={suppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
                           disabled={isSubmitting}
                           required
-                          emptyMessage={supplierList.length === 0 ? 'No suppliers found. Add suppliers under Partner → Suppliers.' : 'No match'}
+                          emptyMessage={
+                            supplierList.length === 0
+                              ? 'No suppliers found. Add suppliers under Partner → Suppliers.'
+                              : filteredSupplierList.length === 0
+                              ? 'No suppliers match the selected category.'
+                              : 'No match'
+                          }
                         />
                       </div>
 
@@ -2865,7 +3052,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 1 && (
+                {currentStep === 2 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -2915,7 +3102,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 2 && (
+                {currentStep === 3 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -2934,7 +3121,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 3 && (
+                {currentStep === 4 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -2953,7 +3140,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 4 && (
+                {currentStep === 5 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -2973,7 +3160,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 5 && (
+                {currentStep === 6 && (
                   <section className="space-y-6">
                     <div className={sectionCardClass}>
                       <div className="mb-4">
@@ -3287,7 +3474,7 @@ function Supplies() {
                   </section>
                 )}
 
-                {currentStep === 6 && (
+                {currentStep === 7 && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -3332,9 +3519,15 @@ function Supplies() {
                   <Button
                     type="submit"
                     className="bg-olive hover:bg-olive-dark disabled:cursor-not-allowed disabled:bg-olive-light/60"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || (currentStep === 0 && formData.category_code === 'SERVICE')}
                   >
-                    {isSubmitting ? 'Saving…' : isLastStep ? 'Submit Supply' : 'Next'}
+                    {isSubmitting
+                      ? 'Saving…'
+                      : currentStep === 0 && formData.category_code === 'SERVICE'
+                      ? 'Operational Form Coming Soon'
+                      : isLastStep
+                      ? 'Submit Supply'
+                      : 'Next'}
                   </Button>
                 </div>
               </div>

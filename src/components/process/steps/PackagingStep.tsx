@@ -15,6 +15,7 @@ import type {
   PackagingWasteFormData,
   PackagingMetalCheckAttemptFormData,
   PackagingMetalCheckRejectionFormData,
+  PackagingStorageAllocationFormData,
   ProcessPackagingMetalCheck,
 } from '@/types/processExecution'
 import {
@@ -80,6 +81,18 @@ const METAL_CHECK_STATUS_OPTIONS: Array<{ value: '' | 'PASS' | 'FAIL'; label: st
   { value: 'PASS', label: 'PASS' },
   { value: 'FAIL', label: 'FAIL' },
 ]
+const VISUAL_STATUS_OPTIONS = ['', 'Pass', 'Rework', 'Hold']
+const PEST_STATUS_OPTIONS = ['', 'None', 'Minor', 'Major']
+const FOREIGN_OBJECT_STATUS_OPTIONS = ['', 'None', 'Detected']
+const MOULD_STATUS_OPTIONS = ['', 'None', 'Present']
+const KERNEL_DAMAGE_OPTIONS = ['', '0', '0.5', '1', '2', '5', '10']
+const NITROGEN_USED_OPTIONS = ['', '0', '0.25', '0.5', '1', '2', '3']
+const STORAGE_TYPE_OPTIONS: Array<{ value: '' | 'BOX' | 'BAG' | 'SHOP_PACKING'; label: string }> = [
+  { value: '', label: 'Select type' },
+  { value: 'BOX', label: 'Box' },
+  { value: 'BAG', label: 'Bag' },
+  { value: 'SHOP_PACKING', label: 'Shop packing' },
+]
 
 const mapPackagingRunToFormData = (run: ProcessPackagingRun): PackagingFormData => ({
   visual_status: run.visual_status || '',
@@ -142,6 +155,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     deleteWaste,
     addPackEntry,
     deletePackEntry,
+    storageAllocations,
+    addStorageAllocation,
+    updateStorageAllocation,
+    deleteStorageAllocation,
+    getAllocatedPacksByEntry,
+    getRemainingPackCountByEntry,
     metalChecksBySortingOutput,
     getLatestMetalCheck,
     addMetalCheckAttempt,
@@ -164,7 +183,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   })
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<
-    { type: 'weightCheck'; id: number } | { type: 'waste'; id: number } | { type: 'photo'; id: number } | { type: 'packEntry'; id: number } | null
+    { type: 'weightCheck'; id: number } |
+    { type: 'waste'; id: number } |
+    { type: 'photo'; id: number } |
+    { type: 'packEntry'; id: number } |
+    { type: 'storageAllocation'; id: number } |
+    null
   >(null)
   const [showMetalCheckModal, setShowMetalCheckModal] = useState(false)
   const [selectedMetalCheckWip, setSelectedMetalCheckWip] = useState<SortedWipRow | null>(null)
@@ -175,6 +199,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [metalRejectionsForm, setMetalRejectionsForm] = useState<PackagingMetalCheckRejectionFormData[]>([
     { object_type: '', weight_kg: '', corrective_action: '' },
   ])
+  const [storageAllocationForm, setStorageAllocationForm] = useState<PackagingStorageAllocationFormData>({
+    pack_entry_id: '',
+    storage_type: '',
+    units_count: '',
+    packs_per_unit: '',
+    notes: '',
+  })
+  const [editingStorageAllocationId, setEditingStorageAllocationId] = useState<number | null>(null)
   const [userProfilesByAuthId, setUserProfilesByAuthId] = useState<Record<string, string>>({})
 
   const loadSortedWips = useCallback(async () => {
@@ -640,6 +672,11 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     setDeleteAlertOpen(true)
   }
 
+  const handleDeleteStorageAllocation = (allocationId: number) => {
+    setDeleteTarget({ type: 'storageAllocation', id: allocationId })
+    setDeleteAlertOpen(true)
+  }
+
   const performDelete = async () => {
     if (!deleteTarget) return
     setSaving(true)
@@ -660,6 +697,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         case 'packEntry':
           await deletePackEntry(deleteTarget.id)
           toast.success('Pack entry removed')
+          break
+        case 'storageAllocation':
+          await deleteStorageAllocation(deleteTarget.id)
+          toast.success('Storage allocation removed')
           break
       }
       setDeleteAlertOpen(false)
@@ -692,6 +733,34 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     if (!selectedWipForPackEntry) return null
     return Math.max(0, selectedWipForPackEntry.quantity_kg - selectedWipRejectedKg - selectedWipUsedKg)
   }, [selectedWipForPackEntry, selectedWipUsedKg, selectedWipRejectedKg])
+  const eligibleWipsForPacking = useMemo(() => {
+    return sortedWips.filter((wip) => {
+      const latestCheck = getLatestMetalCheck(wip.id)
+      if (!latestCheck || latestCheck.status !== 'PASS') return false
+      const failedRejectedKg = getFailedRejectedWeightBySortingOutput(wip.id)
+      const usedKg = packEntries
+        .filter((entry) => entry.sorting_output_id === wip.id)
+        .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
+      const remainingKg = wip.quantity_kg - failedRejectedKg - usedKg
+      return remainingKg > 0
+    })
+  }, [sortedWips, getLatestMetalCheck, getFailedRejectedWeightBySortingOutput, packEntries])
+  const hasEligibleWipsForPacking = eligibleWipsForPacking.length > 0
+  const selectedStoragePackEntryId = Number(storageAllocationForm.pack_entry_id || 0)
+  const selectedStoragePackEntry = packEntries.find((entry) => entry.id === selectedStoragePackEntryId) ?? null
+  const storageTotalPacksPreview =
+    (Number(storageAllocationForm.units_count) || 0) * (Number(storageAllocationForm.packs_per_unit) || 0)
+  const storageTotalKgPreview =
+    storageTotalPacksPreview * (Number(selectedStoragePackEntry?.pack_size_kg) || 0)
+
+  useEffect(() => {
+    if (!packEntryForm.sorting_output_id) return
+    const selectedId = Number(packEntryForm.sorting_output_id)
+    const stillEligible = eligibleWipsForPacking.some((w) => w.id === selectedId)
+    if (!stillEligible) {
+      setPackEntryForm((prev) => ({ ...prev, sorting_output_id: '', quantity_kg: '' }))
+    }
+  }, [eligibleWipsForPacking, packEntryForm.sorting_output_id])
 
   const openMetalCheckModal = (wip: SortedWipRow) => {
     setSelectedMetalCheckWip(wip)
@@ -831,6 +900,99 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
   }
 
+  const resetStorageAllocationForm = () => {
+    setStorageAllocationForm({
+      pack_entry_id: '',
+      storage_type: '',
+      units_count: '',
+      packs_per_unit: '',
+      notes: '',
+    })
+    setEditingStorageAllocationId(null)
+  }
+
+  const startEditStorageAllocation = (allocationId: number) => {
+    const row = storageAllocations.find((item) => item.id === allocationId)
+    if (!row) return
+    setStorageAllocationForm({
+      pack_entry_id: String(row.pack_entry_id),
+      storage_type: row.storage_type,
+      units_count: String(row.units_count),
+      packs_per_unit: String(row.packs_per_unit),
+      notes: row.notes || '',
+    })
+    setEditingStorageAllocationId(row.id)
+  }
+
+  const handleStorageAllocationSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    const packEntryId = Number(storageAllocationForm.pack_entry_id)
+    const unitsCount = Number(storageAllocationForm.units_count)
+    const packsPerUnit = Number(storageAllocationForm.packs_per_unit)
+
+    if (!packEntryId || !storageAllocationForm.storage_type) {
+      toast.error('Select pack entry and storage type')
+      return
+    }
+    if (!Number.isInteger(unitsCount) || unitsCount <= 0) {
+      toast.error('Units count must be a whole number greater than 0')
+      return
+    }
+    if (!Number.isInteger(packsPerUnit) || packsPerUnit <= 0) {
+      toast.error('Packs per unit must be a whole number greater than 0')
+      return
+    }
+
+    const totalPacks = unitsCount * packsPerUnit
+    if (editingStorageAllocationId) {
+      const existing = storageAllocations.find((row) => row.id === editingStorageAllocationId)
+      const packEntry = packEntries.find((entry) => entry.id === packEntryId)
+      if (!existing || !packEntry) return
+      const allocatedWithoutThis = storageAllocations
+        .filter((row) => row.pack_entry_id === packEntryId && row.id !== editingStorageAllocationId)
+        .reduce((sum, row) => sum + (Number(row.total_packs) || 0), 0)
+      const produced = Number(packEntry.pack_count) || 0
+      if (totalPacks + allocatedWithoutThis > produced) {
+        toast.error(`Allocation exceeds produced packs (${produced}) for selected pack entry`)
+        return
+      }
+    } else {
+      const remaining = getRemainingPackCountByEntry(packEntryId)
+      if (totalPacks > remaining) {
+        toast.error(`Allocation exceeds remaining packs (${remaining}) for selected pack entry`)
+        return
+      }
+    }
+
+    setSaving(true)
+    try {
+      if (editingStorageAllocationId) {
+        await updateStorageAllocation(editingStorageAllocationId, {
+          storage_type: storageAllocationForm.storage_type as 'BOX' | 'BAG' | 'SHOP_PACKING',
+          units_count: unitsCount,
+          packs_per_unit: packsPerUnit,
+          notes: storageAllocationForm.notes || null,
+        })
+        toast.success('Storage allocation updated')
+      } else {
+        await addStorageAllocation({
+          pack_entry_id: packEntryId,
+          storage_type: storageAllocationForm.storage_type as 'BOX' | 'BAG' | 'SHOP_PACKING',
+          units_count: unitsCount,
+          packs_per_unit: packsPerUnit,
+          notes: storageAllocationForm.notes || null,
+        })
+        toast.success('Storage allocation added')
+      }
+      resetStorageAllocationForm()
+    } catch (error) {
+      console.error('Failed to save storage allocation:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to save storage allocation')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Sorted WIPs to be packed */}
@@ -924,13 +1086,18 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 variant="outline"
                 size="sm"
                 onClick={() => setShowPackEntryForm(!showPackEntryForm)}
-                disabled={saving || externalLoading || !packagingRun}
+                disabled={saving || externalLoading || !packagingRun || !hasEligibleWipsForPacking}
                 className="border-olive-light/30"
               >
                 <PackageIcon className="mr-2 h-4 w-4" />
                 Add pack entry
               </Button>
             </div>
+            {!hasEligibleWipsForPacking && (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+                Complete and pass metal checks for at least one sorted output before adding pack entries.
+              </p>
+            )}
             {showPackEntryForm && packagingRun && (
               <form onSubmit={handlePackEntrySubmit} className="rounded-lg border border-olive-light/30 bg-white p-4 mb-4">
                 {(() => {
@@ -994,7 +1161,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     >
                       <option value="">Select WIP</option>
-                      {sortedWips.map((w) => (
+                      {eligibleWipsForPacking.map((w) => (
                         <option key={w.id} value={w.id}>
                           {w.product_name} — {w.quantity_kg.toFixed(2)} kg
                         </option>
@@ -1351,152 +1518,174 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       )}
 
       <div className="space-y-4">
-        {/* Visual Inspection */}
-        <div className="border-b border-olive-light/20 pb-4">
-          <h4 className="text-sm font-semibold text-text-dark mb-4">Visual Inspection</h4>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="visual_status">Visual Status</Label>
-              <Input
-                id="visual_status"
-                type="text"
-                value={formData.visual_status}
-                onChange={(e) => setFormData({ ...formData, visual_status: e.target.value })}
-                placeholder="e.g., Pass, Rework, Hold"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
-            </div>
-
-            {showReworkDropdown && (
+        <div className="grid gap-4 md:grid-cols-3">
+          {/* Visual Inspection */}
+          <div className="rounded-lg border border-olive-light/20 p-4">
+            <h4 className="text-sm font-semibold text-text-dark mb-4">Visual Inspection</h4>
+            <div className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="rework_destination">Rework Destination</Label>
+                <Label htmlFor="visual_status">Visual Status</Label>
                 <select
-                  id="rework_destination"
+                  id="visual_status"
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={formData.rework_destination}
-                  onChange={(e) => setFormData({ ...formData, rework_destination: e.target.value })}
+                  value={formData.visual_status}
+                  onChange={(e) => setFormData({ ...formData, visual_status: e.target.value })}
                   disabled={saving || externalLoading}
                 >
-                  <option value="">Select destination</option>
-                  {REWORK_DESTINATIONS.map((dest) => (
-                    <option key={dest} value={dest}>
-                      {dest}
+                  {VISUAL_STATUS_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select status'}
                     </option>
                   ))}
                 </select>
               </div>
-            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="pest_status">Pest Status</Label>
-              <Input
-                id="pest_status"
-                type="text"
-                value={formData.pest_status}
-                onChange={(e) => setFormData({ ...formData, pest_status: e.target.value })}
-                placeholder="e.g., None, Minor, Major"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
-            </div>
+              {showReworkDropdown && (
+                <div className="space-y-2">
+                  <Label htmlFor="rework_destination">Rework Destination</Label>
+                  <select
+                    id="rework_destination"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={formData.rework_destination}
+                    onChange={(e) => setFormData({ ...formData, rework_destination: e.target.value })}
+                    disabled={saving || externalLoading}
+                  >
+                    <option value="">Select destination</option>
+                    {REWORK_DESTINATIONS.map((dest) => (
+                      <option key={dest} value={dest}>
+                        {dest}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-            <div className="space-y-2">
-              <Label htmlFor="foreign_object_status">Foreign Object Status</Label>
-              <Input
-                id="foreign_object_status"
-                type="text"
-                value={formData.foreign_object_status}
-                onChange={(e) => setFormData({ ...formData, foreign_object_status: e.target.value })}
-                placeholder="e.g., None, Detected"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="pest_status">Pest Status</Label>
+                <select
+                  id="pest_status"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.pest_status}
+                  onChange={(e) => setFormData({ ...formData, pest_status: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {PEST_STATUS_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select pest status'}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="mould_status">Mould Status</Label>
-              <Input
-                id="mould_status"
-                type="text"
-                value={formData.mould_status}
-                onChange={(e) => setFormData({ ...formData, mould_status: e.target.value })}
-                placeholder="e.g., None, Present"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
-            </div>
-          </div>
-        </div>
+              <div className="space-y-2">
+                <Label htmlFor="foreign_object_status">Foreign Object Status</Label>
+                <select
+                  id="foreign_object_status"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.foreign_object_status}
+                  onChange={(e) => setFormData({ ...formData, foreign_object_status: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {FOREIGN_OBJECT_STATUS_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select status'}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-        {/* Kernel Damage */}
-        <div className="border-b border-olive-light/20 pb-4">
-          <h4 className="text-sm font-semibold text-text-dark mb-4">Kernel Damage</h4>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="damaged_kernels_pct">Damaged Kernels (%)</Label>
-              <Input
-                id="damaged_kernels_pct"
-                type="number"
-                step="0.01"
-                min="0"
-                max="100"
-                value={formData.damaged_kernels_pct}
-                onChange={(e) => setFormData({ ...formData, damaged_kernels_pct: e.target.value })}
-                placeholder="0.00"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="insect_damaged_kernels_pct">Insect Damaged Kernels (%)</Label>
-              <Input
-                id="insect_damaged_kernels_pct"
-                type="number"
-                step="0.01"
-                min="0"
-                max="100"
-                value={formData.insect_damaged_kernels_pct}
-                onChange={(e) => setFormData({ ...formData, insect_damaged_kernels_pct: e.target.value })}
-                placeholder="0.00"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
+              <div className="space-y-2">
+                <Label htmlFor="mould_status">Mould Status</Label>
+                <select
+                  id="mould_status"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.mould_status}
+                  onChange={(e) => setFormData({ ...formData, mould_status: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {MOULD_STATUS_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select mould status'}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Nitrogen */}
-        <div className="border-b border-olive-light/20 pb-4">
-          <h4 className="text-sm font-semibold text-text-dark mb-4">Nitrogen</h4>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="nitrogen_used">Nitrogen Used</Label>
-              <Input
-                id="nitrogen_used"
-                type="number"
-                step="0.01"
-                min="0"
-                value={formData.nitrogen_used}
-                onChange={(e) => setFormData({ ...formData, nitrogen_used: e.target.value })}
-                placeholder="0.00"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
+          {/* Kernel Damage */}
+          <div className="rounded-lg border border-olive-light/20 p-4">
+            <h4 className="text-sm font-semibold text-text-dark mb-4">Kernel Damage</h4>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="damaged_kernels_pct">Damaged Kernels (%)</Label>
+                <select
+                  id="damaged_kernels_pct"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.damaged_kernels_pct}
+                  onChange={(e) => setFormData({ ...formData, damaged_kernels_pct: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {KERNEL_DAMAGE_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select %'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="insect_damaged_kernels_pct">Insect Damaged Kernels (%)</Label>
+                <select
+                  id="insect_damaged_kernels_pct"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.insect_damaged_kernels_pct}
+                  onChange={(e) => setFormData({ ...formData, insect_damaged_kernels_pct: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {KERNEL_DAMAGE_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select %'}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
+          </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="nitrogen_batch_number">Nitrogen Batch Number</Label>
-              <Input
-                id="nitrogen_batch_number"
-                type="text"
-                value={formData.nitrogen_batch_number}
-                onChange={(e) => setFormData({ ...formData, nitrogen_batch_number: e.target.value })}
-                placeholder="Batch number"
-                disabled={saving || externalLoading}
-                className="bg-white"
-              />
+          {/* Nitrogen */}
+          <div className="rounded-lg border border-olive-light/20 p-4">
+            <h4 className="text-sm font-semibold text-text-dark mb-4">Nitrogen</h4>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="nitrogen_used">Nitrogen Used</Label>
+                <select
+                  id="nitrogen_used"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formData.nitrogen_used}
+                  onChange={(e) => setFormData({ ...formData, nitrogen_used: e.target.value })}
+                  disabled={saving || externalLoading}
+                >
+                  {NITROGEN_USED_OPTIONS.map((option) => (
+                    <option key={option || 'empty'} value={option}>
+                      {option || 'Select amount'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="nitrogen_batch_number">Nitrogen Batch Number</Label>
+                <Input
+                  id="nitrogen_batch_number"
+                  type="text"
+                  value={formData.nitrogen_batch_number}
+                  onChange={(e) => setFormData({ ...formData, nitrogen_batch_number: e.target.value })}
+                  placeholder="Batch number"
+                  disabled={saving || externalLoading}
+                  className="bg-white"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1629,6 +1818,155 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
               </select>
             </div>
           </div>
+        </div>
+
+        {/* Storage Allocation */}
+        <div className="border-b border-olive-light/20 pb-4">
+          <h4 className="text-sm font-semibold text-text-dark mb-4">Storage Allocation</h4>
+          <p className="text-xs text-text-dark/60 mb-3">
+            Allocate packed entries into storage units (box, bag, shop packing) for shipment readiness.
+          </p>
+
+          {packEntries.length === 0 ? (
+            <p className="text-sm text-text-dark/60">Add pack entries first before creating storage allocations.</p>
+          ) : (
+            <div className="space-y-4">
+              <form onSubmit={handleStorageAllocationSubmit} className="rounded-lg border border-olive-light/30 bg-white p-4">
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                  <div className="space-y-2 lg:col-span-2">
+                    <Label>Pack Entry *</Label>
+                    <select
+                      value={storageAllocationForm.pack_entry_id}
+                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, pack_entry_id: e.target.value }))}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                      disabled={saving || externalLoading}
+                    >
+                      <option value="">Select pack entry</option>
+                      {packEntries
+                        .filter((entry) => (Number(entry.pack_count) || 0) > 0)
+                        .map((entry) => (
+                          <option key={entry.id} value={entry.id}>
+                            {entry.pack_identifier} · {(Number(entry.pack_count) || 0)} packs · {getRemainingPackCountByEntry(entry.id)} remaining
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Storage Type *</Label>
+                    <select
+                      value={storageAllocationForm.storage_type}
+                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, storage_type: e.target.value as '' | 'BOX' | 'BAG' | 'SHOP_PACKING' }))}
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                      disabled={saving || externalLoading}
+                    >
+                      {STORAGE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value || 'empty'} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Units Count *</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={storageAllocationForm.units_count}
+                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, units_count: e.target.value }))}
+                      required
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Packs/Unit *</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={storageAllocationForm.packs_per_unit}
+                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, packs_per_unit: e.target.value }))}
+                      required
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-3 mt-4">
+                  <div className="space-y-2">
+                    <Label>Total Packs (computed)</Label>
+                    <Input readOnly value={storageTotalPacksPreview > 0 ? String(storageTotalPacksPreview) : ''} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Total Quantity (kg)</Label>
+                    <Input readOnly value={storageTotalKgPreview > 0 ? storageTotalKgPreview.toFixed(2) : ''} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Notes</Label>
+                    <Input
+                      value={storageAllocationForm.notes}
+                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, notes: e.target.value }))}
+                      placeholder="Optional notes"
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 mt-4">
+                  {editingStorageAllocationId && (
+                    <Button type="button" variant="outline" onClick={resetStorageAllocationForm} disabled={saving}>
+                      Cancel Edit
+                    </Button>
+                  )}
+                  <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={saving || externalLoading}>
+                    {editingStorageAllocationId ? 'Update Allocation' : 'Add Allocation'}
+                  </Button>
+                </div>
+              </form>
+
+              <div className="rounded-lg border border-olive-light/30 bg-white">
+                <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
+                  Pack Entry Summary
+                </div>
+                <div className="divide-y divide-olive-light/20">
+                  {packEntries.map((entry) => (
+                    <div key={`summary-${entry.id}`} className="px-4 py-2 text-sm text-text-dark/80">
+                      {entry.pack_identifier}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {storageAllocations.length === 0 ? (
+                <p className="text-sm text-text-dark/60">No storage allocations recorded yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {storageAllocations.map((allocation) => {
+                    const entry = packEntries.find((item) => item.id === allocation.pack_entry_id)
+                    return (
+                      <li key={allocation.id} className="rounded-lg border border-olive-light/30 bg-white px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-text-dark">
+                            {allocation.storage_type} · {allocation.units_count} units · {allocation.packs_per_unit} packs/unit · {allocation.total_packs} packs · {Number(allocation.total_quantity_kg).toFixed(2)} kg
+                            {entry ? ` · ${entry.pack_identifier}` : ''}
+                            {allocation.notes ? ` · ${allocation.notes}` : ''}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <Button type="button" variant="ghost" size="sm" onClick={() => startEditStorageAllocation(allocation.id)} disabled={saving || externalLoading}>
+                              Edit
+                            </Button>
+                            <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteStorageAllocation(allocation.id)} disabled={saving || externalLoading} className="text-red-600 hover:text-red-700">
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Allergen Swab */}

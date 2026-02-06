@@ -425,6 +425,21 @@ export interface ProcessPackagingPackEntry {
   metal_check_last_checked_by?: string | null
 }
 
+export interface ProcessPackagingStorageAllocation {
+  id: number
+  packaging_run_id: number
+  pack_entry_id: number
+  storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+  units_count: number
+  packs_per_unit: number
+  total_packs: number
+  total_quantity_kg: number
+  notes: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface PackagingFormData {
   visual_status: string
   rework_destination: string
@@ -466,6 +481,14 @@ export interface PackagingMetalCheckRejectionFormData {
   object_type: string
   weight_kg: string
   corrective_action: string
+}
+
+export interface PackagingStorageAllocationFormData {
+  pack_entry_id: string
+  storage_type: '' | 'BOX' | 'BAG' | 'SHOP_PACKING'
+  units_count: string
+  packs_per_unit: string
+  notes: string
 }
 
 // Batch Step Transitions
