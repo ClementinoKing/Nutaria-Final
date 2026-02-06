@@ -17,7 +17,6 @@ interface FormData {
 }
 
 interface FormErrors {
-  code?: string
   name?: string
 }
 
@@ -28,6 +27,35 @@ function SupplierTypes() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [formData, setFormData] = useState<FormData>({ code: '', name: '' })
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+
+  const existingCodes = useMemo(
+    () => new Set(supplierTypes.map((t) => (t.code ?? '').toUpperCase()).filter(Boolean)),
+    [supplierTypes]
+  )
+
+  const generateTypeCode = (name: string) => {
+    const cleaned = name
+      .trim()
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!cleaned) return ''
+    const base = cleaned
+      ? cleaned
+          .split(' ')
+          .filter(Boolean)
+          .map((word) => word[0])
+          .join('')
+          .toUpperCase()
+      : ''
+    let code = base || 'SUP'
+    let counter = 1
+    while (existingCodes.has(code)) {
+      counter += 1
+      code = `${base || 'SUP'}-${String(counter).padStart(2, '0')}`
+    }
+    return code
+  }
 
   const filteredTypes = useMemo(() => {
     const normalised = searchTerm.trim().toLowerCase()
@@ -84,12 +112,16 @@ function SupplierTypes() {
 
   const handleFormChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
-    setFormData((prev) => ({ ...prev, [name]: value }))
+    setFormData((prev) => {
+      if (name === 'name') {
+        return { ...prev, name: value, code: generateTypeCode(value) }
+      }
+      return { ...prev, [name]: value }
+    })
   }
 
   const validateForm = (): boolean => {
     const err: FormErrors = {}
-    if (!formData.code.trim()) err.code = 'Code is required.'
     if (!formData.name.trim()) err.name = 'Name is required.'
     setFormErrors(err)
     return Object.keys(err).length === 0
@@ -233,22 +265,6 @@ function SupplierTypes() {
 
             <form onSubmit={handleSubmit} className="px-6 py-6 space-y-5">
               <div>
-                <Label htmlFor="st-code">Code</Label>
-                <Input
-                  id="st-code"
-                  name="code"
-                  placeholder="e.g. NUT"
-                  value={formData.code}
-                  onChange={handleFormChange}
-                  className="mt-1"
-                  disabled={isSubmitting}
-                />
-                {formErrors.code ? (
-                  <p className="mt-1 text-sm text-red-600">{formErrors.code}</p>
-                ) : null}
-              </div>
-
-              <div>
                 <Label htmlFor="st-name">Name</Label>
                 <Input
                   id="st-name"
@@ -262,6 +278,19 @@ function SupplierTypes() {
                 {formErrors.name ? (
                   <p className="mt-1 text-sm text-red-600">{formErrors.name}</p>
                 ) : null}
+              </div>
+
+              <div>
+                <Label htmlFor="st-code">Code (auto-generated)</Label>
+                <Input
+                  id="st-code"
+                  name="code"
+                  placeholder="e.g. NUT"
+                  value={formData.code}
+                  onChange={handleFormChange}
+                  className="mt-1"
+                  disabled
+                />
               </div>
 
               <div className="flex items-center justify-end gap-3">

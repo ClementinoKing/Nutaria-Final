@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   Eye,
   ListChecks,
+  ShieldCheck,
   Sun,
   Moon,
   FileText,
@@ -68,7 +69,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
   const location = useLocation()
   const { remainingCount: dailyRemainingCount } = useDailyChecks()
   const { theme, toggleTheme } = useTheme()
-  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users'
+  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users' | 'checks'
   
   const [expandedMenus, setExpandedMenus] = useState<Record<ExpandedMenuKey, boolean>>({
     inventory: false,
@@ -76,6 +77,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     suppliersCustomers: false,
     settings: false,
     users: false,
+    checks: false,
   })
 
   const navigationItems: NavigationItem[] = [
@@ -112,10 +114,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     },
     { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments' },
     {
-      name: 'Daily Checks',
+      name: 'Checks',
       icon: ListChecks,
-      key: 'daily-checks',
-      path: '/daily-checks',
+      key: 'checks',
+      submenu: [
+        { name: 'Metal Detector Checks', icon: ShieldCheck, key: 'metal-detector-checks', path: '/checks/metal-detector' },
+        { name: 'Daily Checks', icon: ListChecks, key: 'daily-checks', path: '/checks/daily' },
+      ],
       badge: dailyRemainingCount,
     },
     {
@@ -162,9 +167,11 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
   const inventoryPaths = ['/inventory/stock-levels', '/inventory/stock-movements']
   const settingsPaths = ['/inventory/units', '/inventory/warehouses', '/inventory/products', '/process/processes', '/settings/supplier-types', '/settings/document-types', '/settings/quality-parameters']
   const processPaths = ['/process/view', '/process/process-steps']
+  const checksPaths = ['/checks/metal-detector', '/checks/daily', '/daily-checks']
   const isInventoryActive = inventoryPaths.some(path => location.pathname.startsWith(path))
   const isSettingsActive = settingsPaths.some(path => location.pathname.startsWith(path))
   const isProcessActive = processPaths.some(path => location.pathname.startsWith(path))
+  const isChecksActive = checksPaths.some(path => location.pathname.startsWith(path))
   const isSuppliersCustomersActive = location.pathname.startsWith('/suppliers-customers')
   const isUsersActive = ['/user-management', '/role-management'].some(path => location.pathname.startsWith(path))
  
@@ -185,7 +192,10 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     if (isUsersActive) {
       setExpandedMenus(prev => ({ ...prev, users: true }))
     }
-  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive])
+    if (isChecksActive) {
+      setExpandedMenus(prev => ({ ...prev, checks: true }))
+    }
+  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive, isChecksActive])
 
   const toggleMenu = (menuKey: ExpandedMenuKey) => {
     setExpandedMenus(prev => ({
@@ -206,6 +216,8 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         return isSuppliersCustomersActive
       case 'users':
         return isUsersActive
+      case 'checks':
+        return isChecksActive
       default:
         return false
     }
@@ -249,7 +261,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
           const isExpanded = item.submenu && (item.key as ExpandedMenuKey) in expandedMenus 
             ? expandedMenus[item.key as ExpandedMenuKey] 
             : false
-          const showBadge = item.key === 'daily-checks' && item.badge !== undefined && Number.isFinite(item.badge) && item.badge > 0
+          const showBadge = item.key === 'checks' && item.badge !== undefined && Number.isFinite(item.badge) && item.badge > 0
           
           if (item.submenu) {
             return (
@@ -269,6 +281,11 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
                   {sidebarOpen && (
                     <>
                       <span className="text-sm font-medium flex-1 text-left">{item.name}</span>
+                      {showBadge && (
+                        <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-white/20 px-1.5 py-0.5 text-xs font-semibold text-white">
+                          {item.badge}
+                        </span>
+                      )}
                       {isExpanded ? (
                         <ChevronDown className="h-4 w-4 flex-shrink-0" />
                       ) : (
@@ -379,4 +396,3 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
 }
 
 export default Sidebar
-

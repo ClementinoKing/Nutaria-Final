@@ -383,6 +383,48 @@ export interface ProcessPackagingWaste {
   created_at: string
 }
 
+export interface ProcessPackagingMetalCheckRejection {
+  id: number
+  metal_check_id: number
+  object_type: string
+  weight_kg: number
+  corrective_action: string | null
+  created_by: string | null
+  created_at: string
+}
+
+export interface ProcessPackagingMetalCheck {
+  id: number
+  packaging_run_id: number
+  sorting_output_id: number
+  attempt_no: number
+  status: 'PASS' | 'FAIL'
+  remarks: string | null
+  checked_by: string | null
+  checked_at: string
+  created_at: string
+  updated_at: string
+  rejections?: ProcessPackagingMetalCheckRejection[]
+}
+
+export interface ProcessPackagingPackEntry {
+  id: number
+  packaging_run_id: number
+  sorting_output_id: number
+  product_id: number | null
+  pack_identifier: string
+  quantity_kg: number
+  packing_type: string | null
+  pack_size_kg?: number | null
+  pack_count?: number | null
+  remainder_kg?: number | null
+  metal_check_status?: 'PASS' | 'FAIL' | null
+  metal_check_attempts?: number
+  metal_check_last_id?: number | null
+  metal_check_last_checked_at?: string | null
+  metal_check_last_checked_by?: string | null
+}
+
 export interface PackagingFormData {
   visual_status: string
   rework_destination: string
@@ -413,6 +455,17 @@ export interface PackagingWeightCheckFormData {
 export interface PackagingWasteFormData {
   waste_type: string
   quantity_kg: string
+}
+
+export interface PackagingMetalCheckAttemptFormData {
+  status: 'PASS' | 'FAIL' | ''
+  remarks: string
+}
+
+export interface PackagingMetalCheckRejectionFormData {
+  object_type: string
+  weight_kg: string
+  corrective_action: string
 }
 
 // Batch Step Transitions

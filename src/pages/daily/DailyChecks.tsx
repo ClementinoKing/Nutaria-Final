@@ -1,13 +1,12 @@
 import { Fragment } from 'react'
 import PageLayout from '@/components/layout/PageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { useDailyChecks } from '@/context/DailyChecksContext'
-import { CheckCircle2, Circle, RotateCcw } from 'lucide-react'
+import { CheckCircle2, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 function DailyChecks() {
-  const { categories, toggleItem, resetAll, remainingCount, totalCount, completedCount } = useDailyChecks()
+  const { categories, toggleItem, remainingCount, totalCount, completedCount, loading } = useDailyChecks()
   const allComplete = remainingCount === 0 && totalCount > 0
 
   return (
@@ -20,25 +19,23 @@ function DailyChecks() {
         <div>
           <h2 className="text-3xl font-bold text-foreground">Daily routine checklist</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Tick off required plant checks as they are completed. This list resets on refresh while we wire up
-            persistence.
+            Tick off required plant checks as they are completed. Checks are saved for today in the database.
           </p>
         </div>
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           <div className="rounded-lg border border-border bg-card px-4 py-2 text-sm text-muted-foreground">
             <span className="font-semibold text-foreground">{completedCount}</span> of {totalCount} checks complete
           </div>
-          <Button
-            type="button"
-            onClick={resetAll}
-            variant="outline"
-            className="flex items-center gap-2 border-border text-foreground hover:bg-olive-light/20 dark:hover:bg-white/10"
-          >
-            <RotateCcw className="h-4 w-4" />
-            Reset for today
-          </Button>
         </div>
       </div>
+
+      {loading ? (
+        <Card className="mb-6 border border-border bg-card">
+          <CardContent className="py-6">
+            <p className="text-sm text-muted-foreground">Loading today&apos;s checks...</p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {allComplete ? (
         <Card className="mb-8 border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-500/15 dark:text-emerald-300">
@@ -67,6 +64,7 @@ function DailyChecks() {
                       <button
                         type="button"
                         onClick={() => toggleItem(category.id, item.id)}
+                        disabled={loading}
                         className={cn(
                           'flex w-full items-start gap-3 rounded-lg border px-4 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive',
                           item.completed
@@ -98,5 +96,3 @@ function DailyChecks() {
 }
 
 export default DailyChecks
-
-

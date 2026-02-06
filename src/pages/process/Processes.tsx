@@ -207,6 +207,7 @@ function Processes() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [warehousesLoading, setWarehousesLoading] = useState(true)
   const [products, setProducts] = useState<Product[]>([])
+  const [assignedProductIds, setAssignedProductIds] = useState<number[]>([])
   const [productsLoading, setProductsLoading] = useState(true)
   const [productsError, setProductsError] = useState<PostgrestError | null>(null)
   const [productSearchTerm, setProductSearchTerm] = useState('')
@@ -288,17 +289,17 @@ function Processes() {
     setProductsLoading(true)
     setProductsError(null)
 
-    // Fetch all raw products
+    // Fetch all products for process card display and lookup.
     const { data: productsData, error: productsError } = await supabase
       .from('products')
       .select('id, sku, name, product_type')
-      .eq('product_type', 'RAW')
       .order('name', { ascending: true })
 
     if (productsError) {
       console.error('Error fetching products for processes form', productsError)
       toast.error(productsError.message ?? 'Unable to load products from Supabase.')
       setProducts([])
+      setAssignedProductIds([])
       setProductsError(productsError)
       setProductsLoading(false)
       return
@@ -324,12 +325,8 @@ function Processes() {
       })
     }
 
-    // Filter out products that are already assigned to a process
-    const availableProducts = Array.isArray(productsData)
-      ? productsData.filter((product: Product) => !assignedProductIds.has(product.id))
-      : []
-
-    setProducts(availableProducts)
+    setProducts(Array.isArray(productsData) ? productsData : [])
+    setAssignedProductIds(Array.from(assignedProductIds))
     setProductsLoading(false)
   }, [])
 
@@ -355,17 +352,26 @@ function Processes() {
     return lookup
   }, [products])
 
+  const availableRawProducts = useMemo(
+    () =>
+      products.filter(
+        (product: Product) =>
+          product.product_type === 'RAW' && !assignedProductIds.includes(product.id)
+      ),
+    [products, assignedProductIds]
+  )
+
   const filteredProducts = useMemo(() => {
     if (!productSearchTerm.trim()) {
-      return products
+      return availableRawProducts
     }
     const term = productSearchTerm.toLowerCase()
-    return products.filter(
+    return availableRawProducts.filter(
       (product: Product) =>
         product.name.toLowerCase().includes(term) ||
         (product.sku && product.sku.toLowerCase().includes(term))
     )
-  }, [products, productSearchTerm])
+  }, [availableRawProducts, productSearchTerm])
 
   const handleOpenModal = () => {
     setCurrentStep(1)
@@ -583,6 +589,14 @@ function Processes() {
       return false
     }
 
+    const stepsWithoutQualityParams = formData.steps.filter(
+      (step: FormStep) => !step.qualityParameterIds?.length || step.qualityParameterIds.length === 0
+    )
+    if (stepsWithoutQualityParams.length > 0) {
+      toast.error('Please select at least one quality parameter for each step.')
+      return false
+    }
+
     return true
   }
 
@@ -678,7 +692,7 @@ function Processes() {
             seq: index + 1,
             step_name_id: step.step_name_id ? Number(step.step_name_id) : null,
             description: null,
-            requires_qc: Boolean(step.requires_qc),
+            requires_qc: Boolean(step.qualityParameterIds?.length),
             can_be_skipped: Boolean(step.can_be_skipped),
             default_location_id: step.default_location_id ? Number(step.default_location_id) : null,
             estimated_duration: intervalString,
@@ -1013,7 +1027,7 @@ function Processes() {
                     <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                       {productsError.message ?? 'Unable to load products.'}
                     </div>
-                  ) : products.length === 0 ? (
+                  ) : availableRawProducts.length === 0 ? (
                     <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
                       No available raw products. All raw products have been assigned to processes, or no raw products exist. Add new raw products before creating processes.
                     </div>
@@ -1119,22 +1133,24 @@ function Processes() {
                     <Label className="text-text-dark text-base font-semibold">
                       Process Steps
                     </Label>
-                    <Button
-                      type="button"
-                      onClick={handleAddStep}
-                      variant="outline"
-                      size="sm"
-                      className="border-olive-light/30"
-                    >
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add Step
-                    </Button>
                   </div>
 
                   {formData.steps.length === 0 ? (
-                    <p className="text-sm text-text-dark/60 italic py-2">
-                      No steps added. Click "Add Step" to create process steps.
-                    </p>
+                    <div className="space-y-3">
+                      <p className="text-sm text-text-dark/60 italic py-2">
+                        No steps added. Click "Add Step" to create process steps.
+                      </p>
+                      <Button
+                        type="button"
+                        onClick={handleAddStep}
+                        variant="outline"
+                        size="sm"
+                        className="border-olive-light/30"
+                      >
+                        <Plus className="h-4 w-4 mr-1" />
+                        Add Step
+                      </Button>
+                    </div>
                   ) : (
                     <div className="space-y-4">
                       {formData.steps.map((step: FormStep, index: number) => (
@@ -1231,75 +1247,64 @@ function Processes() {
                                 Estimated Duration
                               </Label>
                               <div className="grid grid-cols-2 gap-2">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  placeholder="Hours"
-                                  value={step.duration_hours}
-                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                <select
+                                  value={step.duration_hours === '' ? '0' : step.duration_hours}
+                                  onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                                     handleStepChange(step.id, 'duration_hours', e.target.value)
                                   }
-                                  className="bg-white text-sm"
-                                />
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  max="59"
-                                  placeholder="Minutes"
-                                  value={step.duration_minutes}
-                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                                  className="h-9 w-full rounded-md border border-input bg-white px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-olive focus:ring-offset-2"
+                                >
+                                  {Array.from({ length: 25 }, (_, i) => (
+                                    <option key={i} value={String(i)}>
+                                      {i} {i === 1 ? 'hr' : 'hrs'}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={step.duration_minutes === '' ? '0' : step.duration_minutes}
+                                  onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                                     handleStepChange(step.id, 'duration_minutes', e.target.value)
                                   }
-                                  className="bg-white text-sm"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="space-y-1 flex items-end">
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`requires_qc_${step.id}`}
-                                  checked={step.requires_qc}
-                                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                                    handleStepChange(step.id, 'requires_qc', e.target.checked)
-                                  }
-                                  className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                                />
-                                <Label
-                                  htmlFor={`requires_qc_${step.id}`}
-                                  className="text-xs text-text-dark cursor-pointer"
+                                  className="h-9 w-full rounded-md border border-input bg-white px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-olive focus:ring-offset-2"
                                 >
-                                  Requires Quality Check
-                                </Label>
+                                  {Array.from({ length: 60 }, (_, i) => (
+                                    <option key={i} value={String(i)}>
+                                      {i} {i === 1 ? 'min' : 'mins'}
+                                    </option>
+                                  ))}
+                                </select>
                               </div>
                             </div>
                           </div>
 
-                          <div className="flex items-center space-x-2">
-                            <input
-                              type="checkbox"
-                              id={`can_be_skipped_${step.id}`}
-                              checked={step.can_be_skipped}
-                              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                                handleStepChange(step.id, 'can_be_skipped', e.target.checked)
-                              }
-                              className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                            />
-                            <Label
-                              htmlFor={`can_be_skipped_${step.id}`}
-                              className="text-xs text-text-dark cursor-pointer"
-                            >
+                          <div className="flex items-center justify-between rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
+                            <Label htmlFor={`can_be_skipped_${step.id}`} className="text-xs font-medium text-text-dark">
                               Can be Skipped
                             </Label>
+                            <button
+                              type="button"
+                              id={`can_be_skipped_${step.id}`}
+                              role="switch"
+                              aria-checked={step.can_be_skipped}
+                              onClick={() =>
+                                handleStepChange(step.id, 'can_be_skipped', !step.can_be_skipped)
+                              }
+                              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition ${
+                                step.can_be_skipped ? 'bg-olive' : 'bg-olive-light/60'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                                  step.can_be_skipped ? 'translate-x-5' : 'translate-x-1'
+                                }`}
+                              />
+                            </button>
                           </div>
 
                           {/* Quality Parameters for this step */}
                           <div className="space-y-2 pt-2 border-t border-olive-light/20">
                             <Label className="text-xs text-text-dark font-medium">
-                              Quality Parameters (Optional)
+                              Quality Parameters (select at least one per step)
                             </Label>
                             {qualityParametersLoading ? (
                               <p className="text-xs text-text-dark/60">Loading quality parameters…</p>
@@ -1392,6 +1397,18 @@ function Processes() {
                           </div>
                         </div>
                       ))}
+                      <div className="pt-2">
+                        <Button
+                          type="button"
+                          onClick={handleAddStep}
+                          variant="outline"
+                          size="sm"
+                          className="border-olive-light/30"
+                        >
+                          <Plus className="h-4 w-4 mr-1" />
+                          Add Step
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1439,4 +1456,3 @@ function Processes() {
 }
 
 export default Processes
-

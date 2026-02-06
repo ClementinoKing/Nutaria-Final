@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import PageLayout from '@/components/layout/PageLayout'
 import { Plus, Banknote, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
@@ -71,9 +72,7 @@ function formatDateTime(value: string | null | undefined): string {
 }
 
 function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-ZA', {
-    style: 'currency',
-    currency: 'ZAR',
+  return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount)
@@ -621,12 +620,11 @@ function Payments() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="payment-date">Payment date *</Label>
-                  <Input
+                  <DatePicker
                     id="payment-date"
-                    type="date"
                     required
                     value={paymentForm.paid_at}
-                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, paid_at: e.target.value }))}
+                    onChange={(value) => setPaymentForm((prev) => ({ ...prev, paid_at: value }))}
                   />
                 </div>
                 <div className="space-y-2">

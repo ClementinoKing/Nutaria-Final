@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Plus, Edit, Trash2, X, Camera, Search } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
@@ -14,6 +15,7 @@ import { useDocumentTypes } from '@/hooks/useDocumentTypes'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui/spinner'
+import { cn } from '@/lib/utils'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +28,13 @@ import {
 } from '@/components/ui/alert-dialog'
 import { CameraCapture } from '@/components/CameraCapture'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import {
+  DEFAULT_COUNTRY_DIAL_CODE,
+  getAllCountryOptions,
+  getCountryDialCodeOptions,
+  getDialCodeForCountryName,
+  withCountryOption,
+} from '@/lib/countries'
 
 interface Supplier {
   id: string
@@ -213,14 +222,15 @@ const SUPPLIER_FORM_STEPS: FormStep[] = [
 ]
 
 function Suppliers() {
+  const BULK_NO_CHANGE = '__NO_CHANGE__'
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
-  const [countries, setCountries] = useState<string[]>([])
-  const [loadingCountries, setLoadingCountries] = useState(false)
   const { supplierTypes, loading: loadingTypes } = useSupplierTypes()
   const { documentTypes, loading: loadingDocumentTypes } = useDocumentTypes()
   const { user } = useAuth()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState<SupplierFormData>(createDefaultSupplier())
+  const [phoneDialCode, setPhoneDialCode] = useState(DEFAULT_COUNTRY_DIAL_CODE)
+  const [primaryContactPhoneDialCode, setPrimaryContactPhoneDialCode] = useState(DEFAULT_COUNTRY_DIAL_CODE)
   const [formErrors, setFormErrors] = useState<FormErrors>(createEmptyFormErrors())
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [deletingSupplierId, setDeletingSupplierId] = useState<string | null>(null)
@@ -236,6 +246,12 @@ function Suppliers() {
   const [filterType, setFilterType] = useState<string>('')
   const [filterCountry, setFilterCountry] = useState<string>('')
   const [expiredDocCountBySupplierId, setExpiredDocCountBySupplierId] = useState<Record<string, number>>({})
+  const [selectedSupplierIds, setSelectedSupplierIds] = useState<string[]>([])
+  const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
+  const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
+  const [bulkEditSupplierType, setBulkEditSupplierType] = useState(BULK_NO_CHANGE)
+  const [bulkEditCountry, setBulkEditCountry] = useState(BULK_NO_CHANGE)
+  const [isBulkActionSubmitting, setIsBulkActionSubmitting] = useState(false)
   const totalSteps = SUPPLIER_FORM_STEPS.length
   const currentStepIndex = Math.min(activeStep, totalSteps - 1)
   const currentStep = SUPPLIER_FORM_STEPS[currentStepIndex]
@@ -251,6 +267,12 @@ function Suppliers() {
     () => new Map(supplierTypes.map((t) => [t.code, t.name])),
     [supplierTypes]
   )
+  const countryOptions = useMemo(() => getAllCountryOptions('South Africa'), [])
+  const dialCodeOptions = useMemo(() => getCountryDialCodeOptions(), [])
+  const supplierCountryOptions = useMemo(
+    () => withCountryOption(countryOptions, formData.country),
+    [countryOptions, formData.country]
+  )
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -259,19 +281,6 @@ function Suppliers() {
 
     return () => window.clearTimeout(handle)
   }, [searchQuery])
-
-  useEffect(() => {
-    const loadCountries = async () => {
-      setLoadingCountries(true)
-      const { data, error } = await supabase.rpc('get_supplier_countries')
-      if (!error && Array.isArray(data)) {
-        setCountries(data.map((row) => row.country).filter((value): value is string => Boolean(value)))
-      }
-      setLoadingCountries(false)
-    }
-
-    loadCountries()
-  }, [])
 
   const supplierQuery = useMemo(
     () => ({
@@ -304,6 +313,15 @@ function Suppliers() {
     () => new Map(documentTypes.map((t) => [t.code, t])),
     [documentTypes]
   )
+  const selectedSupplierIdSet = useMemo(() => new Set(selectedSupplierIds), [selectedSupplierIds])
+  const selectedSupplierCount = selectedSupplierIds.length
+  const currentPageSupplierIds = useMemo(
+    () => suppliers.map((supplier) => String(supplier.id)).filter((id) => id !== 'undefined' && id !== 'null'),
+    [suppliers]
+  )
+  const allCurrentPageSelected =
+    currentPageSupplierIds.length > 0 &&
+    currentPageSupplierIds.every((supplierId) => selectedSupplierIdSet.has(supplierId))
 
   const genderOptions = [
     { value: '', label: 'Select gender' },
@@ -381,7 +399,11 @@ function Suppliers() {
   }, [user?.id])
 
   const resetFormState = (overrides?: Partial<SupplierFormData>) => {
-    setFormData({ ...createDefaultSupplier(), ...overrides })
+    const nextFormData = { ...createDefaultSupplier(), ...overrides }
+    const nextDialCode = getDialCodeForCountryName(nextFormData.country || 'South Africa')
+    setFormData(nextFormData)
+    setPhoneDialCode(nextDialCode)
+    setPrimaryContactPhoneDialCode(nextDialCode)
     setFormErrors(createEmptyFormErrors())
     setIsSubmitting(false)
     setActiveStep(0)
@@ -467,6 +489,119 @@ function Suppliers() {
     setDeleteAlertOpen(true)
   }
 
+  const handleToggleSupplierSelection = (supplierId: string, checked: boolean) => {
+    setSelectedSupplierIds((prev) => {
+      if (checked) {
+        if (prev.includes(supplierId)) {
+          return prev
+        }
+        return [...prev, supplierId]
+      }
+      return prev.filter((id) => id !== supplierId)
+    })
+  }
+
+  const handleToggleSelectAllCurrentPage = (checked: boolean) => {
+    setSelectedSupplierIds((prev) => {
+      if (checked) {
+        const merged = new Set(prev)
+        currentPageSupplierIds.forEach((supplierId) => merged.add(supplierId))
+        return Array.from(merged)
+      }
+      return prev.filter((id) => !currentPageSupplierIds.includes(id))
+    })
+  }
+
+  const handleClearSelection = () => {
+    setSelectedSupplierIds([])
+  }
+
+  const openBulkEditModal = () => {
+    setBulkEditSupplierType(BULK_NO_CHANGE)
+    setBulkEditCountry(BULK_NO_CHANGE)
+    setBulkEditModalOpen(true)
+  }
+
+  const closeBulkEditModal = () => {
+    setBulkEditModalOpen(false)
+    setBulkEditSupplierType(BULK_NO_CHANGE)
+    setBulkEditCountry(BULK_NO_CHANGE)
+  }
+
+  const handleBulkEdit = async () => {
+    if (selectedSupplierCount === 0) {
+      toast.error('Select at least one supplier.')
+      return
+    }
+
+    const payload: Record<string, unknown> = {}
+    if (bulkEditSupplierType !== BULK_NO_CHANGE) {
+      payload.supplier_type = bulkEditSupplierType
+    }
+    if (bulkEditCountry !== BULK_NO_CHANGE) {
+      payload.country = bulkEditCountry
+    }
+
+    if (Object.keys(payload).length === 0) {
+      toast.error('Choose at least one field to update.')
+      return
+    }
+
+    setIsBulkActionSubmitting(true)
+    try {
+      const { error } = await supabase.from('suppliers').update(payload).in('id', selectedSupplierIds)
+      if (error) {
+        throw error
+      }
+      await refreshSuppliers()
+      toast.success(`Updated ${selectedSupplierCount} supplier${selectedSupplierCount === 1 ? '' : 's'}.`)
+      closeBulkEditModal()
+      handleClearSelection()
+    } catch (error) {
+      console.error('Error bulk updating suppliers', error)
+      const errorMessage = error instanceof Error ? error.message : 'Unable to bulk update suppliers.'
+      toast.error(errorMessage)
+    } finally {
+      setIsBulkActionSubmitting(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    if (selectedSupplierCount === 0) {
+      toast.error('Select at least one supplier.')
+      return
+    }
+
+    setIsBulkActionSubmitting(true)
+    try {
+      const { error: docsError } = await supabase
+        .from('documents')
+        .delete()
+        .eq('owner_type', 'supplier')
+        .in('owner_id', selectedSupplierIds)
+
+      if (docsError) {
+        console.warn('Failed to delete supplier documents in bulk', docsError)
+      }
+
+      const { error: deleteError } = await supabase.from('suppliers').delete().in('id', selectedSupplierIds)
+      if (deleteError) {
+        throw deleteError
+      }
+
+      await refreshSuppliers()
+      toast.success(`Deleted ${selectedSupplierCount} supplier${selectedSupplierCount === 1 ? '' : 's'}.`)
+      setBulkDeleteAlertOpen(false)
+      handleClearSelection()
+    } catch (error) {
+      console.error('Error bulk deleting suppliers', error)
+      const errorMessage = error instanceof Error ? error.message : 'Unable to bulk delete suppliers.'
+      toast.error(errorMessage)
+    } finally {
+      setIsBulkActionSubmitting(false)
+    }
+  }
+
   const clearFieldError = (field: string) => {
     setFormErrors((prev) => {
       if (!prev.fields[field]) {
@@ -508,6 +643,24 @@ function Suppliers() {
       supplier_type: value
     }))
     clearFieldError('supplier_type')
+  }
+
+  const handleCountryChange = (value: string) => {
+    const dialCode = getDialCodeForCountryName(value)
+    setFormData((prev) => ({
+      ...prev,
+      country: value,
+    }))
+    setPhoneDialCode(dialCode)
+    setPrimaryContactPhoneDialCode(dialCode)
+    clearFieldError('country')
+  }
+
+  const formatPhoneForStorage = (dialCode: string, localPhone: string): string | null => {
+    const trimmed = localPhone.trim()
+    if (!trimmed) return null
+    const withoutExistingPrefix = trimmed.replace(/^\+\d+\s*/, '')
+    return `${dialCode} ${withoutExistingPrefix}`.trim()
   }
 
   const handleDocumentTypeChange = (clientId: string, value: string) => {
@@ -694,10 +847,11 @@ function Suppliers() {
       name: requiredText(formData.name),
       supplier_type: requiredText(formData.supplier_type),
       primary_contact_name: optionalText(formData.primary_contact_name),
-      phone: requiredText(formData.phone),
+      phone: formatPhoneForStorage(phoneDialCode, formData.phone) ?? requiredText(formData.phone),
       email: optionalText(formData.email),
       country: optionalText(formData.country),
       address: optionalText(formData.address),
+      primary_contact_phone: formatPhoneForStorage(primaryContactPhoneDialCode, formData.primary_contact_phone),
       supplier_age: optionalInteger(formData.supplier_age),
       gender: optionalText(formData.gender),
       number_of_employees: optionalInteger(formData.number_of_employees),
@@ -839,6 +993,41 @@ function Suppliers() {
   }, [totalCount, pageSize, page])
 
   const columns = [
+    {
+      key: 'select',
+      header: 'Select',
+      headerClassName: 'w-14',
+      cellClassName: 'w-14',
+      render: (supplier: Supplier) => {
+        const supplierId = String(supplier.id)
+        return (
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-olive-light/70 text-olive focus:ring-olive"
+              checked={selectedSupplierIdSet.has(supplierId)}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => handleToggleSupplierSelection(supplierId, event.target.checked)}
+              aria-label={`Select supplier ${supplier.name}`}
+            />
+          </div>
+        )
+      },
+      mobileRender: (supplier: Supplier) => {
+        const supplierId = String(supplier.id)
+        return (
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-olive-light/70 text-olive focus:ring-olive"
+            checked={selectedSupplierIdSet.has(supplierId)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => handleToggleSupplierSelection(supplierId, event.target.checked)}
+            aria-label={`Select supplier ${supplier.name}`}
+          />
+        )
+      },
+      mobileValueClassName: 'flex justify-end',
+    },
     {
       key: 'name',
       header: 'Name',
@@ -1066,18 +1255,18 @@ function Suppliers() {
                       id="filter-country"
                       options={[
                         { value: '', label: 'All Countries' },
-                        ...countries.map((country) => ({ value: country, label: country })),
+                        ...countryOptions,
                       ]}
                       value={filterCountry}
                       onChange={(value) => setFilterCountry(value)}
                       placeholder="Select country"
-                      disabled={loadingTypes || loadingCountries}
+                      disabled={loadingTypes}
                     />
                   </div>
                 </div>
 
-                {/* Active Filters Display */}
-                {(searchQuery || filterType || filterCountry) && (
+              {/* Active Filters Display */}
+              {(searchQuery || filterType || filterCountry) && (
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-medium text-text-dark/60">Active filters:</span>
                     {searchQuery && (
@@ -1134,6 +1323,56 @@ function Suppliers() {
                     </Button>
                   </div>
                 )}
+              </div>
+
+              <div className="mb-4 rounded-lg border border-olive-light/40 bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm text-text-dark/70">
+                    {selectedSupplierCount > 0
+                      ? `${selectedSupplierCount} supplier${selectedSupplierCount === 1 ? '' : 's'} selected`
+                      : 'No suppliers selected'}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleToggleSelectAllCurrentPage(!allCurrentPageSelected)}
+                      disabled={currentPageSupplierIds.length === 0 || isBulkActionSubmitting}
+                    >
+                      {allCurrentPageSelected ? 'Deselect Page' : 'Select Page'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleClearSelection}
+                      disabled={selectedSupplierCount === 0 || isBulkActionSubmitting}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={openBulkEditModal}
+                      disabled={selectedSupplierCount === 0 || isBulkActionSubmitting}
+                    >
+                      <Edit className="mr-2 h-4 w-4" />
+                      Bulk Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="bg-red-600 text-white hover:bg-red-700"
+                      onClick={() => setBulkDeleteAlertOpen(true)}
+                      disabled={selectedSupplierCount === 0 || isBulkActionSubmitting}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete Selected
+                    </Button>
+                  </div>
+                </div>
               </div>
 
               {totalCount === 0 ? (
@@ -1332,26 +1571,39 @@ function Suppliers() {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="country">Country</Label>
-                          <Input
+                          <SearchableSelect
                             id="country"
-                            name="country"
+                            options={supplierCountryOptions}
                             value={formData.country}
-                            onChange={handleChange}
-                            placeholder="South Africa"
+                            onChange={handleCountryChange}
+                            placeholder="Select country"
                             disabled={isSubmitting}
                           />
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="phone">Main Phone*</Label>
-                          <Input
-                            id="phone"
-                            name="phone"
-                            value={formData.phone}
-                            onChange={handleChange}
-                            placeholder="+27 21 555 1234"
-                            disabled={isSubmitting}
-                            className={formErrors.fields.phone ? 'border-red-300 focus-visible:ring-red-500' : undefined}
-                          />
+                          <div className="grid grid-cols-3 gap-2">
+                            <SearchableSelect
+                              id="phone-dial-code"
+                              options={dialCodeOptions}
+                              value={phoneDialCode}
+                              onChange={setPhoneDialCode}
+                              placeholder="Code"
+                              disabled={isSubmitting}
+                            />
+                            <Input
+                              id="phone"
+                              name="phone"
+                              value={formData.phone}
+                              onChange={handleChange}
+                              placeholder="21 555 1234"
+                              disabled={isSubmitting}
+                              className={cn(
+                                'col-span-2',
+                                formErrors.fields.phone ? 'border-red-300 focus-visible:ring-red-500' : undefined
+                              )}
+                            />
+                          </div>
                           {formErrors.fields.phone && (
                             <p className="text-xs text-red-600">{formErrors.fields.phone}</p>
                           )}
@@ -1411,14 +1663,25 @@ function Suppliers() {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="primary_contact_phone">Contact Phone</Label>
-                          <Input
-                            id="primary_contact_phone"
-                            name="primary_contact_phone"
-                            value={formData.primary_contact_phone}
-                            onChange={handleChange}
-                            placeholder="+27 82 456 7890"
-                            disabled={isSubmitting}
-                          />
+                          <div className="grid grid-cols-3 gap-2">
+                            <SearchableSelect
+                              id="primary-contact-phone-dial-code"
+                              options={dialCodeOptions}
+                              value={primaryContactPhoneDialCode}
+                              onChange={setPrimaryContactPhoneDialCode}
+                              placeholder="Code"
+                              disabled={isSubmitting}
+                            />
+                            <Input
+                              id="primary_contact_phone"
+                              name="primary_contact_phone"
+                              value={formData.primary_contact_phone}
+                              onChange={handleChange}
+                              placeholder="82 456 7890"
+                              disabled={isSubmitting}
+                              className="col-span-2"
+                            />
+                          </div>
                         </div>
                         <div className="space-y-2 sm:col-span-2">
                           <Label htmlFor="primary_contact_email">Contact Email</Label>
@@ -1662,12 +1925,11 @@ function Suppliers() {
                                 {requiresExpiry && (
                                   <div className="space-y-2">
                                     <Label htmlFor={documentExpiryId}>Expiry Date</Label>
-                                    <Input
+                                    <DatePicker
                                       id={documentExpiryId}
-                                      type="date"
                                       value={documentType.expiryDate ?? ''}
-                                      onChange={(event) =>
-                                        handleDocumentExpiryChange(documentType.clientId, event.target.value)
+                                      onChange={(value) =>
+                                        handleDocumentExpiryChange(documentType.clientId, value)
                                       }
                                       disabled={isSubmitting}
                                     />
@@ -1800,6 +2062,92 @@ function Suppliers() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog
+        open={bulkDeleteAlertOpen}
+        onOpenChange={(open) => {
+          if (isBulkActionSubmitting) return
+          setBulkDeleteAlertOpen(open)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete selected suppliers?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`This will permanently remove ${selectedSupplierCount} supplier${selectedSupplierCount === 1 ? '' : 's'} and related documents.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBulkActionSubmitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={handleBulkDelete}
+              disabled={isBulkActionSubmitting}
+            >
+              {isBulkActionSubmitting ? 'Deleting…' : 'Delete Selected'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {bulkEditModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl rounded-lg border border-olive-light/40 bg-white shadow-xl">
+            <div className="border-b border-olive-light/40 px-5 py-4">
+              <h3 className="text-lg font-semibold text-text-dark">Bulk Edit Suppliers</h3>
+              <p className="text-sm text-text-dark/70">
+                Update selected fields for {selectedSupplierCount} supplier{selectedSupplierCount === 1 ? '' : 's'}.
+              </p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="bulk-edit-supplier-type">Supplier Type</Label>
+                <select
+                  id="bulk-edit-supplier-type"
+                  value={bulkEditSupplierType}
+                  onChange={(event) => setBulkEditSupplierType(event.target.value)}
+                  disabled={isBulkActionSubmitting}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value={BULK_NO_CHANGE}>No change</option>
+                  {supplierTypeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="bulk-edit-country">Country</Label>
+                <SearchableSelect
+                  id="bulk-edit-country"
+                  options={[{ value: BULK_NO_CHANGE, label: 'No change' }, ...countryOptions]}
+                  value={bulkEditCountry}
+                  onChange={setBulkEditCountry}
+                  placeholder="Select country"
+                  disabled={isBulkActionSubmitting}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-olive-light/40 px-5 py-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeBulkEditModal}
+                disabled={isBulkActionSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="bg-olive hover:bg-olive-dark"
+                onClick={handleBulkEdit}
+                disabled={isBulkActionSubmitting}
+              >
+                {isBulkActionSubmitting ? 'Saving…' : 'Apply Changes'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </PageLayout>
   )
 }

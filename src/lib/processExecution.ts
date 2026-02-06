@@ -891,7 +891,7 @@ export async function createReworkedLot(
               previousWaste += washWaste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
             }
           }
-        } else if (stepCode === 'METAL') {
+        } else if (stepCode === 'METAL' || stepCode === 'META') {
           const { data: metalSession } = await supabase
             .from('process_metal_detector')
             .select('id')

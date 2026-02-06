@@ -3,13 +3,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, Ruler, X } from 'lucide-react'
+import { Plus, RefreshCcw, Ruler, X, Edit, Trash2 } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -60,9 +70,44 @@ function Units() {
   const [error, setError] = useState<PostgrestError | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [unitToDelete, setUnitToDelete] = useState<Unit | null>(null)
   const [formData, setFormData] = useState<FormData>({ name: '', symbol: '' })
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+
+  const deriveUnitName = useCallback((symbol: string) => {
+    const trimmed = symbol.trim()
+    if (!trimmed) return ''
+    const key = trimmed.toLowerCase()
+    const lookup: Record<string, string> = {
+      kg: 'Kilogram',
+      g: 'Gram',
+      mg: 'Milligram',
+      lb: 'Pound',
+      oz: 'Ounce',
+      l: 'Litre',
+      ml: 'Millilitre',
+      m: 'Metre',
+      cm: 'Centimetre',
+      mm: 'Millimetre',
+      pc: 'Piece',
+      pcs: 'Pieces',
+      unit: 'Unit',
+      units: 'Units',
+      bag: 'Bag',
+      bags: 'Bags',
+      box: 'Box',
+      boxes: 'Boxes',
+      pack: 'Pack',
+      packs: 'Packs',
+    }
+    if (lookup[key]) return lookup[key]
+    return trimmed.toUpperCase()
+  }, [])
 
   const fetchUnits = useCallback(async () => {
     setLoading(true)
@@ -185,13 +230,65 @@ function Units() {
         render: (unit: Unit & { createdAtDate?: Date | null }) => formatDate(unit.createdAtDate),
         mobileRender: (unit: Unit & { createdAtDate?: Date | null }) => formatDate(unit.createdAtDate),
       },
+      {
+        key: 'actions',
+        header: 'Actions',
+        render: (unit: Unit) => (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEdit(unit)}
+              className="text-blue-600 hover:bg-blue-50"
+              title="Edit"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleDeleteClick(unit)}
+              className="text-red-600 hover:bg-red-50"
+              title="Delete"
+              disabled={isDeleting}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+        mobileRender: (unit: Unit) => (
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEdit(unit)}
+              className="text-blue-600 hover:bg-blue-50"
+              title="Edit"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleDeleteClick(unit)}
+              className="text-red-600 hover:bg-red-50"
+              title="Delete"
+              disabled={isDeleting}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+      },
     ],
-    []
+    [isDeleting]
   )
 
   const handleOpenModal = () => {
     setFormData({ name: '', symbol: '' })
     setFormErrors({})
+    setIsEditMode(false)
+    setEditingId(null)
     setIsModalOpen(true)
   }
 
@@ -201,22 +298,47 @@ function Units() {
     }
     setFormData({ name: '', symbol: '' })
     setFormErrors({})
+    setIsEditMode(false)
+    setEditingId(null)
     setIsModalOpen(false)
+  }
+
+  const handleEdit = (unit: Unit) => {
+    setFormData({
+      symbol: unit.symbol ?? '',
+      name: deriveUnitName(unit.symbol ?? ''),
+    })
+    setFormErrors({})
+    setIsEditMode(true)
+    setEditingId(unit.id)
+    setIsModalOpen(true)
+  }
+
+  const handleDeleteClick = (unit: Unit) => {
+    setUnitToDelete(unit)
+    setDeleteAlertOpen(true)
   }
 
   const handleFormChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target
-    setFormData((previous) => ({
-      ...previous,
-      [name]: value,
-    }))
+    setFormData((previous) => {
+      if (name === 'symbol') {
+        const nextSymbol = value
+        return {
+          ...previous,
+          symbol: nextSymbol,
+          name: deriveUnitName(nextSymbol),
+        }
+      }
+      return {
+        ...previous,
+        [name]: value,
+      }
+    })
   }
 
   const validateForm = () => {
     const errors: FormErrors = {}
-    if (!formData.name.trim()) {
-      errors.name = 'Name is required.'
-    }
     if (!formData.symbol.trim()) {
       errors.symbol = 'Symbol is required.'
     }
@@ -236,31 +358,60 @@ function Units() {
     setIsSubmitting(true)
     try {
       const payload = {
-        name: formData.name.trim(),
+        name: deriveUnitName(formData.symbol),
         symbol: formData.symbol.trim(),
       }
+      if (isEditMode && editingId) {
+        const { error: updateError } = await supabase
+          .from('units')
+          .update(payload)
+          .eq('id', editingId)
+        if (updateError) throw updateError
+        toast.success('Unit updated successfully.')
+        await fetchUnits()
+      } else {
+        const { data, error: insertError } = await supabase
+          .from('units')
+          .insert(payload)
+          .select('id, name, symbol, created_at')
+          .single()
 
-      const { data, error: insertError } = await supabase
-        .from('units')
-        .insert(payload)
-        .select('id, name, symbol, created_at')
-        .single()
+        if (insertError) {
+          throw insertError
+        }
 
-      if (insertError) {
-        throw insertError
+        toast.success('Unit added successfully.')
+        setUnits((previous) => (data ? [data as Unit, ...previous] : previous))
       }
-
-      toast.success('Unit added successfully.')
-      setUnits((previous) => (data ? [data as Unit, ...previous] : previous))
       setIsSubmitting(false)
       setIsModalOpen(false)
       setFormData({ name: '', symbol: '' })
       setFormErrors({})
+      setIsEditMode(false)
+      setEditingId(null)
     } catch (insertError) {
       console.error('Error creating unit', insertError)
       const errorMessage = insertError instanceof Error ? insertError.message : 'Unable to add unit.'
       toast.error(errorMessage)
       setIsSubmitting(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!unitToDelete) return
+    setIsDeleting(true)
+    try {
+      const { error: deleteError } = await supabase.from('units').delete().eq('id', unitToDelete.id)
+      if (deleteError) throw deleteError
+      toast.success('Unit deleted successfully.')
+      setUnits((previous) => previous.filter((unit) => unit.id !== unitToDelete.id))
+      setDeleteAlertOpen(false)
+      setUnitToDelete(null)
+    } catch (err) {
+      console.error('Error deleting unit', err)
+      toast.error(err instanceof Error ? err.message : 'Unable to delete unit.')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -378,8 +529,10 @@ function Units() {
           <div className="w-full max-w-md rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
               <div>
-                <h2 className="text-lg font-semibold text-text-dark">Add Unit</h2>
-                <p className="text-sm text-text-dark/70">Define the name and symbol for the new unit.</p>
+                <h2 className="text-lg font-semibold text-text-dark">
+                  {isEditMode ? 'Edit Unit' : 'Add Unit'}
+                </h2>
+                <p className="text-sm text-text-dark/70">Enter a symbol and the name will be generated automatically.</p>
               </div>
               <Button
                 type="button"
@@ -395,7 +548,7 @@ function Units() {
 
             <form onSubmit={handleSubmit} className="px-6 py-6 space-y-5">
               <div>
-                <Label htmlFor="unit-name">Name</Label>
+                <Label htmlFor="unit-name">Name (auto-generated)</Label>
                 <Input
                   id="unit-name"
                   name="name"
@@ -403,11 +556,8 @@ function Units() {
                   value={formData.name}
                   onChange={handleFormChange}
                   className="mt-1"
-                  disabled={isSubmitting}
+                  disabled
                 />
-                {formErrors.name ? (
-                  <p className="mt-1 text-sm text-red-600">{formErrors.name}</p>
-                ) : null}
               </div>
 
               <div>
@@ -437,16 +587,37 @@ function Units() {
                   Cancel
                 </Button>
                 <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                  {isSubmitting ? 'Saving…' : 'Save Unit'}
+                  {isSubmitting ? 'Saving…' : isEditMode ? 'Update Unit' : 'Save Unit'}
                 </Button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setUnitToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete unit?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {unitToDelete
+                ? `Delete unit "${unitToDelete.name ?? unitToDelete.symbol ?? 'Unknown'}"? This cannot be undone.`
+                : 'This cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={handleDelete}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }
 
 export default Units
-

@@ -9,9 +9,13 @@ import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
 import type {
   ProcessStepRun,
+  ProcessPackagingRun,
   PackagingFormData,
   PackagingWeightCheckFormData,
   PackagingWasteFormData,
+  PackagingMetalCheckAttemptFormData,
+  PackagingMetalCheckRejectionFormData,
+  ProcessPackagingMetalCheck,
 } from '@/types/processExecution'
 import {
   AlertDialog,
@@ -71,6 +75,55 @@ const PHOTO_TYPES: Array<{ value: 'product' | 'label' | 'pallet'; label: string 
   { value: 'pallet', label: 'Pallet' },
 ]
 
+const METAL_CHECK_STATUS_OPTIONS: Array<{ value: '' | 'PASS' | 'FAIL'; label: string }> = [
+  { value: '', label: 'Select status' },
+  { value: 'PASS', label: 'PASS' },
+  { value: 'FAIL', label: 'FAIL' },
+]
+
+const mapPackagingRunToFormData = (run: ProcessPackagingRun): PackagingFormData => ({
+  visual_status: run.visual_status || '',
+  rework_destination: run.rework_destination || '',
+  pest_status: run.pest_status || '',
+  foreign_object_status: run.foreign_object_status || '',
+  mould_status: run.mould_status || '',
+  damaged_kernels_pct: run.damaged_kernels_pct?.toString() || '',
+  insect_damaged_kernels_pct: run.insect_damaged_kernels_pct?.toString() || '',
+  nitrogen_used: run.nitrogen_used?.toString() || '',
+  nitrogen_batch_number: run.nitrogen_batch_number || '',
+  primary_packaging_type: run.primary_packaging_type || '',
+  primary_packaging_batch: run.primary_packaging_batch || '',
+  secondary_packaging: run.secondary_packaging || '',
+  secondary_packaging_type: run.secondary_packaging_type || '',
+  secondary_packaging_batch: run.secondary_packaging_batch || '',
+  label_correct: run.label_correct || '',
+  label_legible: run.label_legible || '',
+  pallet_integrity: run.pallet_integrity || '',
+  allergen_swab_result: run.allergen_swab_result || '',
+  remarks: run.remarks || '',
+})
+
+const isSamePackagingFormData = (a: PackagingFormData, b: PackagingFormData) =>
+  a.visual_status === b.visual_status &&
+  a.rework_destination === b.rework_destination &&
+  a.pest_status === b.pest_status &&
+  a.foreign_object_status === b.foreign_object_status &&
+  a.mould_status === b.mould_status &&
+  a.damaged_kernels_pct === b.damaged_kernels_pct &&
+  a.insect_damaged_kernels_pct === b.insect_damaged_kernels_pct &&
+  a.nitrogen_used === b.nitrogen_used &&
+  a.nitrogen_batch_number === b.nitrogen_batch_number &&
+  a.primary_packaging_type === b.primary_packaging_type &&
+  a.primary_packaging_batch === b.primary_packaging_batch &&
+  a.secondary_packaging === b.secondary_packaging &&
+  a.secondary_packaging_type === b.secondary_packaging_type &&
+  a.secondary_packaging_batch === b.secondary_packaging_batch &&
+  a.label_correct === b.label_correct &&
+  a.label_legible === b.label_legible &&
+  a.pallet_integrity === b.pallet_integrity &&
+  a.allergen_swab_result === b.allergen_swab_result &&
+  a.remarks === b.remarks
+
 export function PackagingStep({ stepRun, loading: externalLoading = false }: PackagingStepProps) {
   const {
     packagingRun,
@@ -89,6 +142,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     deleteWaste,
     addPackEntry,
     deletePackEntry,
+    metalChecksBySortingOutput,
+    getLatestMetalCheck,
+    addMetalCheckAttempt,
+    getFailedRejectedWeightBySortingOutput,
   } = usePackagingRun({
     stepRunId: stepRun.id,
     enabled: true,
@@ -109,6 +166,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [deleteTarget, setDeleteTarget] = useState<
     { type: 'weightCheck'; id: number } | { type: 'waste'; id: number } | { type: 'photo'; id: number } | { type: 'packEntry'; id: number } | null
   >(null)
+  const [showMetalCheckModal, setShowMetalCheckModal] = useState(false)
+  const [selectedMetalCheckWip, setSelectedMetalCheckWip] = useState<SortedWipRow | null>(null)
+  const [metalCheckForm, setMetalCheckForm] = useState<PackagingMetalCheckAttemptFormData>({
+    status: '',
+    remarks: '',
+  })
+  const [metalRejectionsForm, setMetalRejectionsForm] = useState<PackagingMetalCheckRejectionFormData[]>([
+    { object_type: '', weight_kg: '', corrective_action: '' },
+  ])
+  const [userProfilesByAuthId, setUserProfilesByAuthId] = useState<Record<string, string>>({})
 
   const loadSortedWips = useCallback(async () => {
     const lotRunId = stepRun.process_lot_run_id
@@ -209,6 +276,76 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     loadFinishedProducts()
   }, [loadFinishedProducts])
 
+  useEffect(() => {
+    const loadCheckerProfiles = async () => {
+      const ids = Array.from(
+        new Set(
+          Object.values(metalChecksBySortingOutput)
+            .flat()
+            .map((check) => check.checked_by)
+            .filter((value): value is string => !!value)
+        )
+      )
+
+      if (ids.length === 0) {
+        lastCheckerIdsRef.current = ''
+        setUserProfilesByAuthId((prev) => (Object.keys(prev).length === 0 ? prev : {}))
+        return
+      }
+
+      const idsSignature = [...ids].sort().join(',')
+      if (idsSignature === lastCheckerIdsRef.current) {
+        return
+      }
+      lastCheckerIdsRef.current = idsSignature
+
+      const { data, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('auth_user_id, full_name, email')
+        .in('auth_user_id', ids)
+
+      if (profileError) {
+        console.error('Failed to load checker profiles:', profileError)
+        const fallback: Record<string, string> = {}
+        ids.forEach((id) => {
+          fallback[id] = id
+        })
+        setUserProfilesByAuthId((prev) => {
+          const prevKeys = Object.keys(prev)
+          const nextKeys = Object.keys(fallback)
+          if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === fallback[key])) {
+            return prev
+          }
+          return fallback
+        })
+        return
+      }
+
+      const map: Record<string, string> = {}
+      ;(data || []).forEach((profile: any) => {
+        const authUserId = String(profile.auth_user_id || '')
+        if (!authUserId) return
+        map[authUserId] = String(profile.full_name || profile.email || authUserId)
+      })
+
+      ids.forEach((id) => {
+        if (!map[id]) map[id] = id
+      })
+      setUserProfilesByAuthId((prev) => {
+        const prevKeys = Object.keys(prev)
+        const nextKeys = Object.keys(map)
+        if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === map[key])) {
+          return prev
+        }
+        return map
+      })
+    }
+
+    loadCheckerProfiles().catch((err) => {
+      console.error('Unexpected checker profile error:', err)
+    })
+  }, [metalChecksBySortingOutput])
+
   const [formData, setFormData] = useState<PackagingFormData>({
     visual_status: '',
     rework_destination: '',
@@ -246,31 +383,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [saving, setSaving] = useState(false)
   const [autoCreatingRun, setAutoCreatingRun] = useState(false)
   const autoCreateAttemptedRef = useRef(false)
+  const lastCheckerIdsRef = useRef('')
 
   useEffect(() => {
     if (packagingRun) {
-      setFormData({
-        visual_status: packagingRun.visual_status || '',
-        rework_destination: packagingRun.rework_destination || '',
-        pest_status: packagingRun.pest_status || '',
-        foreign_object_status: packagingRun.foreign_object_status || '',
-        mould_status: packagingRun.mould_status || '',
-        damaged_kernels_pct: packagingRun.damaged_kernels_pct?.toString() || '',
-        insect_damaged_kernels_pct: packagingRun.insect_damaged_kernels_pct?.toString() || '',
-        nitrogen_used: packagingRun.nitrogen_used?.toString() || '',
-        nitrogen_batch_number: packagingRun.nitrogen_batch_number || '',
-        primary_packaging_type: packagingRun.primary_packaging_type || '',
-        primary_packaging_batch: packagingRun.primary_packaging_batch || '',
-        secondary_packaging: packagingRun.secondary_packaging || '',
-        secondary_packaging_type: packagingRun.secondary_packaging_type || '',
-        secondary_packaging_batch: packagingRun.secondary_packaging_batch || '',
-        label_correct: packagingRun.label_correct || '',
-        label_legible: packagingRun.label_legible || '',
-        pallet_integrity: packagingRun.pallet_integrity || '',
-        allergen_swab_result: packagingRun.allergen_swab_result || '',
-        remarks: packagingRun.remarks || '',
-      })
-      skipNextSaveRef.current = true
+      const mapped = mapPackagingRunToFormData(packagingRun)
+      if (!isSamePackagingFormData(formDataRef.current, mapped)) {
+        setFormData(mapped)
+        skipNextSaveRef.current = true
+      }
     }
   }, [packagingRun])
 
@@ -351,8 +472,17 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
-      performSavePackaging()
+      flushSavePackaging()
     }, 300)
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+      }
+    }
+  }, [formData, flushSavePackaging])
+
+  useEffect(() => {
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
@@ -360,7 +490,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         flushSavePackaging()
       }
     }
-  }, [formData, flushSavePackaging])
+  }, [flushSavePackaging])
 
   useEffect(() => {
     if (packagingRun || loading || externalLoading || saving || autoCreateAttemptedRef.current) {
@@ -554,10 +684,83 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       .filter((entry) => entry.sorting_output_id === selectedWipForPackEntry.id)
       .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
   }, [packEntries, selectedWipForPackEntry])
+  const selectedWipRejectedKg = useMemo(() => {
+    if (!selectedWipForPackEntry) return 0
+    return getFailedRejectedWeightBySortingOutput(selectedWipForPackEntry.id)
+  }, [selectedWipForPackEntry, getFailedRejectedWeightBySortingOutput])
   const selectedWipRemainingKg = useMemo(() => {
     if (!selectedWipForPackEntry) return null
-    return Math.max(0, selectedWipForPackEntry.quantity_kg - selectedWipUsedKg)
-  }, [selectedWipForPackEntry, selectedWipUsedKg])
+    return Math.max(0, selectedWipForPackEntry.quantity_kg - selectedWipRejectedKg - selectedWipUsedKg)
+  }, [selectedWipForPackEntry, selectedWipUsedKg, selectedWipRejectedKg])
+
+  const openMetalCheckModal = (wip: SortedWipRow) => {
+    setSelectedMetalCheckWip(wip)
+    setMetalCheckForm({ status: '', remarks: '' })
+    setMetalRejectionsForm([{ object_type: '', weight_kg: '', corrective_action: '' }])
+    setShowMetalCheckModal(true)
+  }
+
+  const closeMetalCheckModal = () => {
+    setShowMetalCheckModal(false)
+    setSelectedMetalCheckWip(null)
+    setMetalCheckForm({ status: '', remarks: '' })
+    setMetalRejectionsForm([{ object_type: '', weight_kg: '', corrective_action: '' }])
+  }
+
+  const addMetalRejectionRow = () => {
+    setMetalRejectionsForm((prev) => [...prev, { object_type: '', weight_kg: '', corrective_action: '' }])
+  }
+
+  const removeMetalRejectionRow = (index: number) => {
+    setMetalRejectionsForm((prev) => prev.filter((_, idx) => idx !== index))
+  }
+
+  const handleMetalCheckSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!selectedMetalCheckWip) return
+    if (!metalCheckForm.status) {
+      toast.error('Select metal check status')
+      return
+    }
+
+    if (metalCheckForm.status === 'FAIL') {
+      const cleaned = metalRejectionsForm.filter((row) => row.object_type.trim() && row.weight_kg.trim())
+      if (cleaned.length === 0) {
+        toast.error('At least one foreign object rejection is required for FAIL')
+        return
+      }
+      if (cleaned.some((row) => Number(row.weight_kg) <= 0 || Number.isNaN(Number(row.weight_kg)))) {
+        toast.error('Rejection weight must be greater than 0')
+        return
+      }
+    }
+
+    setSaving(true)
+    try {
+      await addMetalCheckAttempt({
+        sorting_output_id: selectedMetalCheckWip.id,
+        status: metalCheckForm.status,
+        remarks: metalCheckForm.remarks.trim() || null,
+        rejections:
+          metalCheckForm.status === 'FAIL'
+            ? metalRejectionsForm
+                .filter((row) => row.object_type.trim() && row.weight_kg.trim())
+                .map((row) => ({
+                  object_type: row.object_type.trim(),
+                  weight_kg: Number(row.weight_kg),
+                  corrective_action: row.corrective_action.trim() || null,
+                }))
+            : [],
+      })
+      toast.success(`Metal check ${metalCheckForm.status} recorded`)
+      closeMetalCheckModal()
+    } catch (error) {
+      console.error('Failed to record metal check attempt:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to record metal check')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handlePackEntrySubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -566,11 +769,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier.trim())
     const quantityKg = parseFloat(packEntryForm.quantity_kg)
     const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
+    const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
+    const latestCheck = sortingOutputId ? getLatestMetalCheck(sortingOutputId) : null
     const remainingKg =
       selectedWipForPackEntry && selectedWipForPackEntry.id === sortingOutputId
         ? selectedWipRemainingKg ?? 0
         : selectedWip
         ? selectedWip.quantity_kg -
+          failedRejectedKg -
           packEntries
             .filter((entry) => entry.sorting_output_id === selectedWip.id)
             .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
@@ -586,6 +792,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
     if (!Number.isFinite(quantityKg) || quantityKg <= 0) {
       toast.error('Total quantity must be greater than 0')
+      return
+    }
+    if (!latestCheck || latestCheck.status !== 'PASS') {
+      toast.error('Metal detection must pass before packing this sorted output.')
       return
     }
     if (quantityKg > remainingKg) {
@@ -615,7 +825,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       toast.success('Pack entry added')
     } catch (err) {
       console.error('Error adding pack entry:', err)
-      toast.error('Failed to add pack entry')
+      toast.error(err instanceof Error ? err.message : 'Failed to add pack entry')
     } finally {
       setSaving(false)
     }
@@ -642,18 +852,56 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 <tr>
                   <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Product</th>
                   <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Quantity (kg)</th>
+                  <th className="px-3 py-2 text-center text-xs font-semibold uppercase text-text-dark/60">Metal Check</th>
+                  <th className="px-3 py-2 text-center text-xs font-semibold uppercase text-text-dark/60">Attempts</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Rejected (kg)</th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-olive-light/20">
-                {sortedWips.map((wip) => (
-                  <tr key={wip.id}>
-                    <td className="px-3 py-2">
-                      <span className="font-medium text-text-dark">{wip.product_name}</span>
-                      {wip.product_sku && <span className="ml-1 text-text-dark/60">({wip.product_sku})</span>}
-                    </td>
-                    <td className="px-3 py-2 text-right text-text-dark/80">{wip.quantity_kg.toFixed(2)}</td>
-                  </tr>
-                ))}
+                {sortedWips.map((wip) => {
+                  const latestCheck = getLatestMetalCheck(wip.id)
+                  const attempts = metalChecksBySortingOutput[wip.id]?.length || 0
+                  const rejectedKg = getFailedRejectedWeightBySortingOutput(wip.id)
+                  const status: 'PENDING' | 'PASS' | 'FAIL' = latestCheck ? latestCheck.status : 'PENDING'
+
+                  return (
+                    <tr key={wip.id}>
+                      <td className="px-3 py-2">
+                        <span className="font-medium text-text-dark">{wip.product_name}</span>
+                        {wip.product_sku && <span className="ml-1 text-text-dark/60">({wip.product_sku})</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right text-text-dark/80">{wip.quantity_kg.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span
+                          className={
+                            status === 'PASS'
+                              ? 'inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700'
+                              : status === 'FAIL'
+                              ? 'inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'
+                              : 'inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700'
+                          }
+                        >
+                          {status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-center text-text-dark/80">{attempts}</td>
+                      <td className="px-3 py-2 text-right text-text-dark/80">{rejectedKg.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-olive-light/40"
+                          onClick={() => openMetalCheckModal(wip)}
+                          disabled={saving || externalLoading || !packagingRun}
+                        >
+                          Metal Check
+                        </Button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -687,12 +935,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
               <form onSubmit={handlePackEntrySubmit} className="rounded-lg border border-olive-light/30 bg-white p-4 mb-4">
                 {(() => {
                   const selectedWip = sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id)
+                  const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
+                  const latestCheck = selectedWip ? getLatestMetalCheck(selectedWip.id) : null
                   const usedKg = selectedWip
                     ? packEntries
                         .filter((entry) => entry.sorting_output_id === selectedWip.id)
                         .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
                     : 0
-                  const remainingKg = selectedWip ? Math.max(0, selectedWip.quantity_kg - usedKg) : 0
+                  const remainingKg = selectedWip ? Math.max(0, selectedWip.quantity_kg - failedRejectedKg - usedKg) : 0
                   const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
                   const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
                   const remainderKg =
@@ -708,10 +958,18 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <div className="mb-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-xs text-text-dark/70">
                       <div className="flex flex-wrap items-center gap-3">
                         <span>
+                          Metal status:{' '}
+                          <strong className="text-text-dark">{latestCheck ? latestCheck.status : 'PENDING'}</strong>
+                        </span>
+                        <span>
                           Remaining WIP:{' '}
                           <strong className="text-text-dark">
                             {selectedWip ? remainingKg.toFixed(2) : '—'} kg
                           </strong>
+                        </span>
+                        <span>
+                          Metal rejects deducted:{' '}
+                          <strong className="text-text-dark">{selectedWip ? failedRejectedKg.toFixed(2) : '—'} kg</strong>
                         </span>
                         {selectedPackSize && Number.isFinite(quantityKg) && quantityKg >= 0 && (
                           <span>
@@ -894,6 +1152,11 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       <span className="text-text-dark">
                         {wip?.product_name ?? `Output #${pe.sorting_output_id}`} → {finishedProduct?.name ?? (pe.product_id ? `Product #${pe.product_id}` : '—')}
                         {pe.packing_type ? ` [${pe.packing_type}]` : ''} — {pe.pack_identifier}: {pe.quantity_kg} kg
+                        {pe.metal_check_status && (
+                          <span className="ml-2 text-text-dark/70">
+                            | Metal: {pe.metal_check_status} (attempts: {pe.metal_check_attempts ?? 0})
+                          </span>
+                        )}
                         {packCount !== null && (
                           <span className="text-text-dark/60">
                             {' '}({packCount} packs{remainderKg !== null && remainderKg > 0 ? ` + ${remainderKg.toFixed(2)} kg remainder` : ''})
@@ -918,6 +1181,174 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           </div>
         )}
       </div>
+
+      {showMetalCheckModal && selectedMetalCheckWip && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-lg border border-border bg-card p-6 shadow-xl">
+            <h4 className="text-lg font-semibold text-text-dark">
+              Metal Check - {selectedMetalCheckWip.product_name} ({selectedMetalCheckWip.quantity_kg.toFixed(2)} kg)
+            </h4>
+            <p className="mt-1 text-sm text-text-dark/70">
+              Record FAIL/PASS attempts. Failed checks must include foreign object details and can be repeated until PASS.
+            </p>
+
+            <form onSubmit={handleMetalCheckSubmit} className="mt-4 space-y-4 rounded-lg border border-olive-light/30 bg-white p-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Attempt Status *</Label>
+                  <select
+                    value={metalCheckForm.status}
+                    onChange={(e) =>
+                      setMetalCheckForm((prev) => ({ ...prev, status: e.target.value as '' | 'PASS' | 'FAIL' }))
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    required
+                    disabled={saving || externalLoading}
+                  >
+                    {METAL_CHECK_STATUS_OPTIONS.map((option) => (
+                      <option key={option.value || 'empty'} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Remarks</Label>
+                  <Input
+                    value={metalCheckForm.remarks}
+                    onChange={(e) => setMetalCheckForm((prev) => ({ ...prev, remarks: e.target.value }))}
+                    placeholder="Optional remarks"
+                    disabled={saving || externalLoading}
+                  />
+                </div>
+              </div>
+
+              {metalCheckForm.status === 'FAIL' && (
+                <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-amber-900">Foreign Object Rejections (required for FAIL)</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={addMetalRejectionRow}
+                      disabled={saving || externalLoading}
+                    >
+                      <Plus className="mr-1 h-4 w-4" />
+                      Add Row
+                    </Button>
+                  </div>
+                  {metalRejectionsForm.map((row, index) => (
+                    <div key={`metal-rejection-${index}`} className="grid gap-2 md:grid-cols-12">
+                      <Input
+                        className="md:col-span-4"
+                        value={row.object_type}
+                        onChange={(e) =>
+                          setMetalRejectionsForm((prev) =>
+                            prev.map((item, idx) => (idx === index ? { ...item, object_type: e.target.value } : item))
+                          )
+                        }
+                        placeholder="Object type"
+                        disabled={saving || externalLoading}
+                      />
+                      <Input
+                        className="md:col-span-3"
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        value={row.weight_kg}
+                        onChange={(e) =>
+                          setMetalRejectionsForm((prev) =>
+                            prev.map((item, idx) => (idx === index ? { ...item, weight_kg: e.target.value } : item))
+                          )
+                        }
+                        placeholder="Weight (kg)"
+                        disabled={saving || externalLoading}
+                      />
+                      <Input
+                        className="md:col-span-4"
+                        value={row.corrective_action}
+                        onChange={(e) =>
+                          setMetalRejectionsForm((prev) =>
+                            prev.map((item, idx) => (idx === index ? { ...item, corrective_action: e.target.value } : item))
+                          )
+                        }
+                        placeholder="Corrective action"
+                        disabled={saving || externalLoading}
+                      />
+                      <div className="md:col-span-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeMetalRejectionRow(index)}
+                          disabled={saving || externalLoading || metalRejectionsForm.length <= 1}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={closeMetalCheckModal} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={saving || externalLoading}>
+                  Record Attempt
+                </Button>
+              </div>
+            </form>
+
+            <div className="mt-4 space-y-2">
+              <h5 className="text-sm font-semibold text-text-dark">Attempt History</h5>
+              {(metalChecksBySortingOutput[selectedMetalCheckWip.id] || []).length === 0 ? (
+                <p className="text-sm text-text-dark/60">No attempts recorded yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {[...(metalChecksBySortingOutput[selectedMetalCheckWip.id] || [])]
+                    .sort((a, b) => b.attempt_no - a.attempt_no)
+                    .map((attempt: ProcessPackagingMetalCheck) => {
+                      const enteredBy = attempt.checked_by ? userProfilesByAuthId[attempt.checked_by] || attempt.checked_by : 'Unknown'
+                      return (
+                        <div key={attempt.id} className="rounded-lg border border-olive-light/30 bg-white p-3">
+                          <div className="flex flex-wrap items-center gap-3 text-sm">
+                            <span className="font-semibold text-text-dark">Attempt #{attempt.attempt_no}</span>
+                            <span
+                              className={
+                                attempt.status === 'PASS'
+                                  ? 'inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700'
+                                  : 'inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'
+                              }
+                            >
+                              {attempt.status}
+                            </span>
+                            <span className="text-text-dark/60">By: {enteredBy}</span>
+                            <span className="text-text-dark/60">{new Date(attempt.checked_at).toLocaleString()}</span>
+                          </div>
+                          {attempt.remarks && <p className="mt-1 text-sm text-text-dark/70">Remarks: {attempt.remarks}</p>}
+                          {attempt.status === 'FAIL' && (attempt.rejections || []).length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {(attempt.rejections || []).map((rejection) => (
+                                <p key={rejection.id} className="text-xs text-text-dark/70">
+                                  • {rejection.object_type}: {Number(rejection.weight_kg).toFixed(3)} kg
+                                  {rejection.corrective_action ? ` | Action: ${rejection.corrective_action}` : ''}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-4">
         {/* Visual Inspection */}

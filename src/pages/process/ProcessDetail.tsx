@@ -677,6 +677,11 @@ function ProcessDetail() {
           return false
         }
       }
+
+      if (!step.qualityParameterIds?.length || step.qualityParameterIds.length === 0) {
+        toast.error('Please select at least one quality parameter for each step.')
+        return false
+      }
     }
 
     return true
@@ -743,7 +748,7 @@ function ProcessDetail() {
           seq: index + 1,
           step_name_id: step.step_name_id ? Number(step.step_name_id) : null,
           description: descriptionTrimmed ? descriptionTrimmed : null,
-          requires_qc: Boolean(step.requires_qc),
+          requires_qc: (step.qualityParameterIds?.length ?? 0) > 0,
           can_be_skipped: Boolean(step.can_be_skipped),
           default_location_id: step.default_location_id ? Number(step.default_location_id) : null,
           estimated_duration: intervalString,
@@ -775,7 +780,7 @@ function ProcessDetail() {
           seq: step.seq,
           step_name_id: step.step_name_id,
           description: step.description,
-          requires_qc: step.requires_qc,
+          requires_qc: (step.qualityParameterIds?.length ?? 0) > 0,
           can_be_skipped: step.can_be_skipped,
           default_location_id: step.default_location_id,
           estimated_duration: step.estimated_duration,
@@ -796,7 +801,7 @@ function ProcessDetail() {
           seq: step.seq,
           step_name_id: step.step_name_id,
           description: step.description,
-          requires_qc: step.requires_qc,
+          requires_qc: (step.qualityParameterIds?.length ?? 0) > 0,
           can_be_skipped: step.can_be_skipped,
           default_location_id: step.default_location_id,
           estimated_duration: step.estimated_duration,
@@ -1595,58 +1600,64 @@ function ProcessDetail() {
                           <div className="space-y-1.5">
                             <Label>Estimated Duration</Label>
                             <div className="grid grid-cols-2 gap-2">
-                              <Input
-                                type="number"
-                                min="0"
-                                value={step.duration_hours}
+                              <select
+                                value={step.duration_hours === '' ? '0' : step.duration_hours}
                                 onChange={(event) =>
                                   handleStepFieldChange(step.clientId, 'duration_hours', event.target.value)
                                 }
-                                placeholder="Hours"
-                                className="bg-white"
-                              />
-                              <Input
-                                type="number"
-                                min="0"
-                                max="59"
-                                value={step.duration_minutes}
+                                className="h-9 w-full rounded-md border border-input bg-white px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-olive focus:ring-offset-2"
+                              >
+                                {Array.from({ length: 25 }, (_, i) => (
+                                  <option key={i} value={String(i)}>
+                                    {i} {i === 1 ? 'hr' : 'hrs'}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={step.duration_minutes === '' ? '0' : step.duration_minutes}
                                 onChange={(event) =>
                                   handleStepFieldChange(step.clientId, 'duration_minutes', event.target.value)
                                 }
-                                placeholder="Minutes"
-                                className="bg-white"
-                              />
+                                className="h-9 w-full rounded-md border border-input bg-white px-3 py-1 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-olive focus:ring-offset-2"
+                              >
+                                {Array.from({ length: 60 }, (_, i) => (
+                                  <option key={i} value={String(i)}>
+                                    {i} {i === 1 ? 'min' : 'mins'}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                           </div>
-                          <div className="flex flex-col gap-2">
-                            <label className="flex items-center gap-2 text-sm text-text-dark">
-                              <input
-                                type="checkbox"
-                                checked={step.requires_qc}
-                                onChange={(event) =>
-                                  handleToggleStepCheckbox(step.clientId, 'requires_qc', event.target.checked)
-                                }
-                                className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
+                          <div className="flex items-center justify-between rounded-md border border-olive-light/40 bg-olive-light/10 px-4 py-3">
+                            <div>
+                              <Label htmlFor={`can_be_skipped_${step.clientId}`} className="text-sm font-medium text-text-dark">
+                                Can be Skipped
+                              </Label>
+                            </div>
+                            <button
+                              type="button"
+                              id={`can_be_skipped_${step.clientId}`}
+                              role="switch"
+                              aria-checked={step.can_be_skipped}
+                              onClick={() =>
+                                handleToggleStepCheckbox(step.clientId, 'can_be_skipped', !step.can_be_skipped)
+                              }
+                              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition ${
+                                step.can_be_skipped ? 'bg-olive' : 'bg-olive-light/60'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                                  step.can_be_skipped ? 'translate-x-5' : 'translate-x-1'
+                                }`}
                               />
-                              Requires Quality Check
-                            </label>
-                            <label className="flex items-center gap-2 text-sm text-text-dark">
-                              <input
-                                type="checkbox"
-                                checked={step.can_be_skipped}
-                                onChange={(event) =>
-                                  handleToggleStepCheckbox(step.clientId, 'can_be_skipped', event.target.checked)
-                                }
-                                className="h-4 w-4 rounded border-input text-olive focus:ring-olive"
-                              />
-                              Can be Skipped
-                            </label>
+                            </button>
                           </div>
                         </div>
 
                         <div className="space-y-2 border-t border-olive-light/20 pt-3">
                           <Label className="text-sm font-medium text-text-dark">
-                            Quality Parameters
+                            Quality Parameters (select at least one per step)
                           </Label>
                           {qualityParametersLoading ? (
                             <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">

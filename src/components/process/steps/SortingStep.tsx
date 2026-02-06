@@ -32,7 +32,7 @@ interface SortingStepProps {
   onQuantityChange?: () => void
 }
 
-const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
+const WASTE_TYPES = ['Lost KG', 'Final Product Waste', 'Dust', 'Floor Sweepings']
 
 export function SortingStep({
   stepRun,
@@ -276,7 +276,7 @@ export function SortingStep({
       })
       setWasteFormData({ waste_type: '', quantity_kg: '' })
       setShowWasteForm(false)
-      toast.success('Waste record added')
+      toast.success('Waste/loss record added')
       onQuantityChange?.()
     } catch (error) {
       console.error('Error adding waste:', error)
@@ -865,13 +865,13 @@ export function SortingStep({
         </div>
       </div>
 
-      {/* Waste Section */}
+      {/* Waste & Loss Section */}
       <div className="border-t border-olive-light/20 pt-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <h4 className="text-sm font-semibold text-text-dark">Waste Records</h4>
+            <h4 className="text-sm font-semibold text-text-dark">Waste & Loss Records</h4>
             <p className="text-xs text-text-dark/60 mt-1">
-              Total Waste: {totalWaste.toFixed(2)} kg
+              Total Waste/Loss: {totalWaste.toFixed(2)} kg
             </p>
           </div>
           <Button
@@ -883,7 +883,7 @@ export function SortingStep({
             className="border-olive-light/30"
           >
             <Plus className="mr-2 h-4 w-4" />
-            Add Waste
+            Add Waste/Loss
           </Button>
         </div>
 
@@ -918,7 +918,7 @@ export function SortingStep({
             )}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="waste_type">Waste Type *</Label>
+                <Label htmlFor="waste_type">Waste/Loss Type *</Label>
                 <select
                   id="waste_type"
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -927,7 +927,7 @@ export function SortingStep({
                   required
                   disabled={saving || externalLoading}
                 >
-                  <option value="">Select type</option>
+                  <option value="">Select waste/loss type</option>
                   {WASTE_TYPES.map((type) => (
                     <option key={type} value={type}>
                       {type}
@@ -979,14 +979,14 @@ export function SortingStep({
                 Cancel
               </Button>
               <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
-                Add Waste
+                Add Waste/Loss
               </Button>
             </div>
           </form>
         )}
 
         {waste.length === 0 ? (
-          <p className="text-sm text-text-dark/60 py-4 text-center">No waste records yet</p>
+          <p className="text-sm text-text-dark/60 py-4 text-center">No waste/loss records yet</p>
         ) : (
           <div className="space-y-2">
             {waste.map((w) => (

@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import { CalendarRange, Camera, ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
@@ -440,6 +441,14 @@ function Supplies() {
   }, [supplierList])
 
   const rawProducts = useMemo(() => products.filter((product) => product.product_type === 'RAW'), [products])
+  const rawProductOptions = useMemo(
+    () =>
+      rawProducts.map((product) => ({
+        value: String(product.id),
+        label: `${String(product.name)}${product.sku ? ` (${String(product.sku)})` : ''}`,
+      })),
+    [rawProducts]
+  )
 
   const qualityParameterIdMap = useMemo(() => {
     const map = new Map<string, number | null>()
@@ -769,6 +778,33 @@ function Supplies() {
       [field]: value,
     }))
   }
+
+  const getBatchProductOptions = useCallback(
+    (currentProductId: string) => {
+      if (!currentProductId) {
+        return rawProductOptions
+      }
+
+      const existsInRawOptions = rawProductOptions.some((option) => option.value === currentProductId)
+      if (existsInRawOptions) {
+        return rawProductOptions
+      }
+
+      const fallbackProduct = products.find((product) => String(product.id) === currentProductId)
+      if (!fallbackProduct) {
+        return rawProductOptions
+      }
+
+      return [
+        {
+          value: String(fallbackProduct.id),
+          label: `${String(fallbackProduct.name)}${fallbackProduct.sku ? ` (${String(fallbackProduct.sku)})` : ''}`,
+        },
+        ...rawProductOptions,
+      ]
+    },
+    [products, rawProductOptions]
+  )
 
   const handleSupplyBatchChange = (index: number, field: keyof SupplyBatch, value: string) => {
     const next = [...formData.supply_batches]
@@ -2242,7 +2278,7 @@ function Supplies() {
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
         supabase.from('products').select('id, name, sku, product_type').order('name', { ascending: true }),
         supabase.from('units').select('id, name, symbol').order('name', { ascending: true }),
-        supabase.from('quality_parameters').select('id, code, name, specification').order('id', {
+        supabase.from('quality_parameters').select('id, code, name').order('id', {
           ascending: true,
         }),
       ])
@@ -2262,7 +2298,7 @@ function Supplies() {
           id: entry.id ?? null,
           code: entry.code,
           name: entry.name,
-          specification: entry.specification ?? '',
+          specification: '',
           defaultRemarks: '',
         }))
         setQualityParameters(mappedParameters)
@@ -3068,12 +3104,12 @@ function Supplies() {
                             <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-5">
                                 <Label htmlFor={`product_${index}`}>Product (Raw Materials Only) *</Label>
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  The same product can be selected in multiple batches.
+                                </p>
                                 <SearchableSelect
                                   id={`product_${index}`}
-                                  options={rawProducts.map((product) => ({
-                                    value: String(product.id),
-                                    label: `${String(product.name)}${product.sku ? ` (${String(product.sku)})` : ''}`,
-                                  }))}
+                                  options={getBatchProductOptions(batch.product_id)}
                                   value={batch.product_id}
                                   onChange={(value) => handleSupplyBatchChange(index, 'product_id', value)}
                                   placeholder="Select raw product"
@@ -3349,11 +3385,10 @@ function Supplies() {
               </div>
               <div>
                 <Label htmlFor="add_coa_expiry">Expiry date (optional)</Label>
-                <Input
+                <DatePicker
                   id="add_coa_expiry"
-                  type="date"
                   value={addCoaExpiry}
-                  onChange={(e) => setAddCoaExpiry(e.target.value)}
+                  onChange={(value) => setAddCoaExpiry(value)}
                   className="mt-2"
                 />
               </div>

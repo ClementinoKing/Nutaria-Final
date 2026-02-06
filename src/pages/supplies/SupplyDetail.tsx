@@ -215,7 +215,7 @@ function SupplyDetail() {
           supabase.from('products').select('id, name, sku'),
           supabase.from('units').select('id, name, symbol'),
           supabase.from('user_profiles').select('id, full_name, email'),
-          supabase.from('quality_parameters').select('id, code, name, specification'),
+          supabase.from('quality_parameters').select('id, code, name'),
         ])
         if (cancelled) return
         if (supplyErr || !supplyRow) {
@@ -255,8 +255,8 @@ function SupplyDetail() {
         ;(profilesData ?? []).forEach((p: { id: number; full_name?: string; email?: string }) => {
           profileLookup[String(p.id)] = { full_name: p.full_name ?? '', email: p.email ?? '' }
         })
-        const qualityParams = ((qualityParamsData ?? []) as { id: number; code: string; name: string; specification?: string }[]).map(
-          (q) => ({ id: q.id, code: q.code, name: q.name, specification: q.specification ?? '', defaultRemarks: '' as string }),
+        const qualityParams = ((qualityParamsData ?? []) as { id: number; code: string; name: string }[]).map(
+          (q) => ({ id: q.id, code: q.code, name: q.name, specification: '', defaultRemarks: '' as string }),
         )
 
         setFetchedData({

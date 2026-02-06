@@ -6,11 +6,25 @@ import type {
   ProcessPackagingWeightCheck,
   ProcessPackagingPhoto,
   ProcessPackagingWaste,
+  ProcessPackagingPackEntry,
+  ProcessPackagingMetalCheck,
+  ProcessPackagingMetalCheckRejection,
 } from '@/types/processExecution'
 
 interface UsePackagingRunOptions {
   stepRunId: number | null
   enabled?: boolean
+}
+
+interface AddMetalCheckAttemptInput {
+  sorting_output_id: number
+  status: 'PASS' | 'FAIL'
+  remarks?: string | null
+  rejections?: Array<{
+    object_type: string
+    weight_kg: number
+    corrective_action?: string | null
+  }>
 }
 
 interface UsePackagingRunReturn {
@@ -29,33 +43,79 @@ interface UsePackagingRunReturn {
   deletePhoto: (photoId: number) => Promise<void>
   addWaste: (wasteData: { waste_type: string; quantity_kg: number }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
-  packEntries: Array<{ id: number; packaging_run_id: number; sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null }>
-  addPackEntry: (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null; pack_size_kg?: number | null }) => Promise<void>
+  packEntries: ProcessPackagingPackEntry[]
+  addPackEntry: (data: {
+    sorting_output_id: number
+    product_id: number | null
+    pack_identifier: string
+    quantity_kg: number
+    packing_type: string | null
+    pack_size_kg?: number | null
+  }) => Promise<void>
   deletePackEntry: (id: number) => Promise<void>
+  metalChecksBySortingOutput: Record<number, ProcessPackagingMetalCheck[]>
+  getLatestMetalCheck: (sortingOutputId: number) => ProcessPackagingMetalCheck | null
+  getFailedRejectedWeightBySortingOutput: (sortingOutputId: number) => number
+  refreshMetalChecks: () => Promise<void>
+  addMetalCheckAttempt: (input: AddMetalCheckAttemptInput) => Promise<void>
 }
 
 export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRunReturn {
   const { stepRunId, enabled = true } = options
   const [packagingRun, setPackagingRun] = useState<ProcessPackagingRun | null>(null)
-  const [packEntries, setPackEntries] = useState<
-    Array<{
-      id: number
-      packaging_run_id: number
-      sorting_output_id: number
-      product_id: number | null
-      pack_identifier: string
-      quantity_kg: number
-      packing_type: string | null
-      pack_size_kg?: number | null
-      pack_count?: number | null
-      remainder_kg?: number | null
-    }>
-  >([])
+  const [packEntries, setPackEntries] = useState<ProcessPackagingPackEntry[]>([])
+  const [metalChecksBySortingOutput, setMetalChecksBySortingOutput] = useState<Record<number, ProcessPackagingMetalCheck[]>>({})
   const [weightChecks, setWeightChecks] = useState<ProcessPackagingWeightCheck[]>([])
   const [photos, setPhotos] = useState<ProcessPackagingPhoto[]>([])
   const [waste, setWaste] = useState<ProcessPackagingWaste[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
+
+  const fetchMetalChecks = useCallback(async (packagingRunId: number) => {
+    const { data: checksData, error: checksError } = await supabase
+      .from('process_packaging_metal_checks')
+      .select('*')
+      .eq('packaging_run_id', packagingRunId)
+      .order('attempt_no', { ascending: true })
+
+    if (checksError) {
+      setMetalChecksBySortingOutput({})
+      return
+    }
+
+    const checks = (checksData as ProcessPackagingMetalCheck[]) || []
+    const checkIds = checks.map((check) => check.id)
+    let rejectionsByCheckId: Record<number, ProcessPackagingMetalCheckRejection[]> = {}
+
+    if (checkIds.length > 0) {
+      const { data: rejectionsData } = await supabase
+        .from('process_packaging_metal_check_rejections')
+        .select('*')
+        .in('metal_check_id', checkIds)
+        .order('created_at', { ascending: true })
+
+      const rejections = (rejectionsData as ProcessPackagingMetalCheckRejection[]) || []
+      rejectionsByCheckId = rejections.reduce<Record<number, ProcessPackagingMetalCheckRejection[]>>((acc, rejection) => {
+        const list = acc[rejection.metal_check_id] || []
+        list.push(rejection)
+        acc[rejection.metal_check_id] = list
+        return acc
+      }, {})
+    }
+
+    const bySortingOutput = checks.reduce<Record<number, ProcessPackagingMetalCheck[]>>((acc, check) => {
+      const withRejections: ProcessPackagingMetalCheck = {
+        ...check,
+        rejections: rejectionsByCheckId[check.id] || [],
+      }
+      const list = acc[check.sorting_output_id] || []
+      list.push(withRejections)
+      acc[check.sorting_output_id] = list
+      return acc
+    }, {})
+
+    setMetalChecksBySortingOutput(bySortingOutput)
+  }, [])
 
   const fetchData = useCallback(async () => {
     if (!stepRunId || !enabled) {
@@ -66,7 +126,6 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     setLoading(true)
     setError(null)
 
-    // Fetch packaging run
     const { data: runData, error: runError } = await supabase
       .from('process_packaging_runs')
       .select('*')
@@ -78,88 +137,112 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     if (runError && runError.code !== 'PGRST116') {
       setError(runError)
       setPackagingRun(null)
-    } else {
-      setPackagingRun((runData as ProcessPackagingRun) || null)
+      setPackEntries([])
+      setMetalChecksBySortingOutput({})
+      setWeightChecks([])
+      setPhotos([])
+      setWaste([])
+      setLoading(false)
+      return
+    }
 
-      // Fetch related data if run exists
-      if (runData) {
-        // Fetch pack entries
-        const { data: packEntriesData, error: packEntriesError } = await supabase
-          .from('process_packaging_pack_entries')
-          .select('*')
-          .eq('packaging_run_id', runData.id)
-          .order('created_at', { ascending: false })
+    setPackagingRun((runData as ProcessPackagingRun) || null)
 
-        if (packEntriesError) {
-          setPackEntries([])
-        } else {
-          setPackEntries(
-            (packEntriesData as Array<{
-              id: number
-              packaging_run_id: number
-              sorting_output_id: number
-              product_id: number | null
-              pack_identifier: string
-              quantity_kg: number
-              packing_type: string | null
-              pack_size_kg?: number | null
-              pack_count?: number | null
-              remainder_kg?: number | null
-            }>) || []
-          )
-        }
+    if (runData) {
+      const { data: packEntriesData, error: packEntriesError } = await supabase
+        .from('process_packaging_pack_entries')
+        .select('*')
+        .eq('packaging_run_id', runData.id)
+        .order('created_at', { ascending: false })
 
-        // Fetch weight checks
-        const { data: checksData, error: checksError } = await supabase
-          .from('process_packaging_weight_checks')
-          .select('*')
-          .eq('packaging_run_id', runData.id)
-          .order('check_no', { ascending: true })
-
-        if (checksError) {
-          setError(checksError)
-          setWeightChecks([])
-        } else {
-          setWeightChecks((checksData as ProcessPackagingWeightCheck[]) || [])
-        }
-
-        // Fetch photos
-        const { data: photosData, error: photosError } = await supabase
-          .from('process_packaging_photos')
-          .select('*')
-          .eq('packaging_run_id', runData.id)
-          .order('created_at', { ascending: false })
-
-        if (photosError) {
-          setError(photosError)
-          setPhotos([])
-        } else {
-          setPhotos((photosData as ProcessPackagingPhoto[]) || [])
-        }
-
-        // Fetch waste
-        const { data: wasteData, error: wasteError } = await supabase
-          .from('process_packaging_waste')
-          .select('*')
-          .eq('packaging_run_id', runData.id)
-          .order('created_at', { ascending: false })
-
-        if (wasteError) {
-          setError(wasteError)
-          setWaste([])
-        } else {
-          setWaste((wasteData as ProcessPackagingWaste[]) || [])
-        }
-      } else {
+      if (packEntriesError) {
         setPackEntries([])
-        setWeightChecks([])
-        setPhotos([])
-        setWaste([])
+      } else {
+        setPackEntries((packEntriesData as ProcessPackagingPackEntry[]) || [])
       }
+
+      await fetchMetalChecks(runData.id)
+
+      const { data: checksData, error: checksError } = await supabase
+        .from('process_packaging_weight_checks')
+        .select('*')
+        .eq('packaging_run_id', runData.id)
+        .order('check_no', { ascending: true })
+
+      if (checksError) {
+        setError(checksError)
+        setWeightChecks([])
+      } else {
+        setWeightChecks((checksData as ProcessPackagingWeightCheck[]) || [])
+      }
+
+      const { data: photosData, error: photosError } = await supabase
+        .from('process_packaging_photos')
+        .select('*')
+        .eq('packaging_run_id', runData.id)
+        .order('created_at', { ascending: false })
+
+      if (photosError) {
+        setError(photosError)
+        setPhotos([])
+      } else {
+        setPhotos((photosData as ProcessPackagingPhoto[]) || [])
+      }
+
+      const { data: wasteData, error: wasteError } = await supabase
+        .from('process_packaging_waste')
+        .select('*')
+        .eq('packaging_run_id', runData.id)
+        .order('created_at', { ascending: false })
+
+      if (wasteError) {
+        setError(wasteError)
+        setWaste([])
+      } else {
+        setWaste((wasteData as ProcessPackagingWaste[]) || [])
+      }
+    } else {
+      setPackEntries([])
+      setMetalChecksBySortingOutput({})
+      setWeightChecks([])
+      setPhotos([])
+      setWaste([])
     }
 
     setLoading(false)
-  }, [stepRunId, enabled])
+  }, [stepRunId, enabled, fetchMetalChecks])
+
+  const refreshMetalChecks = useCallback(async () => {
+    if (!packagingRun?.id) {
+      setMetalChecksBySortingOutput({})
+      return
+    }
+    await fetchMetalChecks(packagingRun.id)
+  }, [packagingRun?.id, fetchMetalChecks])
+
+  const getLatestMetalCheck = useCallback(
+    (sortingOutputId: number): ProcessPackagingMetalCheck | null => {
+      const checks = metalChecksBySortingOutput[sortingOutputId] || []
+      if (checks.length === 0) return null
+      return checks.reduce((latest, current) => {
+        if (!latest) return current
+        return current.attempt_no > latest.attempt_no ? current : latest
+      }, checks[0])
+    },
+    [metalChecksBySortingOutput]
+  )
+
+  const getFailedRejectedWeightBySortingOutput = useCallback(
+    (sortingOutputId: number): number => {
+      const checks = metalChecksBySortingOutput[sortingOutputId] || []
+      return checks.reduce((sum, check) => {
+        if (check.status !== 'FAIL') return sum
+        const rejected = (check.rejections || []).reduce((acc, row) => acc + (Number(row.weight_kg) || 0), 0)
+        return sum + rejected
+      }, 0)
+    },
+    [metalChecksBySortingOutput]
+  )
 
   const savePackagingRun = useCallback(
     async (data: Partial<ProcessPackagingRun>) => {
@@ -167,40 +250,53 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         throw new Error('Step run ID is required')
       }
 
-      // Remove id and timestamps from update data
       const { id, created_at, updated_at, process_step_run_id, ...updateData } = data
 
       let runId = packagingRun?.id
       if (!runId) {
         const { data: existingRun } = await supabase
           .from('process_packaging_runs')
-          .select('id')
+          .select('*')
           .eq('process_step_run_id', stepRunId)
           .order('id', { ascending: false })
           .limit(1)
           .maybeSingle()
-        runId = existingRun?.id ?? null
+        if (existingRun) {
+          const run = existingRun as ProcessPackagingRun
+          runId = run.id
+          setPackagingRun(run)
+        } else {
+          runId = null
+        }
       }
 
       if (runId) {
-        const { error: updateError } = await supabase
+        const { data: updatedRun, error: updateError } = await supabase
           .from('process_packaging_runs')
           .update(updateData)
           .eq('id', runId)
+          .select('*')
+          .single()
         if (updateError) throw updateError
+        if (updatedRun) {
+          setPackagingRun(updatedRun as ProcessPackagingRun)
+        }
       } else {
-        const { error: insertError } = await supabase
+        const { data: insertedRun, error: insertError } = await supabase
           .from('process_packaging_runs')
           .insert({
             process_step_run_id: stepRunId,
             ...updateData,
           })
+          .select('*')
+          .single()
         if (insertError) throw insertError
+        if (insertedRun) {
+          setPackagingRun(insertedRun as ProcessPackagingRun)
+        }
       }
-
-      await fetchData()
     },
-    [stepRunId, packagingRun, fetchData]
+    [stepRunId, packagingRun]
   )
 
   const addWeightCheck = useCallback(
@@ -216,10 +312,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           ...check,
         })
 
-      if (insertError) {
-        throw insertError
-      }
-
+      if (insertError) throw insertError
       await fetchData()
     },
     [packagingRun, fetchData]
@@ -232,10 +325,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .update(data)
         .eq('id', checkId)
 
-      if (updateError) {
-        throw updateError
-      }
-
+      if (updateError) throw updateError
       await fetchData()
     },
     [fetchData]
@@ -248,10 +338,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .delete()
         .eq('id', checkId)
 
-      if (deleteError) {
-        throw deleteError
-      }
-
+      if (deleteError) throw deleteError
       await fetchData()
     },
     [fetchData]
@@ -270,10 +357,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           ...photo,
         })
 
-      if (insertError) {
-        throw insertError
-      }
-
+      if (insertError) throw insertError
       await fetchData()
     },
     [packagingRun, fetchData]
@@ -286,10 +370,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .delete()
         .eq('id', photoId)
 
-      if (deleteError) {
-        throw deleteError
-      }
-
+      if (deleteError) throw deleteError
       await fetchData()
     },
     [fetchData]
@@ -308,10 +389,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           ...wasteData,
         })
 
-      if (insertError) {
-        throw insertError
-      }
-
+      if (insertError) throw insertError
       await fetchData()
     },
     [packagingRun, fetchData]
@@ -324,20 +402,90 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .delete()
         .eq('id', wasteId)
 
-      if (deleteError) {
-        throw deleteError
-      }
-
+      if (deleteError) throw deleteError
       await fetchData()
     },
     [fetchData]
   )
 
+  const addMetalCheckAttempt = useCallback(
+    async (input: AddMetalCheckAttemptInput) => {
+      if (!packagingRun) {
+        throw new Error('Packaging run must be created before recording metal checks')
+      }
+      if (input.status === 'FAIL' && (!input.rejections || input.rejections.length === 0)) {
+        throw new Error('At least one foreign-object rejection is required for FAIL status')
+      }
+
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const { data: attemptsData, error: attemptsError } = await supabase
+        .from('process_packaging_metal_checks')
+        .select('attempt_no')
+        .eq('packaging_run_id', packagingRun.id)
+        .eq('sorting_output_id', input.sorting_output_id)
+        .order('attempt_no', { ascending: false })
+        .limit(1)
+
+      if (attemptsError) throw attemptsError
+      const nextAttemptNo = ((attemptsData?.[0]?.attempt_no as number | undefined) || 0) + 1
+
+      const { data: insertedCheck, error: checkError } = await supabase
+        .from('process_packaging_metal_checks')
+        .insert({
+          packaging_run_id: packagingRun.id,
+          sorting_output_id: input.sorting_output_id,
+          attempt_no: nextAttemptNo,
+          status: input.status,
+          remarks: input.remarks?.trim() || null,
+          checked_by: userId,
+          checked_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single()
+
+      if (checkError || !insertedCheck) throw checkError || new Error('Failed to save metal-check attempt')
+
+      if (input.status === 'FAIL' && input.rejections?.length) {
+        const rejectionRows = input.rejections.map((row) => ({
+          metal_check_id: insertedCheck.id,
+          object_type: row.object_type.trim(),
+          weight_kg: row.weight_kg,
+          corrective_action: row.corrective_action?.trim() || null,
+          created_by: userId,
+        }))
+        const { error: rejectionError } = await supabase
+          .from('process_packaging_metal_check_rejections')
+          .insert(rejectionRows)
+
+        if (rejectionError) throw rejectionError
+      }
+
+      await fetchData()
+    },
+    [packagingRun, fetchData]
+  )
+
   const addPackEntry = useCallback(
-    async (data: { sorting_output_id: number; product_id: number | null; pack_identifier: string; quantity_kg: number; packing_type: string | null; pack_size_kg?: number | null }) => {
+    async (data: {
+      sorting_output_id: number
+      product_id: number | null
+      pack_identifier: string
+      quantity_kg: number
+      packing_type: string | null
+      pack_size_kg?: number | null
+    }) => {
       if (!packagingRun) {
         throw new Error('Packaging run must be created before adding pack entries')
       }
+
+      const latestCheck = getLatestMetalCheck(data.sorting_output_id)
+      if (!latestCheck || latestCheck.status !== 'PASS') {
+        throw new Error('Metal detection must pass before packing this sorted output.')
+      }
+
+      const attempts = metalChecksBySortingOutput[data.sorting_output_id]?.length || 0
 
       const { error: insertError } = await supabase
         .from('process_packaging_pack_entries')
@@ -349,15 +497,17 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           quantity_kg: data.quantity_kg,
           packing_type: data.packing_type ?? null,
           pack_size_kg: data.pack_size_kg ?? null,
+          metal_check_status: latestCheck.status,
+          metal_check_attempts: attempts,
+          metal_check_last_id: latestCheck.id,
+          metal_check_last_checked_at: latestCheck.checked_at,
+          metal_check_last_checked_by: latestCheck.checked_by,
         })
 
-      if (insertError) {
-        throw insertError
-      }
-
+      if (insertError) throw insertError
       await fetchData()
     },
-    [packagingRun, fetchData]
+    [packagingRun, fetchData, getLatestMetalCheck, metalChecksBySortingOutput]
   )
 
   const deletePackEntry = useCallback(
@@ -367,10 +517,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .delete()
         .eq('id', id)
 
-      if (deleteError) {
-        throw deleteError
-      }
-
+      if (deleteError) throw deleteError
       await fetchData()
     },
     [fetchData]
@@ -383,6 +530,11 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   return {
     packagingRun,
     packEntries,
+    metalChecksBySortingOutput,
+    getLatestMetalCheck,
+    getFailedRejectedWeightBySortingOutput,
+    refreshMetalChecks,
+    addMetalCheckAttempt,
     weightChecks,
     photos,
     waste,

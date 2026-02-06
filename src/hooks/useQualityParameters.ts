@@ -6,9 +6,8 @@ export interface QualityParameter {
   id: number
   code: string
   name: string
-  specification: string | null
-  created_at: string | null
-  updated_at: string | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 interface UseQualityParametersReturn {
@@ -29,7 +28,7 @@ export function useQualityParameters(): UseQualityParametersReturn {
 
     const { data, error: fetchError } = await supabase
       .from('quality_parameters')
-      .select('id, code, name, specification, created_at, updated_at')
+      .select('id, code, name, created_at, updated_at')
       .order('code')
 
     if (fetchError) {

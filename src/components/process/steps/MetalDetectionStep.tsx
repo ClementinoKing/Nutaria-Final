@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect, useMemo, useRef } from 'react'
+import { useState, FormEvent, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -143,28 +143,6 @@ export function MetalDetectionStep({
       }
     }
   }, [sessionFormData.start_time, sessionFormData.end_time])
-
-  // Generate hourly checks based on session times
-  const hourlyChecks = useMemo(() => {
-    if (!session?.start_time) return []
-
-    const start = new Date(session.start_time)
-    const end = session.end_time ? new Date(session.end_time) : new Date()
-    const hours: Array<{ hour: string; label: string }> = []
-
-    let current = new Date(start)
-    current.setMinutes(0, 0, 0) // Round down to hour
-
-    while (current <= end) {
-      hours.push({
-        hour: current.toISOString(),
-        label: current.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
-      })
-      current.setHours(current.getHours() + 1)
-    }
-
-    return hours
-  }, [session])
 
   const handleRejectionSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -316,85 +294,6 @@ export function MetalDetectionStep({
           </div>
         </div>
       </div>
-
-      {/* Hourly Verification Grid */}
-      {session && hourlyChecks.length > 0 && (
-        <div className="border-t border-olive-light/20 pt-4">
-          <h4 className="text-sm font-semibold text-text-dark mb-4">Hourly Verification Checks</h4>
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse border border-olive-light/30">
-              <thead>
-                <tr className="bg-olive-light/20">
-                  <th className="border border-olive-light/30 px-3 py-2 text-left text-xs font-semibold text-text-dark">
-                    Hour
-                  </th>
-                  <th className="border border-olive-light/30 px-3 py-2 text-center text-xs font-semibold text-text-dark">
-                    1.5mm Fe
-                  </th>
-                  <th className="border border-olive-light/30 px-3 py-2 text-center text-xs font-semibold text-text-dark">
-                    1.5mm Non-Fe
-                  </th>
-                  <th className="border border-olive-light/30 px-3 py-2 text-center text-xs font-semibold text-text-dark">
-                    1.5mm SS
-                  </th>
-                  <th className="border border-olive-light/30 px-3 py-2 text-left text-xs font-semibold text-text-dark">
-                    Remarks
-                  </th>
-                  <th className="border border-olive-light/30 px-3 py-2 text-left text-xs font-semibold text-text-dark">
-                    Corrective Action
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {hourlyChecks.map((check, index) => (
-                  <tr key={check.hour} className={index % 2 === 0 ? 'bg-white' : 'bg-olive-light/5'}>
-                    <td className="border border-olive-light/30 px-3 py-2 text-sm text-text-dark">{check.label}</td>
-                    <td className="border border-olive-light/30 px-3 py-2 text-center text-sm text-text-dark/70">
-                      <select
-                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                        disabled
-                        defaultValue=""
-                      >
-                        <option value="">-</option>
-                        <option value="Yes">Yes</option>
-                        <option value="No">No</option>
-                      </select>
-                    </td>
-                    <td className="border border-olive-light/30 px-3 py-2 text-center text-sm text-text-dark/70">
-                      <select
-                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                        disabled
-                        defaultValue=""
-                      >
-                        <option value="">-</option>
-                        <option value="Yes">Yes</option>
-                        <option value="No">No</option>
-                      </select>
-                    </td>
-                    <td className="border border-olive-light/30 px-3 py-2 text-center text-sm text-text-dark/70">
-                      <select
-                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                        disabled
-                        defaultValue=""
-                      >
-                        <option value="">-</option>
-                        <option value="Yes">Yes</option>
-                        <option value="No">No</option>
-                      </select>
-                    </td>
-                    <td className="border border-olive-light/30 px-3 py-2 text-sm text-text-dark/70">-</td>
-                    <td className="border border-olive-light/30 px-3 py-2 text-sm text-text-dark/70">-</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-xs text-text-dark/50 mt-2 italic">
-              Note: Hourly verification grid is displayed for reference. Detailed verification data will be captured in
-              a future update.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* Foreign Object Rejections */}
       <div className="border-t border-olive-light/20 pt-4 space-y-4">

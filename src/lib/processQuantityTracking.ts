@@ -164,7 +164,7 @@ export async function calculateAvailableQuantity(
           breakdown.washingWaste += totalWaste
         }
       }
-    } else if (stepCode === 'DRY') {
+    } else if (stepCode === 'DRY' || stepCode === 'DRYI') {
       const { data: dryingRun } = await supabase
         .from('process_drying_runs')
         .select('id')
@@ -182,7 +182,7 @@ export async function calculateAvailableQuantity(
           breakdown.dryingWaste += totalWaste
         }
       }
-    } else if (stepCode === 'METAL') {
+    } else if (stepCode === 'METAL' || stepCode === 'META') {
       const { data: session } = await supabase
         .from('process_metal_detector')
         .select('id')

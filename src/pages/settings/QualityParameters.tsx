@@ -24,13 +24,11 @@ import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityP
 interface FormData {
   code: string
   name: string
-  specification: string
 }
 
 interface FormErrors {
   code?: string
   name?: string
-  specification?: string
 }
 
 function QualityParameters() {
@@ -46,8 +44,7 @@ function QualityParameters() {
   const [parameterToDelete, setParameterToDelete] = useState<QualityParameter | null>(null)
   const [formData, setFormData] = useState<FormData>({ 
     code: '', 
-    name: '', 
-    specification: '' 
+    name: '' 
   })
   const [formErrors, setFormErrors] = useState<FormErrors>({})
 
@@ -57,8 +54,7 @@ function QualityParameters() {
     return qualityParameters.filter((p) => {
       const code = (p.code ?? '').toLowerCase()
       const name = (p.name ?? '').toLowerCase()
-      const specification = (p.specification ?? '').toLowerCase()
-      return code.includes(normalised) || name.includes(normalised) || specification.includes(normalised)
+      return code.includes(normalised) || name.includes(normalised)
     })
   }, [qualityParameters, searchTerm])
 
@@ -86,16 +82,6 @@ function QualityParameters() {
         render: (row: QualityParameter) => <div className="text-text-dark/80">{row.name ?? '—'}</div>,
         mobileRender: (row: QualityParameter) => (
           <div className="text-right text-text-dark/80">{row.name ?? '—'}</div>
-        ),
-      },
-      {
-        key: 'specification',
-        header: 'Specification',
-        render: (row: QualityParameter) => (
-          <div className="text-text-dark/70 max-w-md">{row.specification ?? '—'}</div>
-        ),
-        mobileRender: (row: QualityParameter) => (
-          <div className="text-right text-text-dark/70">{row.specification ?? '—'}</div>
         ),
       },
       {
@@ -153,7 +139,7 @@ function QualityParameters() {
   )
 
   const handleOpenModal = () => {
-    setFormData({ code: '', name: '', specification: '' })
+    setFormData({ code: '', name: '' })
     setFormErrors({})
     setIsEditMode(false)
     setEditingId(null)
@@ -162,7 +148,7 @@ function QualityParameters() {
 
   const handleCloseModal = () => {
     if (isSubmitting) return
-    setFormData({ code: '', name: '', specification: '' })
+    setFormData({ code: '', name: '' })
     setFormErrors({})
     setIsEditMode(false)
     setEditingId(null)
@@ -173,7 +159,6 @@ function QualityParameters() {
     setFormData({
       code: parameter.code,
       name: parameter.name,
-      specification: parameter.specification || '',
     })
     setFormErrors({})
     setIsEditMode(true)
@@ -194,7 +179,6 @@ function QualityParameters() {
     const err: FormErrors = {}
     if (!formData.code.trim()) err.code = 'Code is required.'
     if (!formData.name.trim()) err.name = 'Name is required.'
-    if (!formData.specification.trim()) err.specification = 'Specification is required.'
     setFormErrors(err)
     return Object.keys(err).length === 0
   }
@@ -211,7 +195,6 @@ function QualityParameters() {
           .update({
             code: formData.code.trim(),
             name: formData.name.trim(),
-            specification: formData.specification.trim(),
             updated_at: new Date().toISOString(),
           })
           .eq('id', editingId)
@@ -232,7 +215,6 @@ function QualityParameters() {
         const { error: insertError } = await supabase.from('quality_parameters').insert({
           code: formData.code.trim(),
           name: formData.name.trim(),
-          specification: formData.specification.trim(),
         })
 
         if (insertError) {
@@ -252,7 +234,7 @@ function QualityParameters() {
       await refresh()
       setIsSubmitting(false)
       setIsModalOpen(false)
-      setFormData({ code: '', name: '', specification: '' })
+      setFormData({ code: '', name: '' })
       setFormErrors({})
       setIsEditMode(false)
       setEditingId(null)
@@ -352,7 +334,7 @@ function QualityParameters() {
               <Label htmlFor="qp-search">Search</Label>
               <Input
                 id="qp-search"
-                placeholder="Search by code, name, or specification"
+                placeholder="Search by code or name"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="mt-1"
@@ -402,7 +384,7 @@ function QualityParameters() {
                 <p className="text-sm text-text-dark/70">
                   {isEditMode
                     ? 'Update the quality parameter details.'
-                    : 'Define the code, name, and specification for the new quality parameter.'}
+                    : 'Define the code and name for the new quality parameter.'}
                 </p>
               </div>
               <Button
@@ -447,23 +429,6 @@ function QualityParameters() {
                 />
                 {formErrors.name ? (
                   <p className="mt-1 text-sm text-red-600">{formErrors.name}</p>
-                ) : null}
-              </div>
-
-              <div>
-                <Label htmlFor="qp-specification">Specification <span className="text-red-500">*</span></Label>
-                <textarea
-                  id="qp-specification"
-                  name="specification"
-                  placeholder="e.g. < 10% or None"
-                  value={formData.specification}
-                  onChange={handleFormChange}
-                  rows={3}
-                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={isSubmitting}
-                />
-                {formErrors.specification ? (
-                  <p className="mt-1 text-sm text-red-600">{formErrors.specification}</p>
                 ) : null}
               </div>
 

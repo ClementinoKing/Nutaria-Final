@@ -5,18 +5,38 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import ResponsiveTable from '@/components/ResponsiveTable'
-import { Plus, UserPlus, Users, X } from 'lucide-react'
+import { Edit, Plus, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useCustomers, Customer } from '@/hooks/useCustomers'
 import { useAuth } from '@/context/AuthContext'
+import { SearchableSelect } from '@/components/ui/searchable-select'
+import {
+  DEFAULT_COUNTRY_DIAL_CODE,
+  getAllCountryOptions,
+  getCountryDialCodeOptions,
+  getDialCodeForCountryName,
+  withCountryOption,
+} from '@/lib/countries'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 const createUniqueId = (prefix: string): string => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
 const createEmptyForm = () => ({
   name: '',
+  country: 'South Africa',
   billing_address: '',
   shipping_address: '',
+  phone_dial_code: DEFAULT_COUNTRY_DIAL_CODE,
   phone: '',
   email: '',
   contacts: [
@@ -25,7 +45,8 @@ const createEmptyForm = () => ({
       name: '',
       email: '',
       phone: '',
-      role: ''
+      role: '',
+      phone_dial_code: DEFAULT_COUNTRY_DIAL_CODE
     }
   ]
 })
@@ -42,6 +63,32 @@ function validateEmail(value: string | null | undefined): boolean {
   return emailPattern.test(value.trim())
 }
 
+function parsePhoneWithDialCode(value: string | null | undefined): { dialCode: string; localPhone: string } {
+  const raw = String(value ?? '').trim()
+  if (!raw) {
+    return { dialCode: DEFAULT_COUNTRY_DIAL_CODE, localPhone: '' }
+  }
+
+  const match = raw.match(/^(\+\d+)\s*(.*)$/)
+  if (!match) {
+    return { dialCode: DEFAULT_COUNTRY_DIAL_CODE, localPhone: raw }
+  }
+
+  return {
+    dialCode: match[1] || DEFAULT_COUNTRY_DIAL_CODE,
+    localPhone: (match[2] ?? '').trim(),
+  }
+}
+
+function formatPhoneForStorage(dialCode: string, localPhone: string): string | null {
+  const trimmed = localPhone.trim()
+  if (!trimmed) {
+    return null
+  }
+  const withoutExistingPrefix = trimmed.replace(/^\+\d+\s*/, '')
+  return `${dialCode} ${withoutExistingPrefix}`.trim()
+}
+
 const populateFormFromCustomer = (customer: Customer | null | undefined) => {
   if (!customer) {
     return createEmptyForm()
@@ -49,35 +96,45 @@ const populateFormFromCustomer = (customer: Customer | null | undefined) => {
 
   const contacts =
     customer.contacts && customer.contacts.length > 0
-      ? customer.contacts.map((contact) => ({
+      ? customer.contacts.map((contact) => {
+          const parsedPhone = parsePhoneWithDialCode(String(contact.phone ?? ''))
+          return {
           clientId: String(contact.id ?? createUniqueId('contact')),
           id: contact.id ?? null,
           name: String(contact.name ?? ''),
           email: String(contact.email ?? ''),
-          phone: String(contact.phone ?? ''),
-          role: String(contact.role ?? '')
-        }))
+          phone: parsedPhone.localPhone,
+          role: String(contact.role ?? ''),
+          phone_dial_code: parsedPhone.dialCode,
+        }
+      })
       : [
           {
             clientId: createUniqueId('contact'),
             name: '',
             email: '',
             phone: '',
-            role: ''
+            role: '',
+            phone_dial_code: DEFAULT_COUNTRY_DIAL_CODE
           }
         ]
 
+  const parsedCustomerPhone = parsePhoneWithDialCode(String(customer.phone ?? ''))
+
   return {
     name: String(customer.name ?? ''),
+    country: String(customer.country ?? '') || 'South Africa',
     billing_address: String(customer.billing_address ?? ''),
     shipping_address: String(customer.shipping_address ?? ''),
-    phone: String(customer.phone ?? ''),
+    phone: parsedCustomerPhone.localPhone,
+    phone_dial_code: parsedCustomerPhone.dialCode,
     email: String(customer.email ?? ''),
     contacts
   }
 }
 
 function Customers() {
+  const BULK_NO_CHANGE = '__NO_CHANGE__'
   const { customers, setCustomers, loading, error, refresh } = useCustomers()
   const { user } = useAuth()
 
@@ -87,6 +144,25 @@ function Customers() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | number | null>(null)
   const [editingCustomerId, setEditingCustomerId] = useState<string | number | null>(null)
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Array<string | number>>([])
+  const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
+  const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
+  const [bulkEditCountry, setBulkEditCountry] = useState(BULK_NO_CHANGE)
+  const [isBulkActionSubmitting, setIsBulkActionSubmitting] = useState(false)
+
+  const countryOptions = useMemo(() => getAllCountryOptions('South Africa'), [])
+  const dialCodeOptions = useMemo(() => getCountryDialCodeOptions(), [])
+  const customerCountryOptions = useMemo(
+    () => withCountryOption(countryOptions, formData.country),
+    [countryOptions, formData.country]
+  )
+  const bulkCountryOptions = useMemo(
+    () => [{ value: BULK_NO_CHANGE, label: 'No change', code: '' }, ...countryOptions],
+    [countryOptions]
+  )
+  const selectedCustomerIdSet = useMemo(() => new Set(selectedCustomerIds), [selectedCustomerIds])
+  const selectedCustomerCount = selectedCustomerIds.length
+  const allSelected = customers.length > 0 && customers.every((customer) => selectedCustomerIdSet.has(customer.id as string | number))
 
   useEffect(() => {
     if (error) {
@@ -142,6 +218,23 @@ function Customers() {
     }))
   }
 
+  const handleCountryChange = (value: string) => {
+    const nextDialCode = getDialCodeForCountryName(value)
+    setFormData((prev) => ({
+      ...prev,
+      country: value,
+      phone_dial_code: prev.phone_dial_code || nextDialCode,
+      contacts: prev.contacts.map((contact) => ({
+        ...contact,
+        phone_dial_code: contact.phone_dial_code || nextDialCode,
+      })),
+    }))
+    setFormErrors((prev) => ({
+      ...prev,
+      fields: { ...prev.fields, country: undefined },
+    }))
+  }
+
   const handleContactChange = (clientId: string, key: string, value: string) => {
     setFormData((prev) => ({
       ...prev,
@@ -165,7 +258,8 @@ function Customers() {
           name: '',
           email: '',
           phone: '',
-          role: ''
+          role: '',
+          phone_dial_code: prev.phone_dial_code || getDialCodeForCountryName(prev.country || 'South Africa')
         }
       ]
     }))
@@ -190,6 +284,10 @@ function Customers() {
 
     if (data.email && !validateEmail(data.email)) {
       errors.fields.email = 'Enter a valid email address.'
+    }
+
+    if (!data.country || !data.country.trim()) {
+      errors.fields.country = 'Country is required.'
     }
 
     data.contacts.forEach((contact) => {
@@ -233,9 +331,10 @@ function Customers() {
     setIsSubmitting(true)
     const payload = {
       name: formData.name.trim(),
+      country: formData.country?.trim() || null,
       billing_address: formData.billing_address?.trim() || null,
       shipping_address: formData.shipping_address?.trim() || null,
-      phone: formData.phone?.trim() || null,
+      phone: formatPhoneForStorage(formData.phone_dial_code || DEFAULT_COUNTRY_DIAL_CODE, formData.phone),
       email: formData.email?.trim() || null
     }
 
@@ -282,7 +381,10 @@ function Customers() {
           customer_id: customerRecord.id,
           name: contact.name.trim(),
           email: contact.email?.trim() || null,
-          phone: contact.phone?.trim() || null,
+          phone: formatPhoneForStorage(
+            contact.phone_dial_code || formData.phone_dial_code || DEFAULT_COUNTRY_DIAL_CODE,
+            contact.phone
+          ),
           role: contact.role?.trim() || null
         }))
 
@@ -326,9 +428,142 @@ function Customers() {
     }
   }
 
+  const handleToggleCustomerSelection = (customerId: string | number, checked: boolean) => {
+    setSelectedCustomerIds((prev) => {
+      if (checked) {
+        if (prev.includes(customerId)) return prev
+        return [...prev, customerId]
+      }
+      return prev.filter((id) => id !== customerId)
+    })
+  }
+
+  const handleToggleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedCustomerIds(customers.map((customer) => customer.id as string | number))
+      return
+    }
+    setSelectedCustomerIds([])
+  }
+
+  const openBulkEditModal = () => {
+    setBulkEditCountry(BULK_NO_CHANGE)
+    setBulkEditModalOpen(true)
+  }
+
+  const closeBulkEditModal = () => {
+    setBulkEditModalOpen(false)
+    setBulkEditCountry(BULK_NO_CHANGE)
+  }
+
+  const handleBulkEdit = async () => {
+    if (selectedCustomerCount === 0) {
+      toast.error('Select at least one customer.')
+      return
+    }
+
+    const payload: Record<string, unknown> = {}
+    if (bulkEditCountry !== BULK_NO_CHANGE) {
+      payload.country = bulkEditCountry
+    }
+
+    if (Object.keys(payload).length === 0) {
+      toast.error('Choose at least one field to update.')
+      return
+    }
+
+    setIsBulkActionSubmitting(true)
+    try {
+      const { error: bulkUpdateError } = await supabase.from('customers').update(payload).in('id', selectedCustomerIds)
+      if (bulkUpdateError) {
+        throw bulkUpdateError
+      }
+      await refresh()
+      toast.success(`Updated ${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'}.`)
+      closeBulkEditModal()
+      setSelectedCustomerIds([])
+    } catch (bulkError) {
+      console.error('Error bulk updating customers', bulkError)
+      const message = bulkError instanceof Error ? bulkError.message : 'Unable to bulk update customers.'
+      toast.error(message)
+    } finally {
+      setIsBulkActionSubmitting(false)
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    if (selectedCustomerCount === 0) {
+      toast.error('Select at least one customer.')
+      return
+    }
+
+    setIsBulkActionSubmitting(true)
+    try {
+      const { error: deleteContactsError } = await supabase
+        .from('customer_contacts')
+        .delete()
+        .in('customer_id', selectedCustomerIds)
+      if (deleteContactsError) {
+        throw deleteContactsError
+      }
+
+      const { error: deleteCustomersError } = await supabase.from('customers').delete().in('id', selectedCustomerIds)
+      if (deleteCustomersError) {
+        throw deleteCustomersError
+      }
+
+      await refresh()
+      setSelectedCustomerIds([])
+      setSelectedCustomerId(null)
+      setBulkDeleteAlertOpen(false)
+      toast.success(`Deleted ${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'}.`)
+    } catch (bulkDeleteError) {
+      console.error('Error bulk deleting customers', bulkDeleteError)
+      const message = bulkDeleteError instanceof Error ? bulkDeleteError.message : 'Unable to bulk delete customers.'
+      toast.error(message)
+    } finally {
+      setIsBulkActionSubmitting(false)
+    }
+  }
+
   const isEditing = Boolean(editingCustomerId)
 
   const columns = [
+    {
+      key: 'select',
+      header: 'Select',
+      headerClassName: 'w-14',
+      cellClassName: 'w-14',
+      render: (customer: Customer) => {
+        const id = customer.id as string | number
+        return (
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-olive-light/70 text-olive focus:ring-olive"
+              checked={selectedCustomerIdSet.has(id)}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => handleToggleCustomerSelection(id, event.target.checked)}
+              aria-label={`Select customer ${String(customer.name ?? '')}`}
+            />
+          </div>
+        )
+      },
+      mobileRender: (customer: Customer) => {
+        const id = customer.id as string | number
+        return (
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-olive-light/70 text-olive focus:ring-olive"
+            checked={selectedCustomerIdSet.has(id)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => handleToggleCustomerSelection(id, event.target.checked)}
+            aria-label={`Select customer ${String(customer.name ?? '')}`}
+          />
+        )
+      },
+      mobileValueClassName: 'flex justify-end'
+    },
     {
       key: 'name',
       header: 'Customer',
@@ -350,6 +585,14 @@ function Customers() {
       header: 'Phone',
       render: (customer: Customer) => String(customer.phone ?? '') || '—',
       mobileRender: (customer: Customer) => String(customer.phone ?? '') || '—',
+      cellClassName: 'text-text-dark/70',
+      mobileValueClassName: 'text-text-dark'
+    },
+    {
+      key: 'country',
+      header: 'Country',
+      render: (customer: Customer) => String(customer.country ?? '') || '—',
+      mobileRender: (customer: Customer) => String(customer.country ?? '') || '—',
       cellClassName: 'text-text-dark/70',
       mobileValueClassName: 'text-text-dark'
     },
@@ -436,15 +679,66 @@ function Customers() {
                   </Button>
                 </div>
               ) : (
-                <ResponsiveTable
-                  columns={columns}
-                  data={customers}
-                  rowKey="id"
-                  tableClassName=""
-                  mobileCardClassName=""
-                  getRowClassName={() => ''}
-                  onRowClick={(customer: Customer) => setSelectedCustomerId((customer.id as string | number | null) ?? null)}
-                />
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-sm text-text-dark/70">
+                        {selectedCustomerCount > 0
+                          ? `${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'} selected`
+                          : 'No customers selected'}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleToggleSelectAll(!allSelected)}
+                          disabled={customers.length === 0 || isBulkActionSubmitting}
+                        >
+                          {allSelected ? 'Deselect All' : 'Select All'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedCustomerIds([])}
+                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                        >
+                          Clear
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={openBulkEditModal}
+                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                        >
+                          <Edit className="mr-2 h-4 w-4" />
+                          Bulk Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="bg-red-600 text-white hover:bg-red-700"
+                          onClick={() => setBulkDeleteAlertOpen(true)}
+                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete Selected
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  <ResponsiveTable
+                    columns={columns}
+                    data={customers}
+                    rowKey="id"
+                    tableClassName=""
+                    mobileCardClassName=""
+                    getRowClassName={() => ''}
+                    onRowClick={(customer: Customer) => setSelectedCustomerId((customer.id as string | number | null) ?? null)}
+                  />
+                </div>
               )}
             </CardContent>
           </Card>
@@ -481,6 +775,10 @@ function Customers() {
                     <p className="text-xs uppercase tracking-wide text-text-dark/60">Main contact</p>
                     <p className="text-sm text-text-dark/80">{String(selectedCustomer.email ?? '') || '—'}</p>
                     <p className="text-sm text-text-dark/80">{String(selectedCustomer.phone ?? '') || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Country</p>
+                    <p className="text-sm text-text-dark/80">{String(selectedCustomer.country ?? '') || 'Not provided'}</p>
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-wide text-text-dark/60">Billing address</p>
@@ -580,15 +878,45 @@ function Customers() {
                       )}
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="phone">Phone</Label>
-                      <Input
-                        id="phone"
-                        name="phone"
-                        value={formData.phone}
-                        onChange={handleFieldChange}
-                        placeholder="+27 21 555 0198"
+                      <Label htmlFor="country">Country*</Label>
+                      <SearchableSelect
+                        id="country"
+                        options={customerCountryOptions}
+                        value={formData.country}
+                        onChange={handleCountryChange}
+                        placeholder="Select country"
                         disabled={isSubmitting}
                       />
+                      {formErrors.fields.country && (
+                        <p className="text-xs text-red-600">{formErrors.fields.country}</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="phone">Phone</Label>
+                      <div className="grid grid-cols-3 gap-2">
+                        <SearchableSelect
+                          id="phone-dial-code"
+                          options={dialCodeOptions}
+                          value={formData.phone_dial_code}
+                          onChange={(value) =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              phone_dial_code: value,
+                            }))
+                          }
+                          placeholder="Code"
+                          disabled={isSubmitting}
+                        />
+                        <Input
+                          id="phone"
+                          name="phone"
+                          value={formData.phone}
+                          onChange={handleFieldChange}
+                          placeholder="21 555 0198"
+                          disabled={isSubmitting}
+                          className="col-span-2"
+                        />
+                      </div>
                     </div>
                     <div className="space-y-2 sm:col-span-2">
                       <Label htmlFor="billing_address">Billing address</Label>
@@ -675,15 +1003,28 @@ function Customers() {
                             </div>
                             <div className="space-y-2">
                               <Label htmlFor={`contact-phone-${contact.clientId}`}>Phone</Label>
-                              <Input
-                                id={`contact-phone-${contact.clientId}`}
-                                value={contact.phone}
-                                onChange={(event) =>
-                                  handleContactChange(contact.clientId, 'phone', event.target.value)
-                                }
-                                placeholder="+27 82 123 4567"
-                                disabled={isSubmitting}
-                              />
+                              <div className="grid grid-cols-3 gap-2">
+                                <SearchableSelect
+                                  id={`contact-phone-code-${contact.clientId}`}
+                                  options={dialCodeOptions}
+                                  value={contact.phone_dial_code || formData.phone_dial_code || DEFAULT_COUNTRY_DIAL_CODE}
+                                  onChange={(value) =>
+                                    handleContactChange(contact.clientId, 'phone_dial_code', value)
+                                  }
+                                  placeholder="Code"
+                                  disabled={isSubmitting}
+                                />
+                                <Input
+                                  id={`contact-phone-${contact.clientId}`}
+                                  value={contact.phone}
+                                  onChange={(event) =>
+                                    handleContactChange(contact.clientId, 'phone', event.target.value)
+                                  }
+                                  placeholder="82 123 4567"
+                                  disabled={isSubmitting}
+                                  className="col-span-2"
+                                />
+                              </div>
                             </div>
                           </div>
                           {contactError && <p className="text-xs text-red-600">{contactError}</p>}
@@ -722,9 +1063,77 @@ function Customers() {
           </div>
         </div>
       )}
+      <AlertDialog
+        open={bulkDeleteAlertOpen}
+        onOpenChange={(open) => {
+          if (isBulkActionSubmitting) return
+          setBulkDeleteAlertOpen(open)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete selected customers?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`This will permanently remove ${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'} and related contacts.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBulkActionSubmitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={handleBulkDelete}
+              disabled={isBulkActionSubmitting}
+            >
+              {isBulkActionSubmitting ? 'Deleting…' : 'Delete Selected'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {bulkEditModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl rounded-lg border border-olive-light/40 bg-white shadow-xl">
+            <div className="border-b border-olive-light/40 px-5 py-4">
+              <h3 className="text-lg font-semibold text-text-dark">Bulk Edit Customers</h3>
+              <p className="text-sm text-text-dark/70">
+                Update selected fields for {selectedCustomerCount} customer{selectedCustomerCount === 1 ? '' : 's'}.
+              </p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="bulk-edit-country">Country</Label>
+                <SearchableSelect
+                  id="bulk-edit-country"
+                  options={bulkCountryOptions}
+                  value={bulkEditCountry}
+                  onChange={setBulkEditCountry}
+                  placeholder="Select country"
+                  disabled={isBulkActionSubmitting}
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-olive-light/40 px-5 py-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeBulkEditModal}
+                disabled={isBulkActionSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="bg-olive hover:bg-olive-dark"
+                onClick={handleBulkEdit}
+                disabled={isBulkActionSubmitting}
+              >
+                {isBulkActionSubmitting ? 'Saving…' : 'Apply Changes'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </PageLayout>
   )
 }
 
 export default Customers
-

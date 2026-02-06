@@ -1030,7 +1030,7 @@ function ProcessStepsProgress() {
                           if (stepCode === 'WASH') {
                             return <WashingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
-                          if (stepCode === 'DRY') {
+                          if (stepCode === 'DRY' || stepCode === 'DRYI') {
                             return <DryingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
                           if (stepCode === 'SORT') {
@@ -1057,7 +1057,7 @@ function ProcessStepsProgress() {
                               />
                             )
                           }
-                          if (stepCode === 'METAL') {
+                          if (stepCode === 'METAL' || stepCode === 'META') {
                             return <MetalDetectionStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
                           if (stepCode === 'PACK') {
@@ -1077,7 +1077,7 @@ function ProcessStepsProgress() {
                                   <p>step_code: {JSON.stringify(activeStep.step_code)}</p>
                                   <p>step_name: {JSON.stringify(activeStep.step_name)}</p>
                                   <p>step_name_id: {JSON.stringify(activeStep.step_name_id)}</p>
-                                  <p>Available codes: WASH, DRY, SORT, METAL, PACK</p>
+                                  <p>Available codes: WASH, DRY/DRYI, SORT, METAL/META, PACK</p>
                                 </div>
                               )}
                             </div>

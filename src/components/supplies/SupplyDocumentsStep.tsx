@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Camera, X, Sparkles } from 'lucide-react'
 import { CameraCapture } from '@/components/CameraCapture'
 
@@ -119,24 +120,24 @@ export function SupplyDocumentsStep({ documents, onChange, disabled }: SupplyDoc
 
           <div className="space-y-2 lg:col-span-6">
             <Label htmlFor="production_date">Production Date</Label>
-            <Input
+            <DatePicker
               id="production_date"
-              type="date"
               value={documents.productionDate}
-              onChange={(e) => handleFieldChange('productionDate', e.target.value)}
-              className={baseFieldClass}
+              onChange={(value) => handleFieldChange('productionDate', value)}
+              triggerClassName={baseFieldClass}
+              popoverClassName="w-[18rem]"
               disabled={disabled}
             />
           </div>
 
           <div className="space-y-2 lg:col-span-6">
             <Label htmlFor="expiry_date">Expiry Date</Label>
-            <Input
+            <DatePicker
               id="expiry_date"
-              type="date"
               value={documents.expiryDate}
-              onChange={(e) => handleFieldChange('expiryDate', e.target.value)}
-              className={baseFieldClass}
+              onChange={(value) => handleFieldChange('expiryDate', value)}
+              triggerClassName={baseFieldClass}
+              popoverClassName="w-[18rem]"
               disabled={disabled}
             />
           </div>

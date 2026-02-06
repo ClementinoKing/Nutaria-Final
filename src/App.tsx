@@ -5,6 +5,7 @@ import { useAuth } from './context/AuthContext'
 const Login = lazy(() => import('./pages/Login'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const DailyChecks = lazy(() => import('./pages/daily/DailyChecks'))
+const MetalDetectorChecks = lazy(() => import('./pages/checks/MetalDetectorChecks'))
 const Units = lazy(() => import('./pages/inventory/Units'))
 const Warehouses = lazy(() => import('./pages/inventory/Warehouses'))
 const Products = lazy(() => import('./pages/inventory/Products'))
@@ -86,10 +87,26 @@ function App() {
           }
         />
         <Route
-          path="/daily-checks"
+          path="/checks/daily"
           element={
             <ProtectedRoute>
               <DailyChecks />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/checks/metal-detector"
+          element={
+            <ProtectedRoute>
+              <MetalDetectorChecks />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/daily-checks"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/checks/daily" replace />
             </ProtectedRoute>
           }
         />

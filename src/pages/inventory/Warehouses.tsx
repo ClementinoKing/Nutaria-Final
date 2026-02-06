@@ -3,13 +3,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Warehouse, Plus, RefreshCcw, X } from 'lucide-react'
+import { Warehouse, Plus, RefreshCcw, X, Edit, Trash2 } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
   year: 'numeric',
@@ -67,13 +77,52 @@ function Warehouses() {
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
+  const [warehouseToDelete, setWarehouseToDelete] = useState<WarehouseData | null>(null)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     code: '',
     enabled: true,
   })
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+
+  const existingCodes = useMemo(
+    () => new Set(warehouses.map((w) => (w.code ?? '').toUpperCase()).filter(Boolean)),
+    [warehouses]
+  )
+
+  const generateWarehouseCode = useCallback(
+    (name: string) => {
+      const cleaned = name
+        .trim()
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      if (!cleaned) return ''
+
+      const words = cleaned.split(' ').filter(Boolean)
+      let base = ''
+      if (words.length >= 2) {
+        base = words.map((word) => word[0]).join('').toUpperCase()
+      } else if (words.length === 1) {
+        base = words[0].slice(0, 3).toUpperCase()
+      }
+      if (!base) base = 'WH'
+      let code = base
+      let counter = 1
+      while (existingCodes.has(code)) {
+        counter += 1
+        code = `${base}-${String(counter).padStart(2, '0')}`
+      }
+      return code
+    },
+    [existingCodes]
+  )
 
   const fetchWarehouses = useCallback(async () => {
     setLoading(true)
@@ -233,8 +282,58 @@ function Warehouses() {
         mobileRender: (warehouse: WarehouseData & { isEnabled?: boolean; createdAtDate?: Date | null }) =>
           formatDate(warehouse.createdAtDate),
       },
+      {
+        key: 'actions',
+        header: 'Actions',
+        render: (warehouse: WarehouseData) => (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEdit(warehouse)}
+              className="text-blue-600 hover:bg-blue-50"
+              title="Edit"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleDeleteClick(warehouse)}
+              className="text-red-600 hover:bg-red-50"
+              title="Delete"
+              disabled={isDeleting}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+        mobileRender: (warehouse: WarehouseData) => (
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleEdit(warehouse)}
+              className="text-blue-600 hover:bg-blue-50"
+              title="Edit"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleDeleteClick(warehouse)}
+              className="text-red-600 hover:bg-red-50"
+              title="Delete"
+              disabled={isDeleting}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+      },
     ],
-    []
+    [isDeleting]
   )
 
   const emptyMessage = useMemo(() => {
@@ -249,20 +348,51 @@ function Warehouses() {
 
   const handleOpenModal = () => {
     resetForm()
+    setIsEditMode(false)
+    setEditingId(null)
     setIsModalOpen(true)
   }
 
   const handleCloseModal = () => {
     resetForm()
+    setIsEditMode(false)
+    setEditingId(null)
     setIsModalOpen(false)
+  }
+
+  const handleEdit = (warehouse: WarehouseData) => {
+    setFormData({
+      name: warehouse.name ?? '',
+      code: warehouse.code ?? '',
+      enabled: warehouse.enabled !== false,
+    })
+    setFormErrors({})
+    setIsEditMode(true)
+    setEditingId(warehouse.id)
+    setIsModalOpen(true)
+  }
+
+  const handleDeleteClick = (warehouse: WarehouseData) => {
+    setWarehouseToDelete(warehouse)
+    setDeleteAlertOpen(true)
   }
 
   const handleFormChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = event.target
-    setFormData((previous) => ({
-      ...previous,
-      [name]: type === 'checkbox' ? checked : value,
-    }))
+    setFormData((previous) => {
+      if (name === 'name') {
+        const nextName = value
+        return {
+          ...previous,
+          name: nextName,
+          code: generateWarehouseCode(nextName),
+        }
+      }
+      return {
+        ...previous,
+        [name]: type === 'checkbox' ? checked : value,
+      }
+    })
   }
 
   const validateForm = () => {
@@ -291,25 +421,55 @@ function Warehouses() {
         code: formData.code.trim() || null,
         enabled: formData.enabled,
       }
+      if (isEditMode && editingId) {
+        const { error: updateError } = await supabase
+          .from('warehouses')
+          .update(payload)
+          .eq('id', editingId)
+        if (updateError) throw updateError
+        toast.success('Warehouse updated successfully.')
+        await fetchWarehouses()
+      } else {
+        const { data, error: insertError } = await supabase
+          .from('warehouses')
+          .insert(payload)
+          .select('id, name, code, enabled, created_at')
+          .single()
 
-      const { data, error: insertError } = await supabase
-        .from('warehouses')
-        .insert(payload)
-        .select('id, name, code, enabled, created_at')
-        .single()
+        if (insertError) {
+          throw insertError
+        }
 
-      if (insertError) {
-        throw insertError
+        toast.success('Warehouse added successfully.')
+        setWarehouses((previous) => (data ? [data as WarehouseData, ...previous] : previous))
       }
-
-      toast.success('Warehouse added successfully.')
-      setWarehouses((previous) => (data ? [data as WarehouseData, ...previous] : previous))
       handleCloseModal()
     } catch (insertError) {
       console.error('Error creating warehouse', insertError)
       const errorMessage = insertError instanceof Error ? insertError.message : 'Unable to add warehouse.'
       toast.error(errorMessage)
       setIsSubmitting(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!warehouseToDelete) return
+    setIsDeleting(true)
+    try {
+      const { error: deleteError } = await supabase
+        .from('warehouses')
+        .delete()
+        .eq('id', warehouseToDelete.id)
+      if (deleteError) throw deleteError
+      toast.success('Warehouse deleted successfully.')
+      setWarehouses((previous) => previous.filter((warehouse) => warehouse.id !== warehouseToDelete.id))
+      setDeleteAlertOpen(false)
+      setWarehouseToDelete(null)
+    } catch (err) {
+      console.error('Error deleting warehouse', err)
+      toast.error(err instanceof Error ? err.message : 'Unable to delete warehouse.')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -446,8 +606,12 @@ function Warehouses() {
           <div className="w-full max-w-xl rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
               <div>
-                <h2 className="text-lg font-semibold text-text-dark">Add Warehouse</h2>
-                <p className="text-sm text-text-dark/70">Capture a new warehouse location.</p>
+                <h2 className="text-lg font-semibold text-text-dark">
+                  {isEditMode ? 'Edit Warehouse' : 'Add Warehouse'}
+                </h2>
+                <p className="text-sm text-text-dark/70">
+                  {isEditMode ? 'Update the warehouse details.' : 'Capture a new warehouse location.'}
+                </p>
               </div>
               <Button
                 type="button"
@@ -479,14 +643,14 @@ function Warehouses() {
                   ) : null}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="warehouse-code">Code (optional)</Label>
+                  <Label htmlFor="warehouse-code">Code (auto-generated)</Label>
                   <Input
                     id="warehouse-code"
                     name="code"
                     placeholder="e.g. EC-001"
                     value={formData.code}
                     onChange={handleFormChange}
-                    disabled={isSubmitting}
+                    disabled
                     className={formErrors.code ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                   />
                   {formErrors.code ? (
@@ -525,16 +689,37 @@ function Warehouses() {
                   Cancel
                 </Button>
                 <Button type="submit" disabled={isSubmitting} className="bg-olive hover:bg-olive-dark">
-                  {isSubmitting ? 'Saving…' : 'Save Warehouse'}
+                  {isSubmitting ? 'Saving…' : isEditMode ? 'Update Warehouse' : 'Save Warehouse'}
                 </Button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteAlertOpen} onOpenChange={(open) => { setDeleteAlertOpen(open); if (!open) setWarehouseToDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete warehouse?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {warehouseToDelete
+                ? `Delete warehouse "${warehouseToDelete.name ?? 'Unknown'}"? This cannot be undone.`
+                : 'This cannot be undone.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={handleDelete}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PageLayout>
   )
 }
 
 export default Warehouses
-

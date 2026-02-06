@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DatePicker } from '@/components/ui/date-picker'
 import PageLayout from '@/components/layout/PageLayout'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
@@ -1339,13 +1340,14 @@ function SupplierEdit() {
                                           <Label htmlFor={`existing-expiry-${fileIdStr}`} className="text-xs text-text-dark/70">
                                             Expiry date
                                           </Label>
-                                          <Input
-                                            id={`existing-expiry-${fileIdStr}`}
-                                            type="date"
+                                          <DatePicker
+                                            id={`existing-expiry-picker-${fileIdStr}`}
                                             value={expiryValue}
-                                            onChange={(e) => handleExistingDocumentExpiryChange(fileIdStr, e.target.value)}
+                                            onChange={(value) => handleExistingDocumentExpiryChange(fileIdStr, value)}
                                             disabled={saving}
-                                            className="h-8 w-auto min-w-[8rem] text-xs"
+                                            className="w-auto min-w-[10rem]"
+                                            triggerClassName="h-8 min-w-[10rem] text-xs"
+                                            popoverClassName="w-[18rem]"
                                           />
                                         </div>
                                       ) : (
@@ -1458,12 +1460,11 @@ function SupplierEdit() {
                             {requiresExpiry && (
                               <div className="space-y-1.5">
                                 <Label htmlFor={documentExpiryId}>Expiry date</Label>
-                                <Input
+                                <DatePicker
                                   id={documentExpiryId}
-                                  type="date"
                                   value={documentType.expiryDate ?? ''}
-                                  onChange={(event) =>
-                                    handleDocumentExpiryChange(documentType.clientId, event.target.value)
+                                  onChange={(value) =>
+                                    handleDocumentExpiryChange(documentType.clientId, value)
                                   }
                                   disabled={saving}
                                 />
@@ -1574,4 +1575,3 @@ function SupplierEdit() {
 }
 
 export default SupplierEdit
-
