@@ -50,7 +50,7 @@ function formatDate(value: string | null | undefined) {
   return date.toLocaleString()
 }
 
-function PackedProductDetailPage() {
+function AllocationDetailsPage() {
   const { productId } = useParams<{ productId: string }>()
   const [product, setProduct] = useState<{ name: string; sku: string | null } | null>(null)
   const [entries, setEntries] = useState<PackEntryRow[]>([])
@@ -326,21 +326,21 @@ function PackedProductDetailPage() {
 
   if (loading) {
     return (
-      <PageLayout title="Packed Product Detail" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
-        <Spinner text="Loading packed product detail..." />
+      <PageLayout title="Allocation Details" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+        <Spinner text="Loading allocation details..." />
       </PageLayout>
     )
   }
 
   return (
-    <PageLayout title="Packed Product Detail" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+    <PageLayout title="Allocation Details" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Link
-          to="/inventory/stock-levels/packed"
+          to="/inventory/stock-levels/allocation"
           className="inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to Packed Stock
+          Back to Allocations
         </Link>
         {product?.sku ? <span className="text-sm text-text-dark/60">SKU: {product.sku}</span> : null}
       </div>
@@ -366,7 +366,7 @@ function PackedProductDetailPage() {
             <CardHeader className="flex flex-row items-start justify-between gap-3">
               <div>
                 <CardTitle className="text-text-dark">Overview</CardTitle>
-                <CardDescription>Quick summary of packed stock, lots, and QA status.</CardDescription>
+                <CardDescription>Quick summary of allocations, lots, and QA status.</CardDescription>
               </div>
               <button
                 type="button"
@@ -535,4 +535,4 @@ function PackedProductDetailPage() {
   )
 }
 
-export default PackedProductDetailPage
+export default AllocationDetailsPage

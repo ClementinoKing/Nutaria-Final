@@ -40,6 +40,13 @@ interface SupplyPayment {
   [key: string]: unknown
 }
 
+interface SupplyDocument {
+  supply_id: number
+  document_type_code: string
+  value?: string | null
+  [key: string]: unknown
+}
+
 interface SupplyWithTotals extends Supply {
   supplier_name: string
   total_expected: number
@@ -83,6 +90,7 @@ function Payments() {
   const { suppliers: supplierOptions } = useSuppliers({ pageSize: 500 })
   const [supplies, setSupplies] = useState<Supply[]>([])
   const [supplyLines, setSupplyLines] = useState<SupplyLine[]>([])
+  const [supplyDocuments, setSupplyDocuments] = useState<SupplyDocument[]>([])
   const [payments, setPayments] = useState<SupplyPayment[]>([])
   const [loading, setLoading] = useState(true)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false)
@@ -92,6 +100,7 @@ function Payments() {
     paid_at: new Date().toISOString().slice(0, 10),
     reference: '',
   })
+  const [lockedSupplyId, setLockedSupplyId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   type TabId = 'supplies' | 'recent'
@@ -104,13 +113,17 @@ function Payments() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [suppliesRes, linesRes, paymentsRes] = await Promise.all([
+      const [suppliesRes, linesRes, docsRes, paymentsRes] = await Promise.all([
         supabase
           .from('supplies')
           .select('id, doc_no, supplier_id, received_at')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
         supabase.from('supply_lines').select('id, supply_id, product_id, accepted_qty, unit_price'),
+        supabase
+          .from('supply_documents')
+          .select('supply_id, document_type_code, value')
+          .eq('document_type_code', 'INVOICE'),
         supabase
           .from('supply_payments')
           .select('id, supply_id, amount, paid_at, reference, created_at')
@@ -119,10 +132,12 @@ function Payments() {
 
       if (suppliesRes.error) throw suppliesRes.error
       if (linesRes.error) throw linesRes.error
+      if (docsRes.error) throw docsRes.error
       if (paymentsRes.error) throw paymentsRes.error
 
       setSupplies((suppliesRes.data ?? []) as Supply[])
       setSupplyLines((linesRes.data ?? []) as SupplyLine[])
+      setSupplyDocuments((docsRes.data ?? []) as SupplyDocument[])
       setPayments((paymentsRes.data ?? []) as SupplyPayment[])
     } catch (e) {
       console.error('Error loading payments data', e)
@@ -221,7 +236,21 @@ function Payments() {
     [suppliesWithTotals]
   )
 
+  const getSupplyInvoiceReference = useCallback(
+    (supplyId: string): string => {
+      if (!supplyId) return ''
+      const supplyIdNum = Number(supplyId)
+      if (!Number.isFinite(supplyIdNum)) return ''
+      const invoiceDoc = supplyDocuments.find(
+        (doc) => Number(doc.supply_id) === supplyIdNum && doc.document_type_code === 'INVOICE',
+      )
+      return String(invoiceDoc?.value ?? '').trim()
+    },
+    [supplyDocuments],
+  )
+
   const handleOpenPaymentModal = () => {
+    setLockedSupplyId(null)
     setPaymentForm({
       supply_id: '',
       amount: '',
@@ -231,8 +260,21 @@ function Payments() {
     setPaymentModalOpen(true)
   }
 
+  const handleOpenPaymentModalForSupply = (supplyId: number) => {
+    const supplyIdText = String(supplyId)
+    setLockedSupplyId(supplyIdText)
+    setPaymentForm({
+      supply_id: supplyIdText,
+      amount: '',
+      paid_at: new Date().toISOString().slice(0, 10),
+      reference: getSupplyInvoiceReference(supplyIdText),
+    })
+    setPaymentModalOpen(true)
+  }
+
   const handleClosePaymentModal = () => {
     setPaymentModalOpen(false)
+    setLockedSupplyId(null)
   }
 
   const handlePaymentSubmit = async (e: React.FormEvent) => {
@@ -440,8 +482,7 @@ function Payments() {
                                   className="border-olive-light/60"
                                   onClick={(e) => {
                                     e.stopPropagation()
-                                    setPaymentForm((prev) => ({ ...prev, supply_id: String(s.id) }))
-                                    setPaymentModalOpen(true)
+                                    handleOpenPaymentModalForSupply(s.id)
                                   }}
                                 >
                                   <Banknote className="mr-1 h-3.5 w-3.5" />
@@ -587,7 +628,15 @@ function Payments() {
                     required
                     className="w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark"
                     value={paymentForm.supply_id}
-                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, supply_id: e.target.value }))}
+                    onChange={(e) => {
+                      const selectedSupplyId = e.target.value
+                      setPaymentForm((prev) => ({
+                        ...prev,
+                        supply_id: selectedSupplyId,
+                        reference: getSupplyInvoiceReference(selectedSupplyId),
+                      }))
+                    }}
+                    disabled={lockedSupplyId !== null}
                   >
                     <option value="">Select supply</option>
                     {supplySelectOptions.map((opt) => (
@@ -631,9 +680,10 @@ function Payments() {
                   <Label htmlFor="payment-reference">Reference (optional)</Label>
                   <Input
                     id="payment-reference"
-                    placeholder="e.g. Invoice #123"
+                    placeholder="Auto-filled from supply invoice"
                     value={paymentForm.reference}
-                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, reference: e.target.value }))}
+                    readOnly
+                    disabled
                   />
                 </div>
                 <div className="flex gap-2 pt-2">

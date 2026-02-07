@@ -1,5 +1,6 @@
 import { Suspense, lazy } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import type { Location as RouterLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 
 const Login = lazy(() => import('./pages/Login'))
@@ -13,8 +14,8 @@ const StockLevels = lazy(() => import('./pages/inventory/StockLevels'))
 const SupplyStockPage = lazy(() => import('./pages/inventory/SupplyStockPage'))
 const WIPStockPage = lazy(() => import('./pages/inventory/WIPStockPage'))
 const WIPProductDetailPage = lazy(() => import('./pages/inventory/WIPProductDetailPage'))
-const PackedStockPage = lazy(() => import('./pages/inventory/PackedStockPage'))
-const PackedProductDetailPage = lazy(() => import('./pages/inventory/PackedProductDetailPage'))
+const AllocationPage = lazy(() => import('./pages/inventory/AllocationPage'))
+const AllocationDetailsPage = lazy(() => import('./pages/inventory/AllocationDetailsPage'))
 const RemaindersPage = lazy(() => import('./pages/inventory/RemaindersPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
@@ -77,9 +78,14 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
 }
 
 function App() {
+  const location = useLocation()
+  const state = location.state as { backgroundLocation?: RouterLocation } | null
+  const isSupplyEditRoute = /^\/supplies\/\d+\/edit$/.test(location.pathname)
+  const backgroundLocation = isSupplyEditRoute ? state?.backgroundLocation : undefined
+
   return (
     <Suspense fallback={<LoadingScreen />}>
-      <Routes>
+      <Routes location={backgroundLocation ?? location}>
         <Route path="/login" element={<Login />} />
         <Route
           path="/dashboard"
@@ -170,18 +176,18 @@ function App() {
           }
         />
         <Route
-          path="/inventory/stock-levels/packed"
+          path="/inventory/stock-levels/allocation"
           element={
             <ProtectedRoute>
-              <PackedStockPage />
+              <AllocationPage />
             </ProtectedRoute>
           }
         />
         <Route
-          path="/inventory/stock-levels/packed/:productId"
+          path="/inventory/stock-levels/allocation-details/:productId"
           element={
             <ProtectedRoute>
-              <PackedProductDetailPage />
+              <AllocationDetailsPage />
             </ProtectedRoute>
           }
         />
@@ -214,6 +220,14 @@ function App() {
           element={
             <ProtectedRoute>
               <SupplyDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/supplies/:supplyId/edit"
+          element={
+            <ProtectedRoute>
+              <Supplies />
             </ProtectedRoute>
           }
         />
@@ -476,6 +490,18 @@ function App() {
         />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      {isSupplyEditRoute && backgroundLocation && (
+        <Routes>
+          <Route
+            path="/supplies/:supplyId/edit"
+            element={
+              <ProtectedRoute>
+                <Supplies modalOnly />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      )}
     </Suspense>
   )
 }

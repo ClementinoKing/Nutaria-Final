@@ -80,22 +80,6 @@ export function PackagingQualityStep({ packaging, onChange, disabled }: Packagin
         </div>
 
         <div className="space-y-2 lg:col-span-6">
-          <Label htmlFor="specified_quantity">Specified Quantity (units) *</Label>
-          <Input
-            id="specified_quantity"
-            type="number"
-            required
-            value={packaging.specifiedQuantity}
-            onChange={(e) => handleFieldChange('specifiedQuantity', e.target.value)}
-            placeholder="Enter quantity"
-            className={baseFieldClass}
-            disabled={disabled}
-            min="0"
-            step="0.01"
-          />
-        </div>
-
-        <div className="space-y-2 lg:col-span-6">
           <Label htmlFor="odor">Odor *</Label>
           <select
             id="odor"
@@ -111,6 +95,22 @@ export function PackagingQualityStep({ packaging, onChange, disabled }: Packagin
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="space-y-2 lg:col-span-6">
+          <Label htmlFor="specified_quantity">Specified Quantity (kg) *</Label>
+          <Input
+            id="specified_quantity"
+            type="number"
+            required
+            value={packaging.specifiedQuantity}
+            onChange={(e) => handleFieldChange('specifiedQuantity', e.target.value)}
+            placeholder="Enter quantity in kg"
+            className={baseFieldClass}
+            disabled={disabled}
+            min="0"
+            step="0.01"
+          />
         </div>
 
         <div className="space-y-2 lg:col-span-6">

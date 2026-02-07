@@ -441,7 +441,9 @@ function SupplyDetail() {
   }
 
   const handleEdit = () => {
-    navigate('/supplies', { state: { editSupplyId: supply.id } })
+    navigate(`/supplies/${supply.id}/edit`, {
+      state: { backgroundLocation: location },
+    })
   }
 
   const handleDownloadPDF = async () => {

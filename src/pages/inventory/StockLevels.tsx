@@ -22,9 +22,9 @@ const SEGMENTS = [
   },
   {
     key: 'packed',
-    title: 'Packed Stock',
-    description: 'Finished packed quantities by product and pack.',
-    path: '/inventory/stock-levels/packed',
+    title: 'Allocations',
+    description: 'Storage allocations created during packaging, grouped by product and pack.',
+    path: '/inventory/stock-levels/allocation',
     icon: Box,
     className: 'border-emerald-200/60 hover:border-emerald-400/80 hover:bg-emerald-50/50',
   },
@@ -49,7 +49,7 @@ function StockLevels() {
     >
       <div className="mb-6">
         <p className="text-muted-foreground">
-          View stock by stage: supply (received), work in progress, or packed.
+          View stock by stage: supply (received), work in progress, allocations, or remainders.
         </p>
       </div>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,6 +33,10 @@ interface QualityEntries {
 }
 
 interface SupplyBatch {
+  batch_id?: number | null
+  supply_line_id?: number | null
+  lot_no?: string
+  is_locked?: boolean
   product_id: string
   unit_id: string
   qty: string
@@ -289,6 +293,32 @@ function createInitialQualityEntries(parameters: QualityParameterWithId[] = []):
   }, {} as QualityEntries)
 }
 
+function parseNullableNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizePackagingParameterCode(value: string | null | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function resolvePackagingParameterId(
+  parameterMap: Map<string, number>,
+  ...candidates: string[]
+): number | undefined {
+  for (const candidate of candidates) {
+    const id = parameterMap.get(normalizePackagingParameterCode(candidate))
+    if (id != null) {
+      return id
+    }
+  }
+  return undefined
+}
+
 function calculateAverageScore(entries: QualityEntries): number | null {
   const scores = Object.values(entries)
     .map((entry) => entry.score)
@@ -322,9 +352,15 @@ function sanitiseAcceptedQuantityInput(value: string | number | null | undefined
   return normalised === '' ? '0' : normalised
 }
 
-function Supplies() {
+interface SuppliesProps {
+  modalOnly?: boolean
+}
+
+function Supplies({ modalOnly = false }: SuppliesProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const { supplyId: routeSupplyId } = useParams<{ supplyId?: string }>()
+  const isDirectEditRoute = Boolean(routeSupplyId && location.pathname.endsWith('/edit'))
   const { user } = useAuth()
   const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers()
   const [supplies, setSupplies] = useState<Supply[]>([])
@@ -409,9 +445,32 @@ function Supplies() {
     }
     return user?.user_metadata?.full_name || user?.email || ''
   }, [userProfileName, user])
+
+  useEffect(() => {
+    if (editingSupplyId != null) {
+      return
+    }
+    if (
+      packagingQuality.inaccurateLabelling === 'NO' &&
+      packagingQuality.visibleDamage === 'NO' &&
+      packagingQuality.odor === 'NO' &&
+      packagingQuality.specifiedQuantity === ''
+    ) {
+      setPackagingQuality((previous) => ({
+        ...previous,
+        specifiedQuantity: '0',
+      }))
+    }
+  }, [
+    editingSupplyId,
+    packagingQuality.inaccurateLabelling,
+    packagingQuality.visibleDamage,
+    packagingQuality.odor,
+    packagingQuality.specifiedQuantity,
+  ])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
-  const isLastStep = currentStep === STEPS.length - 1
+  const isEditingSupply = editingSupplyId != null
 
   const computeNextDocNumber = useCallback(() => {
     const now = new Date()
@@ -446,7 +505,19 @@ function Supplies() {
       received_by: currentUserName,
       doc_status: STATUS_OPTIONS[0]!,
       supply_batches: [
-        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' },
+        {
+          batch_id: null,
+          supply_line_id: null,
+          lot_no: '',
+          is_locked: false,
+          product_id: '',
+          unit_id: '',
+          qty: '',
+          accepted_qty: '0',
+          rejected_qty: '0',
+          unit_price: '',
+          amount_paid: '',
+        },
       ],
     }),
     [computeNextDocNumber, currentUserName],
@@ -724,6 +795,9 @@ function Supplies() {
     setFormData((previous) => {
       let changed = false
       const nextBatches = previous.supply_batches.map((batch) => {
+        if (batch.is_locked) {
+          return batch
+        }
         const quantity = Number.parseFloat(batch.qty)
         const accepted = Number.parseFloat(batch.accepted_qty)
         const rejected = Number.parseFloat(batch.rejected_qty)
@@ -864,19 +938,29 @@ function Supplies() {
   }, [formData.supplier_id, filteredSupplierList])
 
   const getBatchProductOptions = useCallback(
-    (currentProductId: string) => {
+    (currentProductId: string, batchIndex: number) => {
+      const selectedByOtherBatches = new Set(
+        formData.supply_batches
+          .filter((_, idx) => idx !== batchIndex)
+          .map((batch) => batch.product_id)
+          .filter(Boolean),
+      )
+      const availableRawOptions = rawProductOptions.filter(
+        (option) => option.value === currentProductId || !selectedByOtherBatches.has(option.value),
+      )
+
       if (!currentProductId) {
-        return rawProductOptions
+        return availableRawOptions
       }
 
-      const existsInRawOptions = rawProductOptions.some((option) => option.value === currentProductId)
+      const existsInRawOptions = availableRawOptions.some((option) => option.value === currentProductId)
       if (existsInRawOptions) {
-        return rawProductOptions
+        return availableRawOptions
       }
 
       const fallbackProduct = products.find((product) => String(product.id) === currentProductId)
       if (!fallbackProduct) {
-        return rawProductOptions
+        return availableRawOptions
       }
 
       return [
@@ -884,14 +968,25 @@ function Supplies() {
           value: String(fallbackProduct.id),
           label: `${String(fallbackProduct.name)}${fallbackProduct.sku ? ` (${String(fallbackProduct.sku)})` : ''}`,
         },
-        ...rawProductOptions,
+        ...availableRawOptions,
       ]
     },
-    [products, rawProductOptions]
+    [products, rawProductOptions, formData.supply_batches]
   )
 
   const handleSupplyBatchChange = (index: number, field: keyof SupplyBatch, value: string) => {
     const next = [...formData.supply_batches]
+    if (!next[index] || next[index]!.is_locked) {
+      return
+    }
+    if (
+      field === 'product_id' &&
+      value &&
+      next.some((batch, idx) => idx !== index && batch.product_id === value)
+    ) {
+      toast.error('This raw material is already selected in another batch.')
+      return
+    }
     const incomingValue = field === 'accepted_qty' ? sanitiseAcceptedQuantityInput(value) : value
     if (next[index]) {
       next[index]![field] = incomingValue
@@ -957,12 +1052,29 @@ function Supplies() {
       ...prev,
       supply_batches: [
         ...prev.supply_batches,
-        { product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' },
+        {
+          batch_id: null,
+          supply_line_id: null,
+          lot_no: '',
+          is_locked: false,
+          product_id: '',
+          unit_id: '',
+          qty: '',
+          accepted_qty: '0',
+          rejected_qty: '0',
+          unit_price: '',
+          amount_paid: '',
+        },
       ],
     }))
   }
 
   const removeSupplyBatch = (index: number) => {
+    const targetBatch = formData.supply_batches[index]
+    if (targetBatch?.is_locked) {
+      toast.error('This lot has already started processing and cannot be edited.')
+      return
+    }
     setFormData((prev) => ({
       ...prev,
       supply_batches: prev.supply_batches.filter((_, i) => i !== index),
@@ -970,6 +1082,10 @@ function Supplies() {
   }
 
   const generateLotNumberPreview = (index: number): string => {
+    const currentBatch = formData.supply_batches[index]
+    if (currentBatch?.lot_no?.trim()) {
+      return currentBatch.lot_no.trim()
+    }
     const currentYear = new Date().getFullYear()
     const nextBatchNumber = supplyBatches.length + 1
     return `LOT-${currentYear}-${String(nextBatchNumber + index).padStart(3, '0')}`
@@ -1070,6 +1186,17 @@ function Supplies() {
           return false
         }
 
+        const productIds = formData.supply_batches
+          .map((batch) => (batch.product_id || '').trim())
+          .filter(Boolean)
+        const duplicateProductIds = productIds.filter(
+          (productId, idx) => productIds.indexOf(productId) !== idx
+        )
+        if (duplicateProductIds.length > 0) {
+          toast.error('Each raw material can only be used once in supply batches.')
+          return false
+        }
+
         let errorMessage = ''
         const invalidBatch = formData.supply_batches.find((batch) => {
           const quantity = Number.parseFloat(batch.qty)
@@ -1135,20 +1262,30 @@ function Supplies() {
   )
 
   const handleStepBack = () => {
-    setCurrentStep((previous) => Math.max(previous - 1, 0))
+    setCurrentStep((previous) => Math.max(previous - 1, minimumModalStepIndex))
+  }
+
+  const handleStepClick = (targetStep: number) => {
+    if (isSubmitting || !isEditingSupply) {
+      return
+    }
+    if (targetStep < minimumModalStepIndex || targetStep > lastModalStepIndex) {
+      return
+    }
+    setCurrentStep(targetStep)
   }
 
   const handleFormSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (currentStep < STEPS.length - 1) {
+    if (currentStep < lastModalStepIndex) {
       if (validateStep(currentStep)) {
-        setCurrentStep((previous) => Math.min(previous + 1, STEPS.length - 1))
+        setCurrentStep((previous) => Math.min(previous + 1, lastModalStepIndex))
       }
       return
     }
 
-    for (let step = 0; step < STEPS.length - 1; step += 1) {
+    for (let step = minimumModalStepIndex; step < lastModalStepIndex; step += 1) {
       if (!validateStep(step)) {
         setCurrentStep(step)
         return
@@ -1209,9 +1346,66 @@ function Supplies() {
       return
     }
 
+    const managedSupplyDocumentCodes = ['INVOICE', 'DRIVER_LICENSE', 'BATCH_NUMBER', 'PRODUCTION_DATE', 'EXPIRY_DATE']
+    const supplyDocumentTypeDefaults: Record<string, { name: string; is_required: boolean; allows_file_upload: boolean }> = {
+      INVOICE: { name: 'Invoice Number', is_required: true, allows_file_upload: true },
+      DRIVER_LICENSE: { name: 'Driver License/Name', is_required: true, allows_file_upload: false },
+      BATCH_NUMBER: { name: 'Supply Batch Number', is_required: true, allows_file_upload: false },
+      PRODUCTION_DATE: { name: 'Production Date', is_required: false, allows_file_upload: false },
+      EXPIRY_DATE: { name: 'Expiry Date', is_required: false, allows_file_upload: false },
+    }
+
+    const ensureSupplyDocumentTypes = async (codes: string[]): Promise<Set<string>> => {
+      const uniqueCodes = Array.from(new Set(codes.filter(Boolean)))
+      if (uniqueCodes.length === 0) {
+        return new Set()
+      }
+
+      const { data: existingTypes, error: existingTypesError } = await supabase
+        .from('supply_document_types')
+        .select('code')
+        .in('code', uniqueCodes)
+      if (existingTypesError) throw existingTypesError
+
+      const existingSet = new Set((existingTypes ?? []).map((row) => String(row.code)))
+      const missingCodes = uniqueCodes.filter((code) => !existingSet.has(code))
+
+      if (missingCodes.length > 0) {
+        const payload = missingCodes.map((code) => {
+          const defaults = supplyDocumentTypeDefaults[code] ?? {
+            name: code.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase()),
+            is_required: false,
+            allows_file_upload: false,
+          }
+          return {
+            code,
+            name: defaults.name,
+            is_required: defaults.is_required,
+            allows_file_upload: defaults.allows_file_upload,
+          }
+        })
+
+        const { error: upsertTypesError } = await supabase
+          .from('supply_document_types')
+          .upsert(payload, { onConflict: 'code' })
+        if (upsertTypesError) {
+          console.warn('Unable to auto-create supply document types. Falling back to existing configured types.', upsertTypesError)
+        }
+      }
+
+      const { data: refreshedTypes, error: refreshedTypesError } = await supabase
+        .from('supply_document_types')
+        .select('code')
+        .in('code', uniqueCodes)
+      if (refreshedTypesError) throw refreshedTypesError
+
+      return new Set((refreshedTypes ?? []).map((row) => String(row.code)))
+    }
+
     setIsSubmitting(true)
     try {
       if (editingSupplyId) {
+        let lockedLotsDetected = false
         const { error: updateSupplyError } = await supabase
           .from('supplies')
           .update({
@@ -1227,15 +1421,82 @@ function Supplies() {
           .eq('id', editingSupplyId)
         if (updateSupplyError) throw updateSupplyError
 
-        await supabase.from('supply_lines').delete().eq('supply_id', editingSupplyId)
-        const supplyLineRows = validLines.map((line) => {
+        const { data: existingBatchesData, error: existingBatchesError } = await supabase
+          .from('supply_batches')
+          .select('id, supply_line_id')
+          .eq('supply_id', editingSupplyId)
+        if (existingBatchesError) throw existingBatchesError
+
+        const existingBatchRows = (existingBatchesData ?? []) as Array<{ id: number; supply_line_id: number | null }>
+        const existingBatchIds = existingBatchRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id))
+        const existingBatchIdSet = new Set(existingBatchIds)
+        const existingBatchById = new Map(existingBatchRows.map((row) => [row.id, row]))
+
+        const lockedBatchIds = new Set<number>()
+        if (existingBatchIds.length > 0) {
+          const { data: linkedRuns, error: linkedRunsError } = await supabase
+            .from('process_lot_runs')
+            .select('supply_batch_id')
+            .in('supply_batch_id', existingBatchIds)
+          if (linkedRunsError) throw linkedRunsError
+          ;(linkedRuns ?? []).forEach((row) => {
+            const batchId = Number((row as { supply_batch_id: number | null }).supply_batch_id)
+            if (Number.isFinite(batchId)) {
+              lockedBatchIds.add(batchId)
+            }
+          })
+        }
+
+        const editableValidLines = formData.supply_batches
+          .filter((batch) => {
+            if (batch.batch_id && lockedBatchIds.has(batch.batch_id)) {
+              lockedLotsDetected = true
+              return false
+            }
+            return !batch.is_locked
+          })
+          .map((batch) => ({
+            ...batch,
+            qty: batch.qty?.trim() ?? '',
+            accepted_qty: batch.accepted_qty?.trim() ?? '',
+          }))
+          .filter((batch) => batch.product_id && batch.unit_id && batch.qty)
+
+        const rowsToDelete = existingBatchRows.filter(
+          (row) =>
+            !lockedBatchIds.has(row.id) &&
+            !formData.supply_batches.some((batch) => Number(batch.batch_id) === row.id),
+        )
+        const batchIdsToDelete = rowsToDelete.map((row) => row.id)
+        if (batchIdsToDelete.length > 0) {
+          const { error: deleteEditableBatchesError } = await supabase
+            .from('supply_batches')
+            .delete()
+            .in('id', batchIdsToDelete)
+          if (deleteEditableBatchesError) throw deleteEditableBatchesError
+
+          const lineIdsToDelete = rowsToDelete
+            .map((row) => Number(row.supply_line_id))
+            .filter((id) => Number.isFinite(id)) as number[]
+          if (lineIdsToDelete.length > 0) {
+            const { error: deleteEditableLinesError } = await supabase
+              .from('supply_lines')
+              .delete()
+              .in('id', lineIdsToDelete)
+            if (deleteEditableLinesError) throw deleteEditableLinesError
+          }
+        }
+
+        for (let index = 0; index < editableValidLines.length; index += 1) {
+          const line = editableValidLines[index]!
           const quantity = Number.parseFloat(line.qty) || 0
           const acceptedRaw = Number.parseFloat(line.accepted_qty)
           const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
           const rejectedQty = Math.max(quantity - acceptedQty, 0)
           const unitPriceRaw = line.unit_price?.trim()
           const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
-          return {
+
+          const linePayload = {
             supply_id: editingSupplyId,
             product_id: parseInt(line.product_id, 10),
             unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
@@ -1246,41 +1507,66 @@ function Supplies() {
             variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
             unit_price: unitPrice,
           }
-        })
-        const { data: linesData, error: linesError } = await supabase
-          .from('supply_lines')
-          .insert(supplyLineRows)
-          .select('id')
-        if (linesError) throw linesError
-        const insertedLines = linesData ?? []
 
-        await supabase.from('supply_batches').delete().eq('supply_id', editingSupplyId)
-        const supplyBatchRows = validLines.map((line, index) => {
-          const quantity = Number.parseFloat(line.qty) || 0
-          const acceptedRaw = Number.parseFloat(line.accepted_qty)
-          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
-          const rejectedQty = Math.max(quantity - acceptedQty, 0)
-          const lotNumber = `LOT-${editingSupplyId}-${String(index + 1).padStart(3, '0')}`
+          let targetLineId = line.supply_line_id ?? null
+          const existingBatchId = Number(line.batch_id)
+          const hasExistingBatch = Number.isFinite(existingBatchId) && existingBatchIdSet.has(existingBatchId)
+          if (hasExistingBatch && lockedBatchIds.has(existingBatchId)) {
+            lockedLotsDetected = true
+            continue
+          }
+
+          if (targetLineId && Number.isFinite(targetLineId)) {
+            const { error: updateLineError } = await supabase
+              .from('supply_lines')
+              .update(linePayload)
+              .eq('id', targetLineId)
+              .eq('supply_id', editingSupplyId)
+            if (updateLineError) throw updateLineError
+          } else {
+            const { data: insertedLine, error: insertLineError } = await supabase
+              .from('supply_lines')
+              .insert(linePayload)
+              .select('id')
+              .single()
+            if (insertLineError) throw insertLineError
+            targetLineId = insertedLine.id as number
+          }
+
           const batchQualityStatus = rejectedQty === 0 ? 'PASSED' : acceptedQty === 0 ? 'FAILED' : 'HOLD'
-          return {
+          const batchPayload = {
             supply_id: editingSupplyId,
-            supply_line_id: insertedLines[index]?.id ?? null,
+            supply_line_id: targetLineId,
             product_id: parseInt(line.product_id, 10),
             unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
-            lot_no: lotNumber,
             received_qty: quantity,
             accepted_qty: acceptedQty,
             rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
             current_qty: acceptedQty,
             quality_status: batchQualityStatus,
             expiry_date: null,
-            created_at: nowISO,
           }
-        })
-        const { error: batchesError } = await supabase.from('supply_batches').insert(supplyBatchRows)
-        if (batchesError) throw batchesError
 
-        await supabase.from('supply_documents').delete().eq('supply_id', editingSupplyId)
+          if (hasExistingBatch) {
+            const { error: updateBatchError } = await supabase
+              .from('supply_batches')
+              .update(batchPayload)
+              .eq('id', existingBatchId)
+              .eq('supply_id', editingSupplyId)
+            if (updateBatchError) throw updateBatchError
+          } else {
+            const lotNumber = line.lot_no?.trim()
+              ? line.lot_no.trim()
+              : `LOT-${editingSupplyId}-${String(existingBatchRows.length + index + 1).padStart(3, '0')}`
+            const { error: insertBatchError } = await supabase.from('supply_batches').insert({
+              ...batchPayload,
+              lot_no: lotNumber,
+              created_at: nowISO,
+            })
+            if (insertBatchError) throw insertBatchError
+          }
+        }
+
         const supplyDocumentsPayload: { supply_id: number; document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null; document_id: number | null }[] = []
         if (supplyDocuments.invoiceNumber) {
           supplyDocumentsPayload.push({
@@ -1332,9 +1618,29 @@ function Supplies() {
             document_id: null,
           })
         }
-        if (supplyDocumentsPayload.length > 0) {
-          const { error: documentsError } = await supabase.from('supply_documents').insert(supplyDocumentsPayload)
+        const availableDocumentTypes = await ensureSupplyDocumentTypes(
+          supplyDocumentsPayload.map((row) => row.document_type_code),
+        )
+        const filteredDocumentsPayload = supplyDocumentsPayload.filter((row) =>
+          availableDocumentTypes.has(row.document_type_code),
+        )
+        const suppliedCodes = new Set(filteredDocumentsPayload.map((row) => row.document_type_code))
+        const staleCodes = managedSupplyDocumentCodes.filter((code) => !suppliedCodes.has(code))
+        if (staleCodes.length > 0) {
+          const { error: deleteStaleDocsError } = await supabase
+            .from('supply_documents')
+            .delete()
+            .eq('supply_id', editingSupplyId)
+            .in('document_type_code', staleCodes)
+          if (deleteStaleDocsError) throw deleteStaleDocsError
+        }
+        if (filteredDocumentsPayload.length > 0) {
+          const { error: documentsError } = await supabase
+            .from('supply_documents')
+            .upsert(filteredDocumentsPayload, { onConflict: 'supply_id,document_type_code' })
           if (documentsError) throw documentsError
+        } else if (supplyDocumentsPayload.length > 0) {
+          throw new Error('Supply document types are not configured. Please configure supply document types in settings.')
         }
 
         if (vehicleInspection.vehicleClean && vehicleInspection.noForeignObjects && vehicleInspection.noPestInfestation) {
@@ -1378,19 +1684,64 @@ function Supplies() {
         }
         if (packagingCheckId && packagingQuality.inaccurateLabelling && packagingQuality.visibleDamage && packagingQuality.specifiedQuantity && packagingQuality.odor && packagingQuality.strengthIntegrity) {
           if (existingPackaging?.id) {
-            await supabase.from('supply_packaging_quality_check_items').delete().eq('packaging_check_id', existingPackaging.id)
+            const { error: deletePackagingItemsError } = await supabase
+              .from('supply_packaging_quality_check_items')
+              .delete()
+              .eq('packaging_check_id', existingPackaging.id)
+            if (deletePackagingItemsError) {
+              throw deletePackagingItemsError
+            }
           }
-          const { data: packagingParams } = await supabase.from('packaging_quality_parameters').select('id, code')
-          const map = new Map((packagingParams ?? []).map((p: { id: number; code: string }) => [p.code, p.id]))
+          const { data: packagingParams, error: packagingParamsError } = await supabase
+            .from('packaging_quality_parameters')
+            .select('id, code, name')
+          if (packagingParamsError) {
+            throw packagingParamsError
+          }
+          const map = new Map<string, number>()
+          ;(packagingParams ?? []).forEach((p: { id: number; code: string | null; name?: string | null }) => {
+            map.set(normalizePackagingParameterCode(p.code), p.id)
+            map.set(normalizePackagingParameterCode(p.name), p.id)
+          })
           const packagingItemsPayload = [
-            { packaging_check_id: packagingCheckId, parameter_id: map.get('INACCURATE_LABELLING'), value: packagingQuality.inaccurateLabelling, numeric_value: null },
-            { packaging_check_id: packagingCheckId, parameter_id: map.get('VISIBLE_DAMAGE'), value: packagingQuality.visibleDamage, numeric_value: null },
-            { packaging_check_id: packagingCheckId, parameter_id: map.get('SPECIFIED_QUANTITY'), value: null, numeric_value: Number.parseFloat(packagingQuality.specifiedQuantity) || null },
-            { packaging_check_id: packagingCheckId, parameter_id: map.get('ODOR'), value: packagingQuality.odor, numeric_value: null },
-            { packaging_check_id: packagingCheckId, parameter_id: map.get('STRENGTH_INTEGRITY'), value: packagingQuality.strengthIntegrity, numeric_value: null },
+            {
+              packaging_check_id: packagingCheckId,
+              parameter_id: resolvePackagingParameterId(map, 'INACCURATE_LABELLING'),
+              value: packagingQuality.inaccurateLabelling,
+              numeric_value: null,
+            },
+            {
+              packaging_check_id: packagingCheckId,
+              parameter_id: resolvePackagingParameterId(map, 'VISIBLE_DAMAGE'),
+              value: packagingQuality.visibleDamage,
+              numeric_value: null,
+            },
+            {
+              packaging_check_id: packagingCheckId,
+              parameter_id: resolvePackagingParameterId(map, 'SPECIFIED_QUANTITY', 'SPECIFIED_QUANTITY_UNITS'),
+              value: null,
+              numeric_value: parseNullableNumber(packagingQuality.specifiedQuantity),
+            },
+            {
+              packaging_check_id: packagingCheckId,
+              parameter_id: resolvePackagingParameterId(map, 'ODOR', 'ODOUR'),
+              value: packagingQuality.odor,
+              numeric_value: null,
+            },
+            {
+              packaging_check_id: packagingCheckId,
+              parameter_id: resolvePackagingParameterId(map, 'STRENGTH_INTEGRITY'),
+              value: packagingQuality.strengthIntegrity,
+              numeric_value: null,
+            },
           ].filter((i) => i.parameter_id != null)
           if (packagingItemsPayload.length > 0) {
-            await supabase.from('supply_packaging_quality_check_items').insert(packagingItemsPayload)
+            const { error: packagingItemsError } = await supabase
+              .from('supply_packaging_quality_check_items')
+              .insert(packagingItemsPayload)
+            if (packagingItemsError) {
+              throw packagingItemsError
+            }
           }
         }
 
@@ -1466,7 +1817,11 @@ function Supplies() {
           }
         }
 
-        toast.success('Supply updated successfully.')
+        if (lockedLotsDetected) {
+          toast.success('Supply updated. Lots that already started processing were locked and left unchanged.')
+        } else {
+          toast.success('Supply updated successfully.')
+        }
         setEditingSupplyId(null)
         setEditLoadDone(false)
         closeModal()
@@ -1745,13 +2100,21 @@ function Supplies() {
       }
 
       // COA available
-      if (supplyDocumentsPayload.length > 0) {
+      const availableDocumentTypes = await ensureSupplyDocumentTypes(
+        supplyDocumentsPayload.map((row) => String((row as { document_type_code: unknown }).document_type_code ?? '')),
+      )
+      const filteredDocumentsPayload = supplyDocumentsPayload.filter((row) =>
+        availableDocumentTypes.has(String((row as { document_type_code: unknown }).document_type_code ?? '')),
+      )
+      if (filteredDocumentsPayload.length > 0) {
         const { error: documentsError } = await supabase
           .from('supply_documents')
-          .insert(supplyDocumentsPayload)
+          .insert(filteredDocumentsPayload)
         if (documentsError) {
           throw documentsError
         }
+      } else if (supplyDocumentsPayload.length > 0) {
+        throw new Error('Supply document types are not configured. Please configure supply document types in settings.')
       }
 
       // Save vehicle inspection
@@ -1798,44 +2161,46 @@ function Supplies() {
         // Get packaging parameter IDs
         const { data: packagingParams, error: paramsError } = await supabase
           .from('packaging_quality_parameters')
-          .select('id, code')
+          .select('id, code, name')
         
         if (paramsError) {
           throw paramsError
         }
 
-        const packagingParamsMap = new Map(
-          (packagingParams || []).map((p) => [p.code, p.id])
-        )
+        const packagingParamsMap = new Map<string, number>()
+        ;(packagingParams || []).forEach((p: { id: number; code: string | null; name?: string | null }) => {
+          packagingParamsMap.set(normalizePackagingParameterCode(p.code), p.id)
+          packagingParamsMap.set(normalizePackagingParameterCode(p.name), p.id)
+        })
 
         const packagingItemsPayload = [
           {
             packaging_check_id: packagingCheckId,
-            parameter_id: packagingParamsMap.get('INACCURATE_LABELLING'),
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'INACCURATE_LABELLING'),
             value: packagingQuality.inaccurateLabelling,
             numeric_value: null,
           },
           {
             packaging_check_id: packagingCheckId,
-            parameter_id: packagingParamsMap.get('VISIBLE_DAMAGE'),
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'VISIBLE_DAMAGE'),
             value: packagingQuality.visibleDamage,
             numeric_value: null,
           },
           {
             packaging_check_id: packagingCheckId,
-            parameter_id: packagingParamsMap.get('SPECIFIED_QUANTITY'),
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'SPECIFIED_QUANTITY', 'SPECIFIED_QUANTITY_UNITS'),
             value: null,
-            numeric_value: Number.parseFloat(packagingQuality.specifiedQuantity) || null,
+            numeric_value: parseNullableNumber(packagingQuality.specifiedQuantity),
           },
           {
             packaging_check_id: packagingCheckId,
-            parameter_id: packagingParamsMap.get('ODOR'),
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'ODOR', 'ODOUR'),
             value: packagingQuality.odor,
             numeric_value: null,
           },
           {
             packaging_check_id: packagingCheckId,
-            parameter_id: packagingParamsMap.get('STRENGTH_INTEGRITY'),
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'STRENGTH_INTEGRITY'),
             value: packagingQuality.strengthIntegrity,
             numeric_value: null,
           },
@@ -2036,6 +2401,7 @@ function Supplies() {
         const [
           { data: supplyData, error: supplyError },
           { data: linesData, error: linesError },
+          { data: batchesData, error: batchesError },
           { data: docsData },
           { data: vehicleData },
           { data: packagingChecksData },
@@ -2046,6 +2412,7 @@ function Supplies() {
         ] = await Promise.all([
           supabase.from('supplies').select('*').eq('id', supplyId).single(),
           supabase.from('supply_lines').select('*').eq('supply_id', supplyId),
+          supabase.from('supply_batches').select('*').eq('supply_id', supplyId),
           supabase.from('supply_documents').select('*').eq('supply_id', supplyId),
           supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId).maybeSingle(),
           supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId).maybeSingle(),
@@ -2056,16 +2423,52 @@ function Supplies() {
         ])
         if (supplyError || !supplyData) throw supplyError ?? new Error('Supply not found')
         if (linesError) throw linesError
+        if (batchesError) throw batchesError
         const supply = supplyData as Record<string, unknown>
-        const lines = (linesData ?? []) as { product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }[]
+        const lines = (linesData ?? []) as { id?: number; product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }[]
+        const lineById = new Map<number, { id?: number; product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }>(
+          lines
+            .filter((line) => Number.isFinite(Number(line.id)))
+            .map((line) => [Number(line.id), line]),
+        )
+        const batches = (batchesData ?? []) as Array<{
+          id: number
+          supply_line_id: number | null
+          lot_no?: string | null
+          product_id: number
+          unit_id: number | null
+          received_qty?: number
+          accepted_qty?: number
+          rejected_qty?: number
+        }>
+        const batchIds = batches.map((batch) => Number(batch.id)).filter((id) => Number.isFinite(id))
+        const lockedBatchIds = new Set<number>()
+        if (batchIds.length > 0) {
+          const { data: linkedRuns, error: linkedRunsError } = await supabase
+            .from('process_lot_runs')
+            .select('supply_batch_id')
+            .in('supply_batch_id', batchIds)
+          if (linkedRunsError) throw linkedRunsError
+          ;(linkedRuns ?? []).forEach((row) => {
+            const batchId = Number((row as { supply_batch_id: number | null }).supply_batch_id)
+            if (Number.isFinite(batchId)) {
+              lockedBatchIds.add(batchId)
+            }
+          })
+        }
         const docs = (docsData ?? []) as { document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null }[]
         const vehicle = vehicleData as Record<string, unknown> | null
         const packagingCheck = packagingChecksData?.[0] ?? null
         const packagingItems = (packagingItemsData ?? []).filter(
           (i: { packaging_check_id?: number }) => packagingCheck && i.packaging_check_id === (packagingCheck as { id: number }).id,
         ) as { parameter_id: number; value: string | null; numeric_value: number | null }[]
-        const { data: packagingParamsData } = await supabase.from('packaging_quality_parameters').select('id, code')
-        const packagingParamMap = new Map((packagingParamsData ?? []).map((p: { id: number; code: string }) => [p.id, p.code]))
+        const { data: packagingParamsData } = await supabase
+          .from('packaging_quality_parameters')
+          .select('id, code, name')
+        const packagingParamMap = new Map<number, string>()
+        ;(packagingParamsData ?? []).forEach((p: { id: number; code: string | null; name?: string | null }) => {
+          packagingParamMap.set(p.id, normalizePackagingParameterCode(p.code || p.name))
+        })
         const qualityCheck = qualityChecksData?.[0] ?? null
         const qualityItems = (qualityItemsData ?? []).filter(
           (i: { quality_check_id?: number }) => qualityCheck && i.quality_check_id === (qualityCheck as { id: number }).id,
@@ -2082,12 +2485,36 @@ function Supplies() {
           received_by: currentUserName,
           doc_status: String(supply.doc_status ?? STATUS_OPTIONS[0]),
           supply_batches:
-            lines.length > 0
+            batches.length > 0
+              ? batches.map((batch) => {
+                  const linkedLine = batch.supply_line_id != null ? lineById.get(Number(batch.supply_line_id)) : null
+                  const received = Number(batch.received_qty ?? linkedLine?.received_qty ?? linkedLine?.ordered_qty ?? 0)
+                  const accepted = Number(batch.accepted_qty ?? linkedLine?.accepted_qty ?? 0)
+                  const rejected = Number(batch.rejected_qty ?? linkedLine?.rejected_qty ?? received - accepted)
+                  return {
+                    batch_id: Number(batch.id),
+                    supply_line_id: batch.supply_line_id != null ? Number(batch.supply_line_id) : null,
+                    lot_no: String(batch.lot_no ?? ''),
+                    is_locked: lockedBatchIds.has(Number(batch.id)),
+                    product_id: String(batch.product_id),
+                    unit_id: batch.unit_id != null ? String(batch.unit_id) : '',
+                    qty: String(received),
+                    accepted_qty: String(accepted),
+                    rejected_qty: String(rejected >= 0 ? rejected : 0),
+                    unit_price: linkedLine?.unit_price != null ? String(linkedLine.unit_price) : '',
+                    amount_paid: '',
+                  }
+                })
+              : lines.length > 0
               ? lines.map((l) => {
                   const received = Number(l.received_qty ?? l.ordered_qty ?? 0)
                   const accepted = Number(l.accepted_qty ?? 0)
                   const rejected = Number(l.rejected_qty ?? received - accepted)
                   return {
+                    batch_id: null,
+                    supply_line_id: Number.isFinite(Number(l.id)) ? Number(l.id) : null,
+                    lot_no: '',
+                    is_locked: false,
                     product_id: String(l.product_id),
                     unit_id: l.unit_id != null ? String(l.unit_id) : '',
                     qty: String(received),
@@ -2097,7 +2524,21 @@ function Supplies() {
                     amount_paid: '',
                   }
                 })
-              : [{ product_id: '', unit_id: '', qty: '', accepted_qty: '0', rejected_qty: '0', unit_price: '', amount_paid: '' }],
+              : [
+                  {
+                    batch_id: null,
+                    supply_line_id: null,
+                    lot_no: '',
+                    is_locked: false,
+                    product_id: '',
+                    unit_id: '',
+                    qty: '',
+                    accepted_qty: '0',
+                    rejected_qty: '0',
+                    unit_price: '',
+                    amount_paid: '',
+                  },
+                ],
         })
         const invDoc = getDoc('INVOICE')
         const driverDoc = getDoc('DRIVER_LICENSE')
@@ -2122,12 +2563,14 @@ function Supplies() {
           INACCURATE_LABELLING: 'inaccurateLabelling',
           VISIBLE_DAMAGE: 'visibleDamage',
           SPECIFIED_QUANTITY: 'specifiedQuantity',
+          SPECIFIED_QUANTITY_UNITS: 'specifiedQuantity',
           ODOR: 'odor',
+          ODOUR: 'odor',
           STRENGTH_INTEGRITY: 'strengthIntegrity',
         }
         const packagingMap: Record<string, string> = {}
         packagingItems.forEach((item) => {
-          const code = packagingParamMap.get(item.parameter_id) ?? ''
+          const code = normalizePackagingParameterCode(packagingParamMap.get(item.parameter_id))
           const key = paramByCode[code]
           if (key) {
             packagingMap[key] = item.value ?? (item.numeric_value != null ? String(item.numeric_value) : '')
@@ -2177,6 +2620,8 @@ function Supplies() {
   }, [isModalOpen, editingSupplyId, loadingData, editLoadDone, loadSupplyForEdit])
 
   const closeModal = () => {
+    const shouldReturnToDetail = Boolean(routeSupplyId && location.pathname.endsWith('/edit'))
+    const returnSupplyId = routeSupplyId
     setIsModalOpen(false)
     setEditingSupplyId(null)
     setEditLoadDone(false)
@@ -2211,6 +2656,9 @@ function Supplies() {
       remarks: '',
     })
     setCurrentStep(0)
+    if (shouldReturnToDetail && returnSupplyId) {
+      navigate(`/supplies/${returnSupplyId}`, { replace: true })
+    }
   }
 
   const handleRowClick = (supply: Supply) => {
@@ -2325,6 +2773,17 @@ function Supplies() {
     setCurrentStep(0)
     setIsModalOpen(true)
   }, [getInitialFormData, warehouses, qualityParameters])
+
+  const modalSteps = useMemo(() => {
+    if (!isEditingSupply) {
+      return STEPS.map((label, index) => ({ label, stepIndex: index }))
+    }
+    return STEPS.slice(1, 7).map((label, index) => ({ label, stepIndex: index + 1 }))
+  }, [isEditingSupply])
+  const minimumModalStepIndex = isEditingSupply ? 1 : 0
+  const lastModalStepIndex =
+    modalSteps.length > 0 ? modalSteps[modalSteps.length - 1]!.stepIndex : minimumModalStepIndex
+  const isLastStep = currentStep === lastModalStepIndex
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
@@ -2546,9 +3005,28 @@ function Supplies() {
       setEditingSupplyId(editId)
       setIsModalOpen(true)
       setEditLoadDone(false)
+      setCurrentStep(1)
       navigate(location.pathname, { replace: true, state: {} })
     }
   }, [location.state, location.pathname, navigate])
+
+  // Direct edit route: /supplies/:supplyId/edit
+  useEffect(() => {
+    if (loadingData || !routeSupplyId || !location.pathname.endsWith('/edit')) {
+      return
+    }
+    const routeEditId = Number.parseInt(routeSupplyId, 10)
+    if (!Number.isFinite(routeEditId)) {
+      return
+    }
+    if (isModalOpen && editingSupplyId === routeEditId) {
+      return
+    }
+    setEditingSupplyId(routeEditId)
+    setIsModalOpen(true)
+    setEditLoadDone(false)
+    setCurrentStep(1)
+  }, [routeSupplyId, location.pathname, loadingData, isModalOpen, editingSupplyId])
 
   // Fetch supplier COA status only when on the documents step (step 2). Avoid synchronous setState to prevent extra render.
   useEffect(() => {
@@ -2601,7 +3079,7 @@ function Supplies() {
     }
   }, [currentStep, formData.supplier_id])
 
-  if (loadingData) {
+  if (loadingData && !isDirectEditRoute) {
     return (
       <PageLayout
         title="Supplies"
@@ -2613,83 +3091,105 @@ function Supplies() {
     )
   }
 
-  return (
-    <>
+  if (isDirectEditRoute && !isModalOpen) {
+    if (modalOnly) {
+      return (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/20">
+          <div className="rounded-xl border border-olive-light/40 bg-white px-6 py-4 shadow-lg">
+            <Spinner text="Opening supply editor..." />
+          </div>
+        </div>
+      )
+    }
+    return (
       <PageLayout
-        title="Supplies"
+        title="Edit Supply"
         activeItem="supplies"
-        actions={
-          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-            <Plus className="mr-2 h-4 w-4" />
-            New Supply
-          </Button>
-        }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
       >
-        <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Card className="border-olive-light/30">
-              <CardHeader className="pb-2">
-                <CardDescription>Total records</CardDescription>
-                <CardTitle className="text-2xl font-semibold text-text-dark">
-                  {filteredSupplies.length}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card className="border-olive-light/30">
-              <CardHeader className="pb-2">
-                <CardDescription>Accepted quantity</CardDescription>
-                <CardTitle className="text-2xl font-semibold text-text-dark">
-                  {totalAcceptedKg.toLocaleString(undefined, { maximumFractionDigits: 2 })} kg
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card className="border-olive-light/30">
-              <CardHeader className="pb-2">
-                <CardDescription>Pending quality</CardDescription>
-                <CardTitle className="text-2xl font-semibold text-text-dark">
-                  {pendingQualityKg.toLocaleString(undefined, { maximumFractionDigits: 2 })} kg
-                </CardTitle>
-              </CardHeader>
-            </Card>
-          </div>
+        <Spinner text="Opening supply editor..." />
+      </PageLayout>
+    )
+  }
 
-          <Card className="bg-white border-olive-light/30">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Supplies</CardTitle>
-              <CardDescription>
-                Track inbound receipts. Click a record to open the detailed supply page.
-              </CardDescription>
-            </CardHeader>
-            <div className="border-b border-olive-light/40">
-              <nav className="flex gap-0 px-6" aria-label="Supply category tabs">
-                <button
-                  type="button"
-                  onClick={() => setActiveSupplyTab('product')}
-                  className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
-                    activeSupplyTab === 'product'
-                      ? 'border-olive text-olive-dark text-text-dark'
-                      : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
-                  }`}
-                >
-                  <Package className="h-4 w-4" />
-                  Product Suppliers
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveSupplyTab('operational')}
-                  className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
-                    activeSupplyTab === 'operational'
-                      ? 'border-olive text-olive-dark text-text-dark'
-                      : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
-                  }`}
-                >
-                  <Briefcase className="h-4 w-4" />
-                  Operational Suppliers
-                </button>
-              </nav>
+  return (
+    <>
+      {!isDirectEditRoute && (
+        <PageLayout
+          title="Supplies"
+          activeItem="supplies"
+          actions={
+            <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
+              <Plus className="mr-2 h-4 w-4" />
+              New Supply
+            </Button>
+          }
+          contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+        >
+          <div className="space-y-6">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Card className="border-olive-light/30">
+                <CardHeader className="pb-2">
+                  <CardDescription>Total records</CardDescription>
+                  <CardTitle className="text-2xl font-semibold text-text-dark">
+                    {filteredSupplies.length}
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card className="border-olive-light/30">
+                <CardHeader className="pb-2">
+                  <CardDescription>Accepted quantity</CardDescription>
+                  <CardTitle className="text-2xl font-semibold text-text-dark">
+                    {totalAcceptedKg.toLocaleString(undefined, { maximumFractionDigits: 2 })} kg
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card className="border-olive-light/30">
+                <CardHeader className="pb-2">
+                  <CardDescription>Pending quality</CardDescription>
+                  <CardTitle className="text-2xl font-semibold text-text-dark">
+                    {pendingQualityKg.toLocaleString(undefined, { maximumFractionDigits: 2 })} kg
+                  </CardTitle>
+                </CardHeader>
+              </Card>
             </div>
-            <CardContent className="space-y-6">
+
+            <Card className="bg-white border-olive-light/30">
+              <CardHeader>
+                <CardTitle className="text-text-dark">Supplies</CardTitle>
+                <CardDescription>
+                  Track inbound receipts. Click a record to open the detailed supply page.
+                </CardDescription>
+              </CardHeader>
+              <div className="border-b border-olive-light/40">
+                <nav className="flex gap-0 px-6" aria-label="Supply category tabs">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSupplyTab('product')}
+                    className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                      activeSupplyTab === 'product'
+                        ? 'border-olive text-olive-dark text-text-dark'
+                        : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+                    }`}
+                  >
+                    <Package className="h-4 w-4" />
+                    Product Suppliers
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSupplyTab('operational')}
+                    className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                      activeSupplyTab === 'operational'
+                        ? 'border-olive text-olive-dark text-text-dark'
+                        : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+                    }`}
+                  >
+                    <Briefcase className="h-4 w-4" />
+                    Operational Suppliers
+                  </button>
+                </nav>
+              </div>
+              <CardContent className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="lg:col-span-2">
                   <Label htmlFor="supply-search">Search supplies</Label>
@@ -2853,10 +3353,11 @@ function Supplies() {
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
-      </PageLayout>
+              </CardContent>
+            </Card>
+          </div>
+        </PageLayout>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 sm:p-6">
@@ -2882,13 +3383,16 @@ function Supplies() {
 
             <div className="border-b border-olive-light/20 bg-olive-light/10 px-5 py-4 sm:px-6">
               <ol className="flex flex-wrap gap-3">
-                {STEPS.map((label, index) => {
-                  const isActive = index === currentStep
-                  const isComplete = index < currentStep
+                {modalSteps.map(({ label, stepIndex }, index) => {
+                  const isActive = stepIndex === currentStep
+                  const isComplete = stepIndex < currentStep
                   return (
                     <li key={label} className="flex items-center gap-2 text-sm">
-                      <span
-                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${
+                      <button
+                        type="button"
+                        onClick={() => handleStepClick(stepIndex)}
+                        disabled={isSubmitting || !isEditingSupply}
+                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold transition ${
                           isActive
                             ? 'bg-olive text-white'
                             : isComplete
@@ -2897,23 +3401,43 @@ function Supplies() {
                         }`}
                       >
                         {index + 1}
-                      </span>
-                      <span
-                        className={`font-medium ${
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleStepClick(stepIndex)}
+                        disabled={isSubmitting || !isEditingSupply}
+                        className={`font-medium transition ${
                           isActive ? 'text-text-dark' : 'text-text-dark/60'
                         }`}
                       >
                         {label}
-                      </span>
+                      </button>
                     </li>
                   )
                 })}
               </ol>
             </div>
 
+            {!editLoadDone && isEditingSupply ? (
+              <div className="flex min-h-[18rem] items-center justify-center p-6">
+                <Spinner text="Loading supply details..." />
+              </div>
+            ) : (
             <form ref={formScrollRef} onSubmit={handleFormSubmit} className="flex-1 overflow-y-auto">
               <div className="space-y-6 p-5 sm:p-6 lg:p-8">
-                {currentStep === 0 && (
+                {isEditingSupply && (
+                  <section className={sectionCardClass}>
+                    <h3 className="text-lg font-semibold text-text-dark">Supply category</h3>
+                    <p className="mt-1 text-sm text-text-dark/70">
+                      Category is locked during edit to keep data consistency.
+                    </p>
+                    <div className="mt-4 inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1.5 text-sm font-medium text-text-dark">
+                      {formData.category_code === 'SERVICE' ? 'Operational Supplier' : 'Product Supplier'}
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 0 && !isEditingSupply && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Supplier category</h3>
@@ -3273,6 +3797,11 @@ function Supplies() {
                                     {generateLotNumberPreview(index)}
                                   </span>
                                 </p>
+                                {batch.is_locked ? (
+                                  <p className="mt-2 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                                    Processing started: lot locked
+                                  </p>
+                                ) : null}
                               </div>
                               {formData.supply_batches.length > 1 && (
                                 <Button
@@ -3281,7 +3810,7 @@ function Supplies() {
                                   size="sm"
                                   className="text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
                                   onClick={() => removeSupplyBatch(index)}
-                                  disabled={isSubmitting}
+                                  disabled={isSubmitting || batch.is_locked}
                                 >
                                   Remove
                                 </Button>
@@ -3291,16 +3820,13 @@ function Supplies() {
                             <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-5">
                                 <Label htmlFor={`product_${index}`}>Product (Raw Materials Only) *</Label>
-                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
-                                  The same product can be selected in multiple batches.
-                                </p>
                                 <SearchableSelect
                                   id={`product_${index}`}
-                                  options={getBatchProductOptions(batch.product_id)}
+                                  options={getBatchProductOptions(batch.product_id, index)}
                                   value={batch.product_id}
                                   onChange={(value) => handleSupplyBatchChange(index, 'product_id', value)}
                                   placeholder="Select raw product"
-                                  disabled={isSubmitting || rawProducts.length === 0}
+                                  disabled={isSubmitting || rawProducts.length === 0 || batch.is_locked}
                                   required
                                   emptyMessage="No raw products available"
                                 />
@@ -3315,7 +3841,7 @@ function Supplies() {
                                   onChange={(event) =>
                                     handleSupplyBatchChange(index, 'unit_id', event.target.value)
                                   }
-                                  disabled={isSubmitting || units.length === 0}
+                                  disabled={isSubmitting || units.length === 0 || batch.is_locked}
                                 >
                                   <option value="">Select unit</option>
                                   {units.map((unit) => (
@@ -3340,6 +3866,7 @@ function Supplies() {
                                   }
                                   placeholder="e.g. 120"
                                   className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
                                 />
                               </div>
                             </div>
@@ -3358,6 +3885,7 @@ function Supplies() {
                                   }
                                   placeholder="e.g. 110"
                                   className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
                                 />
                               </div>
                               <div className="space-y-2 lg:col-span-6">
@@ -3389,6 +3917,7 @@ function Supplies() {
                                   }
                                   placeholder="e.g. 12.50"
                                   className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
                                 />
                                 <p className="text-xs text-text-dark/60 dark:text-slate-400">
                                   Price per unit for this line; used for payment tracking.
@@ -3407,6 +3936,7 @@ function Supplies() {
                                   }
                                   placeholder="e.g. 0.00"
                                   className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
                                 />
                                 <p className="text-xs text-text-dark/60 dark:text-slate-400">
                                   Payment amount for this batch. Visible on the Payments page.
@@ -3505,7 +4035,7 @@ function Supplies() {
                   Cancel
                 </Button>
                 <div className="flex items-center gap-2">
-                  {currentStep > 0 && (
+                  {currentStep > minimumModalStepIndex && (
                     <Button
                       type="button"
                       variant="outline"
@@ -3519,19 +4049,22 @@ function Supplies() {
                   <Button
                     type="submit"
                     className="bg-olive hover:bg-olive-dark disabled:cursor-not-allowed disabled:bg-olive-light/60"
-                    disabled={isSubmitting || (currentStep === 0 && formData.category_code === 'SERVICE')}
+                    disabled={isSubmitting || (!isEditingSupply && currentStep === 0 && formData.category_code === 'SERVICE')}
                   >
                     {isSubmitting
                       ? 'Saving…'
-                      : currentStep === 0 && formData.category_code === 'SERVICE'
+                      : !isEditingSupply && currentStep === 0 && formData.category_code === 'SERVICE'
                       ? 'Operational Form Coming Soon'
                       : isLastStep
-                      ? 'Submit Supply'
+                      ? isEditingSupply
+                        ? 'Save Changes'
+                        : 'Submit Supply'
                       : 'Next'}
                   </Button>
                 </div>
               </div>
             </form>
+            )}
           </div>
         </div>
       )}

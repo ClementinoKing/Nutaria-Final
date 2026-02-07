@@ -60,11 +60,26 @@ interface BoxPackRuleOption {
   packet_unit_id: number
   packets_per_box: number
   is_active: boolean
+  box_unit_code?: string | null
+  box_unit_name?: string | null
+  packet_unit_code?: string | null
+  packet_unit_name?: string | null
 }
 
 interface PackagingStepProps {
   stepRun: ProcessStepRun
   loading?: boolean
+}
+
+function normalizeUnitCode(code: string | null | undefined): string {
+  return String(code ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+}
+
+function normalizeUnitType(value: string | null | undefined): string {
+  return String(value ?? '').trim().toUpperCase()
 }
 
 const YES_NO_NA_OPTIONS = [
@@ -228,6 +243,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     packs_per_unit: '',
     notes: '',
   })
+  const [storageUnitsAutoPrefillEnabled, setStorageUnitsAutoPrefillEnabled] = useState(true)
   const [editingStorageAllocationId, setEditingStorageAllocationId] = useState<number | null>(null)
   const [userProfilesByAuthId, setUserProfilesByAuthId] = useState<Record<string, string>>({})
 
@@ -336,7 +352,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       }
 
       const units = ((unitsData ?? []) as PackagingUnitOption[]).filter((u) => u.is_active)
-      const unitsByCode = new Map(units.map((u) => [u.code, u]))
+      const unitsById = new Map(units.map((u) => [u.id, u]))
 
       const rules: BoxPackRuleOption[] = ((rulesData ?? []) as Array<{
         id: number
@@ -349,11 +365,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       }>)
         .filter((r) => r.is_active)
         .filter((r) => {
-          const boxCode = r.box_unit_code ?? null
-          const packetCode = r.packet_unit_code ?? null
-          return Boolean(
-            boxCode && packetCode && unitsByCode.get(boxCode)?.unit_type === 'BOX' && unitsByCode.get(packetCode)?.unit_type === 'PACKET'
-          )
+          const boxUnit = unitsById.get(r.box_unit_id)
+          const packetUnit = unitsById.get(r.packet_unit_id)
+          return Boolean(boxUnit && packetUnit && boxUnit.unit_type === 'BOX' && packetUnit.unit_type === 'PACKET')
         })
         .map((r) => ({
           id: r.id,
@@ -361,6 +375,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           packet_unit_id: r.packet_unit_id,
           packets_per_box: r.packets_per_box,
           is_active: r.is_active,
+          box_unit_code: r.box_unit_code ?? null,
+          box_unit_name: r.box_unit_name ?? null,
+          packet_unit_code: r.packet_unit_code ?? null,
+          packet_unit_name: r.packet_unit_name ?? null,
         }))
 
       setPackagingUnits(units)
@@ -791,17 +809,27 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const showReworkDropdown = formData.visual_status?.toLowerCase().includes('rework')
 
   const activePacketUnits = useMemo(
-    () => packagingUnits.filter((unit) => unit.unit_type === 'PACKET' && (Number(unit.net_weight_kg) || 0) > 0),
+    () =>
+      packagingUnits.filter(
+        (unit) => normalizeUnitType(unit.unit_type) === 'PACKET' && (Number(unit.net_weight_kg) || 0) > 0
+      ),
     [packagingUnits]
   )
   const activeBoxUnits = useMemo(
-    () => packagingUnits.filter((unit) => unit.unit_type === 'BOX'),
+    () => packagingUnits.filter((unit) => normalizeUnitType(unit.unit_type) === 'BOX'),
     [packagingUnits]
   )
-  const packetUnitByCode = useMemo(
-    () => new Map(activePacketUnits.map((unit) => [unit.code, unit])),
-    [activePacketUnits]
-  )
+  const packagingUnitById = useMemo(() => new Map(packagingUnits.map((unit) => [unit.id, unit])), [packagingUnits])
+  const packetUnitByCode = useMemo(() => {
+    const map = new Map<string, PackagingUnitOption>()
+    activePacketUnits.forEach((unit) => {
+      const codeKey = normalizeUnitCode(unit.code)
+      if (codeKey) map.set(codeKey, unit)
+      const nameKey = normalizeUnitCode(unit.name)
+      if (nameKey) map.set(nameKey, unit)
+    })
+    return map
+  }, [activePacketUnits])
   const boxUnitById = useMemo(
     () => new Map(activeBoxUnits.map((unit) => [unit.id, unit])),
     [activeBoxUnits]
@@ -852,14 +880,49 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const selectedStoragePackEntryId = Number(storageAllocationForm.pack_entry_id || 0)
   const selectedStoragePackEntry = packEntries.find((entry) => entry.id === selectedStoragePackEntryId) ?? null
   const selectedStoragePacketCode = selectedStoragePackEntry?.packet_unit_code ?? selectedStoragePackEntry?.pack_identifier ?? null
-  const selectedStoragePacketUnit = selectedStoragePacketCode ? packetUnitByCode.get(selectedStoragePacketCode) ?? null : null
-  const selectedStorageBoxUnit = storageAllocationForm.box_unit_code
-    ? activeBoxUnits.find((unit) => unit.code === storageAllocationForm.box_unit_code) ?? null
+  const selectedStoragePacketKey = normalizeUnitCode(selectedStoragePacketCode)
+  const selectedStoragePacketUnit = selectedStoragePacketCode
+    ? packetUnitByCode.get(normalizeUnitCode(selectedStoragePacketCode)) ?? null
     : null
-  const selectedStorageBoxRule =
-    selectedStorageBoxUnit && selectedStoragePacketUnit
-      ? boxRuleByPair.get(`${selectedStorageBoxUnit.id}:${selectedStoragePacketUnit.id}`) ?? null
-      : null
+  const selectedStorageBoxUnit = storageAllocationForm.box_unit_code
+    ? packagingUnits.find((unit) => normalizeUnitCode(unit.code) === normalizeUnitCode(storageAllocationForm.box_unit_code)) ?? null
+    : null
+  const matchingRulesForSelectedPacket = useMemo(() => {
+    if (!selectedStoragePacketUnit && !selectedStoragePacketKey) return []
+    return boxPackRules.filter((rule) => {
+      if (selectedStoragePacketUnit && rule.packet_unit_id === selectedStoragePacketUnit.id) return true
+      if (!selectedStoragePacketKey) return false
+      const rulePacketCodeKey = normalizeUnitCode(rule.packet_unit_code)
+      const rulePacketNameKey = normalizeUnitCode(rule.packet_unit_name)
+      return rulePacketCodeKey === selectedStoragePacketKey || rulePacketNameKey === selectedStoragePacketKey
+    })
+  }, [boxPackRules, selectedStoragePacketUnit, selectedStoragePacketKey])
+  const matchingBoxUnitsForSelectedPacket = useMemo(() => {
+    return matchingRulesForSelectedPacket
+      .map((rule) => {
+        const boxUnit = packagingUnitById.get(rule.box_unit_id)
+        if (boxUnit) return boxUnit
+        if (!rule.box_unit_code) return null
+        return {
+          id: rule.box_unit_id,
+          code: rule.box_unit_code,
+          name: rule.box_unit_name ?? rule.box_unit_code,
+          unit_type: 'BOX' as const,
+          packaging_type: 'BOX' as const,
+          net_weight_kg: null,
+          is_active: true,
+        }
+      })
+      .filter((unit): unit is PackagingUnitOption => !!unit)
+  }, [matchingRulesForSelectedPacket, packagingUnitById])
+  const selectedStorageBoxRule = useMemo(() => {
+    if (!selectedStorageBoxUnit) return null
+    if (selectedStoragePacketUnit) {
+      return boxRuleByPair.get(`${selectedStorageBoxUnit.id}:${selectedStoragePacketUnit.id}`) ?? null
+    }
+    const fallback = matchingRulesForSelectedPacket.find((rule) => rule.box_unit_id === selectedStorageBoxUnit.id)
+    return fallback ?? null
+  }, [selectedStorageBoxUnit, selectedStoragePacketUnit, boxRuleByPair, matchingRulesForSelectedPacket])
   const computedPacksPerUnit =
     storageAllocationForm.storage_type === 'SHOP_PACKING'
       ? 1
@@ -870,6 +933,31 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     (Number(storageAllocationForm.units_count) || 0) * (computedPacksPerUnit || 0)
   const storageTotalKgPreview =
     storageTotalPacksPreview * (Number(selectedStoragePackEntry?.pack_size_kg) || 0)
+  const selectedStorageAvailablePacks = useMemo(() => {
+    if (!selectedStoragePackEntryId) return 0
+    if (!editingStorageAllocationId) {
+      return getRemainingPackCountByEntry(selectedStoragePackEntryId)
+    }
+    const existing = storageAllocations.find((row) => row.id === editingStorageAllocationId)
+    if (!existing) return getRemainingPackCountByEntry(selectedStoragePackEntryId)
+    if (existing.pack_entry_id !== selectedStoragePackEntryId) {
+      return getRemainingPackCountByEntry(selectedStoragePackEntryId)
+    }
+    return getRemainingPackCountByEntry(selectedStoragePackEntryId) + (Number(existing.total_packs) || 0)
+  }, [selectedStoragePackEntryId, editingStorageAllocationId, getRemainingPackCountByEntry, storageAllocations])
+  const suggestedUnitsCount = useMemo(() => {
+    if (!selectedStoragePackEntryId || !computedPacksPerUnit || computedPacksPerUnit <= 0) return ''
+    const suggested = Math.floor(selectedStorageAvailablePacks / computedPacksPerUnit)
+    return suggested > 0 ? String(suggested) : ''
+  }, [selectedStoragePackEntryId, computedPacksPerUnit, selectedStorageAvailablePacks])
+
+  useEffect(() => {
+    if (!storageUnitsAutoPrefillEnabled) return
+    setStorageAllocationForm((prev) => {
+      if (prev.units_count === suggestedUnitsCount) return prev
+      return { ...prev, units_count: suggestedUnitsCount }
+    })
+  }, [storageUnitsAutoPrefillEnabled, suggestedUnitsCount])
 
   useEffect(() => {
     if (!packEntryForm.sorting_output_id) return
@@ -1026,6 +1114,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       packs_per_unit: '',
       notes: '',
     })
+    setStorageUnitsAutoPrefillEnabled(true)
     setEditingStorageAllocationId(null)
   }
 
@@ -1040,6 +1129,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       packs_per_unit: String(row.packs_per_unit),
       notes: row.notes || '',
     })
+    setStorageUnitsAutoPrefillEnabled(false)
     setEditingStorageAllocationId(row.id)
   }
 
@@ -1957,7 +2047,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <Label>Pack Entry *</Label>
                     <select
                       value={storageAllocationForm.pack_entry_id}
-                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, pack_entry_id: e.target.value }))}
+                      onChange={(e) => {
+                        setStorageUnitsAutoPrefillEnabled(true)
+                        setStorageAllocationForm((prev) => ({ ...prev, pack_entry_id: e.target.value }))
+                      }}
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
                       disabled={saving || externalLoading}
@@ -1976,13 +2069,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <Label>Storage Type *</Label>
                     <select
                       value={storageAllocationForm.storage_type}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        setStorageUnitsAutoPrefillEnabled(true)
                         setStorageAllocationForm((prev) => ({
                           ...prev,
                           storage_type: e.target.value as '' | 'BOX' | 'SHOP_PACKING',
                           box_unit_code: e.target.value === 'BOX' ? prev.box_unit_code || '' : '',
                         }))
-                      }
+                      }}
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
                       disabled={saving || externalLoading}
@@ -1999,18 +2093,18 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       <Label>Box unit *</Label>
                       <select
                         value={storageAllocationForm.box_unit_code || ''}
-                        onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, box_unit_code: e.target.value }))}
+                        onChange={(e) => {
+                          setStorageUnitsAutoPrefillEnabled(true)
+                          setStorageAllocationForm((prev) => ({ ...prev, box_unit_code: e.target.value }))
+                        }}
                         className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
                         disabled={saving || externalLoading}
                       >
                         <option value="">Select box unit</option>
-                        {activeBoxUnits.map((boxUnit) => {
-                          const hasRule =
-                            selectedStoragePacketUnit != null &&
-                            boxRuleByPair.has(`${boxUnit.id}:${selectedStoragePacketUnit.id}`)
-                          if (!selectedStoragePacketUnit || !hasRule) return null
-                          const rule = boxRuleByPair.get(`${boxUnit.id}:${selectedStoragePacketUnit.id}`)!
+                        {matchingBoxUnitsForSelectedPacket.map((boxUnit) => {
+                          const rule = matchingRulesForSelectedPacket.find((item) => item.box_unit_id === boxUnit.id)
+                          if (!rule) return null
                           return (
                             <option key={boxUnit.code} value={boxUnit.code}>
                               {boxUnit.code} - {boxUnit.name} ({rule.packets_per_box} packs/box)
@@ -2018,6 +2112,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                           )
                         })}
                       </select>
+                      {selectedStoragePacketCode && matchingBoxUnitsForSelectedPacket.length === 0 ? (
+                        <p className="text-xs text-red-600">No active box pack rule found for this packet unit.</p>
+                      ) : null}
                     </div>
                   )}
                   <div className="space-y-2">
@@ -2027,10 +2124,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       min="1"
                       step="1"
                       value={storageAllocationForm.units_count}
-                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, units_count: e.target.value }))}
+                      onChange={(e) => {
+                        setStorageUnitsAutoPrefillEnabled(false)
+                        setStorageAllocationForm((prev) => ({ ...prev, units_count: e.target.value }))
+                      }}
                       required
                       disabled={saving || externalLoading}
                     />
+                    <p className="text-xs text-text-dark/60">
+                      Auto-calculated from available packs and rule. Edit to override.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Packs/Unit *</Label>
@@ -2040,6 +2143,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       readOnly
                       disabled={saving || externalLoading}
                     />
+                    <p className="text-xs text-text-dark/60">Calculated from storage type and active box pack rule.</p>
                   </div>
                 </div>
                 <div className="grid gap-4 md:grid-cols-3 mt-4">
