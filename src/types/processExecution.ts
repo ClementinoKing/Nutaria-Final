@@ -412,6 +412,7 @@ export interface ProcessPackagingPackEntry {
   packaging_run_id: number
   sorting_output_id: number
   product_id: number | null
+  packet_unit_code?: string | null
   pack_identifier: string
   quantity_kg: number
   packing_type: string | null
@@ -430,6 +431,7 @@ export interface ProcessPackagingStorageAllocation {
   packaging_run_id: number
   pack_entry_id: number
   storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+  box_unit_code?: string | null
   units_count: number
   packs_per_unit: number
   total_packs: number
@@ -486,6 +488,7 @@ export interface PackagingMetalCheckRejectionFormData {
 export interface PackagingStorageAllocationFormData {
   pack_entry_id: string
   storage_type: '' | 'BOX' | 'BAG' | 'SHOP_PACKING'
+  box_unit_code?: string
   units_count: string
   packs_per_unit: string
   notes: string

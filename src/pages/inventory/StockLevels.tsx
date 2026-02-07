@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
-import { Package, Layers, Box } from 'lucide-react'
+import { Package, Layers, Box, Scale } from 'lucide-react'
 
 const SEGMENTS = [
   {
@@ -27,6 +27,14 @@ const SEGMENTS = [
     path: '/inventory/stock-levels/packed',
     icon: Box,
     className: 'border-emerald-200/60 hover:border-emerald-400/80 hover:bg-emerald-50/50',
+  },
+  {
+    key: 'remainders',
+    title: 'Remainders',
+    description: 'Leftover partial quantities from packaging, with source process traceability.',
+    path: '/inventory/stock-levels/remainders',
+    icon: Scale,
+    className: 'border-orange-200/70 hover:border-orange-400/80 hover:bg-orange-50/60',
   },
 ] as const
 

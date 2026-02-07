@@ -519,7 +519,7 @@ function Shipments() {
         usedUnitsByAllocation.set(row.packaging_allocation_id, (usedUnitsByAllocation.get(row.packaging_allocation_id) ?? 0) + used)
       })
 
-      const list = (allocations ?? []) as Array<{
+      type AllocationRow = {
         id: number
         storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
         units_count: number
@@ -528,36 +528,42 @@ function Shipments() {
         total_quantity_kg: number
         created_at: string | null
         pack_entry_id: number
-        pack_entry: {
+        pack_entry: Array<{
           id: number
           product_id: number | null
           pack_identifier: string
           pack_size_kg: number | null
-          sorting_output: {
+          sorting_output: Array<{
             product_id?: number
-            product?: { name?: string | null; sku?: string | null }
-          } | null
-          packaging_run: {
-            process_step_runs?: {
-              process_lot_runs?: {
-                supply_batches?: { lot_no?: string | null } | null
-              } | null
-            } | { process_lot_runs?: { supply_batches?: { lot_no?: string | null } | null } | null }[] | null
-          } | null
-        } | null
-      }>
+            product?: { name?: string | null; sku?: string | null } | null
+          }> | null
+          packaging_run: Array<{
+            process_step_runs: Array<{
+              process_lot_runs: Array<{
+                supply_batches: { lot_no?: string | null } | null
+              }>
+            }>
+          }> | null
+        }> | null
+      }
+
+      const list = (allocations ?? []) as unknown as AllocationRow[]
 
       const unwrap = <T,>(value: T | T[] | null | undefined): T | null =>
         Array.isArray(value) ? value[0] ?? null : value ?? null
 
       const result = list
         .map((allocation) => {
-          const productId = allocation.pack_entry?.sorting_output?.product_id
+          const packEntry = unwrap(allocation.pack_entry)
+          const sortingOutput = unwrap(packEntry?.sorting_output ?? null)
+          const productId = sortingOutput?.product_id
           if (!productId) return null
-          const productName = allocation.pack_entry?.sorting_output?.product?.name ?? 'Unknown'
-          const productSku = allocation.pack_entry?.sorting_output?.product?.sku ?? ''
-          const stepRun = unwrap(allocation.pack_entry?.packaging_run?.process_step_runs)
-          const lotNo = (stepRun as any)?.process_lot_runs?.supply_batches?.lot_no ?? null
+          const productName = sortingOutput?.product?.name ?? 'Unknown'
+          const productSku = sortingOutput?.product?.sku ?? ''
+          const packagingRun = unwrap(packEntry?.packaging_run ?? null)
+          const stepRun = unwrap(packagingRun?.process_step_runs)
+          const lotRun = unwrap(stepRun?.process_lot_runs)
+          const lotNo = lotRun?.supply_batches?.lot_no ?? null
           const usedUnits = usedUnitsByAllocation.get(allocation.id) ?? 0
           const availableUnits = Math.max(0, (Number(allocation.units_count) || 0) - usedUnits)
           const unitQuantityKg =
@@ -579,8 +585,8 @@ function Shipments() {
             product_id: productId,
             product_name: productName,
             product_sku: productSku,
-            pack_identifier: allocation.pack_entry?.pack_identifier ?? '',
-            pack_size_kg: allocation.pack_entry?.pack_size_kg ?? null,
+            pack_identifier: packEntry?.pack_identifier ?? '',
+            pack_size_kg: packEntry?.pack_size_kg ?? null,
             lot_no: lotNo,
             created_at: allocation.created_at ?? null,
           } as PackedEntryOption

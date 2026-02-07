@@ -10,6 +10,7 @@ import {
   Warehouse,
   Ruler,
   Package2,
+  Package,
   TrendingUp,
   ArrowRight,
   ChevronDown,
@@ -147,6 +148,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         { name: 'Document Types', icon: FileText, key: 'document-types', path: '/settings/document-types' },
         { name: 'Quality Parameters', icon: BadgeCheck, key: 'quality-parameters', path: '/settings/quality-parameters' },
         { name: 'Process Step Names', icon: Layers, key: 'process-step-names', path: '/settings/process-step-names' },
+        { name: 'Packaging', icon: Package, key: 'packaging', path: '/settings/packaging' },
       ],
     },
     { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
@@ -167,7 +169,17 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
   }
 
   const inventoryPaths = ['/inventory/stock-levels', '/inventory/stock-movements']
-  const settingsPaths = ['/inventory/units', '/inventory/warehouses', '/inventory/products', '/process/processes', '/settings/supplier-types', '/settings/document-types', '/settings/quality-parameters']
+  const settingsPaths = [
+    '/inventory/units',
+    '/inventory/warehouses',
+    '/inventory/products',
+    '/process/processes',
+    '/settings/supplier-types',
+    '/settings/document-types',
+    '/settings/quality-parameters',
+    '/settings/process-step-names',
+    '/settings/packaging',
+  ]
   const processPaths = ['/process/view', '/process/process-steps']
   const checksPaths = ['/checks/metal-detector', '/checks/daily', '/daily-checks']
   const isInventoryActive = inventoryPaths.some(path => location.pathname.startsWith(path))

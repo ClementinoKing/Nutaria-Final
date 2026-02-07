@@ -15,6 +15,7 @@ const WIPStockPage = lazy(() => import('./pages/inventory/WIPStockPage'))
 const WIPProductDetailPage = lazy(() => import('./pages/inventory/WIPProductDetailPage'))
 const PackedStockPage = lazy(() => import('./pages/inventory/PackedStockPage'))
 const PackedProductDetailPage = lazy(() => import('./pages/inventory/PackedProductDetailPage'))
+const RemaindersPage = lazy(() => import('./pages/inventory/RemaindersPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
@@ -41,6 +42,7 @@ const SupplierTypes = lazy(() => import('./pages/settings/SupplierTypes'))
 const DocumentTypes = lazy(() => import('./pages/settings/DocumentTypes'))
 const QualityParameters = lazy(() => import('./pages/settings/QualityParameters'))
 const ProcessStepNames = lazy(() => import('./pages/settings/ProcessStepNames'))
+const PackagingManagement = lazy(() => import('./pages/settings/PackagingManagement'))
 
 function LoadingScreen() {
   return (
@@ -184,6 +186,14 @@ function App() {
           }
         />
         <Route
+          path="/inventory/stock-levels/remainders"
+          element={
+            <ProtectedRoute>
+              <RemaindersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/inventory/stock-movements"
           element={
             <ProtectedRoute>
@@ -276,6 +286,14 @@ function App() {
           element={
             <ProtectedRoute>
               <ProcessStepNames />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings/packaging"
+          element={
+            <ProtectedRoute>
+              <PackagingManagement />
             </ProtectedRoute>
           }
         />

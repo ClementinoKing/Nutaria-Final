@@ -49,6 +49,7 @@ interface UsePackagingRunReturn {
   addPackEntry: (data: {
     sorting_output_id: number
     product_id: number | null
+    packet_unit_code?: string | null
     pack_identifier: string
     quantity_kg: number
     packing_type: string | null
@@ -58,12 +59,14 @@ interface UsePackagingRunReturn {
   addStorageAllocation: (data: {
     pack_entry_id: number
     storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+    box_unit_code?: string | null
     units_count: number
     packs_per_unit: number
     notes?: string | null
   }) => Promise<void>
   updateStorageAllocation: (id: number, data: {
     storage_type?: 'BOX' | 'BAG' | 'SHOP_PACKING'
+    box_unit_code?: string | null
     units_count?: number
     packs_per_unit?: number
     notes?: string | null
@@ -504,6 +507,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     async (data: {
       sorting_output_id: number
       product_id: number | null
+      packet_unit_code?: string | null
       pack_identifier: string
       quantity_kg: number
       packing_type: string | null
@@ -526,6 +530,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           packaging_run_id: packagingRun.id,
           sorting_output_id: data.sorting_output_id,
           product_id: data.product_id ?? null,
+          packet_unit_code: data.packet_unit_code ?? null,
           pack_identifier: data.pack_identifier,
           quantity_kg: data.quantity_kg,
           packing_type: data.packing_type ?? null,
@@ -578,6 +583,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
     async (data: {
       pack_entry_id: number
       storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
+      box_unit_code?: string | null
       units_count: number
       packs_per_unit: number
       notes?: string | null
@@ -610,6 +616,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           packaging_run_id: packagingRun.id,
           pack_entry_id: data.pack_entry_id,
           storage_type: data.storage_type,
+          box_unit_code: data.box_unit_code ?? null,
           units_count: data.units_count,
           packs_per_unit: data.packs_per_unit,
           total_packs: totalPacks,
@@ -627,6 +634,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
   const updateStorageAllocation = useCallback(
     async (id: number, data: {
       storage_type?: 'BOX' | 'BAG' | 'SHOP_PACKING'
+      box_unit_code?: string | null
       units_count?: number
       packs_per_unit?: number
       notes?: string | null
@@ -655,6 +663,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
         .from('process_packaging_storage_allocations')
         .update({
           storage_type: data.storage_type ?? existing.storage_type,
+          box_unit_code: data.box_unit_code !== undefined ? data.box_unit_code : existing.box_unit_code ?? null,
           units_count: nextUnits,
           packs_per_unit: nextPacksPerUnit,
           total_packs: totalPacks,

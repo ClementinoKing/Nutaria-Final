@@ -44,6 +44,24 @@ interface FinishedProductOption {
   sku: string | null
 }
 
+interface PackagingUnitOption {
+  id: number
+  code: string
+  name: string
+  unit_type: 'PACKET' | 'BOX'
+  packaging_type: 'DOY' | 'VACUUM' | 'POLY' | 'BOX' | null
+  net_weight_kg: number | null
+  is_active: boolean
+}
+
+interface BoxPackRuleOption {
+  id: number
+  box_unit_id: number
+  packet_unit_id: number
+  packets_per_box: number
+  is_active: boolean
+}
+
 interface PackagingStepProps {
   stepRun: ProcessStepRun
   loading?: boolean
@@ -58,18 +76,6 @@ const YES_NO_NA_OPTIONS = [
 
 const REWORK_DESTINATIONS = ['Washing', 'Drying', 'Sorting']
 const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
-const PACKING_TYPES = ['Vacuum packing', 'Bag packing', 'Shop packing'] as const
-const PACK_SIZE_OPTIONS = [
-  { value: '100 g', kg: 0.1 },
-  { value: '200 g', kg: 0.2 },
-  { value: '250 g', kg: 0.25 },
-  { value: '500 g', kg: 0.5 },
-  { value: '1 kg', kg: 1 },
-  { value: '2 kg', kg: 2 },
-  { value: '5 kg', kg: 5 },
-  { value: '10 kg', kg: 10 },
-  { value: '25 kg', kg: 25 },
-] as const
 const PHOTO_TYPES: Array<{ value: 'product' | 'label' | 'pallet'; label: string }> = [
   { value: 'product', label: 'Product' },
   { value: 'label', label: 'Label' },
@@ -87,12 +93,26 @@ const FOREIGN_OBJECT_STATUS_OPTIONS = ['', 'None', 'Detected']
 const MOULD_STATUS_OPTIONS = ['', 'None', 'Present']
 const KERNEL_DAMAGE_OPTIONS = ['', '0', '0.5', '1', '2', '5', '10']
 const NITROGEN_USED_OPTIONS = ['', '0', '0.25', '0.5', '1', '2', '3']
-const STORAGE_TYPE_OPTIONS: Array<{ value: '' | 'BOX' | 'BAG' | 'SHOP_PACKING'; label: string }> = [
+const STORAGE_TYPE_OPTIONS: Array<{ value: '' | 'BOX' | 'SHOP_PACKING'; label: string }> = [
   { value: '', label: 'Select type' },
   { value: 'BOX', label: 'Box' },
-  { value: 'BAG', label: 'Bag' },
   { value: 'SHOP_PACKING', label: 'Shop packing' },
 ]
+
+function mapPackagingTypeToPackingType(
+  packagingType: PackagingUnitOption['packaging_type']
+): 'Vacuum packing' | 'Bag packing' | 'Shop packing' | null {
+  switch (packagingType) {
+    case 'VACUUM':
+      return 'Vacuum packing'
+    case 'DOY':
+      return 'Shop packing'
+    case 'POLY':
+      return 'Bag packing'
+    default:
+      return null
+  }
+}
 
 const mapPackagingRunToFormData = (run: ProcessPackagingRun): PackagingFormData => ({
   visual_status: run.visual_status || '',
@@ -172,13 +192,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const [sortedWips, setSortedWips] = useState<SortedWipRow[]>([])
   const [finishedProducts, setFinishedProducts] = useState<FinishedProductOption[]>([])
+  const [packagingUnits, setPackagingUnits] = useState<PackagingUnitOption[]>([])
+  const [boxPackRules, setBoxPackRules] = useState<BoxPackRuleOption[]>([])
   const [loadingWips, setLoadingWips] = useState(false)
   const [showPackEntryForm, setShowPackEntryForm] = useState(false)
   const [packEntryForm, setPackEntryForm] = useState({
     sorting_output_id: '',
     product_id: '',
-    packing_type: '',
-    pack_identifier: '',
+    packet_unit_code: '',
     quantity_kg: '',
   })
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
@@ -202,6 +223,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [storageAllocationForm, setStorageAllocationForm] = useState<PackagingStorageAllocationFormData>({
     pack_entry_id: '',
     storage_type: '',
+    box_unit_code: '',
     units_count: '',
     packs_per_unit: '',
     notes: '',
@@ -300,6 +322,55 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
   }, [])
 
+  const loadPackagingSettings = useCallback(async () => {
+    try {
+      const [{ data: unitsData, error: unitsError }, { data: rulesData, error: rulesError }] = await Promise.all([
+        supabase.rpc('get_packaging_units'),
+        supabase.rpc('get_box_pack_rules'),
+      ])
+
+      if (unitsError || rulesError) {
+        setPackagingUnits([])
+        setBoxPackRules([])
+        return
+      }
+
+      const units = ((unitsData ?? []) as PackagingUnitOption[]).filter((u) => u.is_active)
+      const unitsByCode = new Map(units.map((u) => [u.code, u]))
+
+      const rules: BoxPackRuleOption[] = ((rulesData ?? []) as Array<{
+        id: number
+        box_unit_id: number
+        packet_unit_id: number
+        packets_per_box: number
+        is_active: boolean
+        box_unit_code?: string | null
+        packet_unit_code?: string | null
+      }>)
+        .filter((r) => r.is_active)
+        .filter((r) => {
+          const boxCode = r.box_unit_code ?? null
+          const packetCode = r.packet_unit_code ?? null
+          return Boolean(
+            boxCode && packetCode && unitsByCode.get(boxCode)?.unit_type === 'BOX' && unitsByCode.get(packetCode)?.unit_type === 'PACKET'
+          )
+        })
+        .map((r) => ({
+          id: r.id,
+          box_unit_id: r.box_unit_id,
+          packet_unit_id: r.packet_unit_id,
+          packets_per_box: r.packets_per_box,
+          is_active: r.is_active,
+        }))
+
+      setPackagingUnits(units)
+      setBoxPackRules(rules)
+    } catch {
+      setPackagingUnits([])
+      setBoxPackRules([])
+    }
+  }, [])
+
   useEffect(() => {
     loadSortedWips()
   }, [loadSortedWips])
@@ -307,6 +378,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   useEffect(() => {
     loadFinishedProducts()
   }, [loadFinishedProducts])
+
+  useEffect(() => {
+    loadPackagingSettings()
+  }, [loadPackagingSettings])
 
   useEffect(() => {
     const loadCheckerProfiles = async () => {
@@ -715,6 +790,34 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const showReworkDropdown = formData.visual_status?.toLowerCase().includes('rework')
 
+  const activePacketUnits = useMemo(
+    () => packagingUnits.filter((unit) => unit.unit_type === 'PACKET' && (Number(unit.net_weight_kg) || 0) > 0),
+    [packagingUnits]
+  )
+  const activeBoxUnits = useMemo(
+    () => packagingUnits.filter((unit) => unit.unit_type === 'BOX'),
+    [packagingUnits]
+  )
+  const packetUnitByCode = useMemo(
+    () => new Map(activePacketUnits.map((unit) => [unit.code, unit])),
+    [activePacketUnits]
+  )
+  const boxUnitById = useMemo(
+    () => new Map(activeBoxUnits.map((unit) => [unit.id, unit])),
+    [activeBoxUnits]
+  )
+  const packetUnitById = useMemo(
+    () => new Map(activePacketUnits.map((unit) => [unit.id, unit])),
+    [activePacketUnits]
+  )
+  const boxRuleByPair = useMemo(() => {
+    const map = new Map<string, BoxPackRuleOption>()
+    boxPackRules.forEach((rule) => {
+      map.set(`${rule.box_unit_id}:${rule.packet_unit_id}`, rule)
+    })
+    return map
+  }, [boxPackRules])
+
   const selectedWipForPackEntry = useMemo(
     () => sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id) ?? null,
     [sortedWips, packEntryForm.sorting_output_id]
@@ -748,8 +851,23 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const hasEligibleWipsForPacking = eligibleWipsForPacking.length > 0
   const selectedStoragePackEntryId = Number(storageAllocationForm.pack_entry_id || 0)
   const selectedStoragePackEntry = packEntries.find((entry) => entry.id === selectedStoragePackEntryId) ?? null
+  const selectedStoragePacketCode = selectedStoragePackEntry?.packet_unit_code ?? selectedStoragePackEntry?.pack_identifier ?? null
+  const selectedStoragePacketUnit = selectedStoragePacketCode ? packetUnitByCode.get(selectedStoragePacketCode) ?? null : null
+  const selectedStorageBoxUnit = storageAllocationForm.box_unit_code
+    ? activeBoxUnits.find((unit) => unit.code === storageAllocationForm.box_unit_code) ?? null
+    : null
+  const selectedStorageBoxRule =
+    selectedStorageBoxUnit && selectedStoragePacketUnit
+      ? boxRuleByPair.get(`${selectedStorageBoxUnit.id}:${selectedStoragePacketUnit.id}`) ?? null
+      : null
+  const computedPacksPerUnit =
+    storageAllocationForm.storage_type === 'SHOP_PACKING'
+      ? 1
+      : storageAllocationForm.storage_type === 'BOX'
+      ? selectedStorageBoxRule?.packets_per_box ?? 0
+      : 0
   const storageTotalPacksPreview =
-    (Number(storageAllocationForm.units_count) || 0) * (Number(storageAllocationForm.packs_per_unit) || 0)
+    (Number(storageAllocationForm.units_count) || 0) * (computedPacksPerUnit || 0)
   const storageTotalKgPreview =
     storageTotalPacksPreview * (Number(selectedStoragePackEntry?.pack_size_kg) || 0)
 
@@ -835,7 +953,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     e.preventDefault()
     const sortingOutputId = parseInt(packEntryForm.sorting_output_id, 10)
     const productId = packEntryForm.product_id ? parseInt(packEntryForm.product_id, 10) : null
-    const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier.trim())
+    const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
+    const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
     const quantityKg = parseFloat(packEntryForm.quantity_kg)
     const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
     const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
@@ -851,8 +970,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
         : 0
 
-    if (!sortingOutputId || !selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) {
-      toast.error('Select a WIP, pack size, and valid quantity')
+    if (!sortingOutputId || !selectedPacketUnit || selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) {
+      toast.error('Select a WIP, packet unit, and valid quantity')
       return
     }
     if (!productId) {
@@ -871,23 +990,21 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       toast.error(`Quantity cannot exceed remaining ${remainingKg.toFixed(2)} kg for this WIP`)
       return
     }
-    const packCount = Math.floor(quantityKg / selectedPackSize.kg)
-    const remainderKg = Math.max(0, quantityKg - packCount * selectedPackSize.kg)
     setSaving(true)
     try {
       await addPackEntry({
         sorting_output_id: sortingOutputId,
         product_id: productId,
-        pack_identifier: packEntryForm.pack_identifier.trim(),
+        packet_unit_code: selectedPacketUnit.code,
+        pack_identifier: selectedPacketUnit.code,
         quantity_kg: quantityKg,
-        packing_type: packEntryForm.packing_type.trim() || null,
-        pack_size_kg: selectedPackSize.kg,
+        packing_type: mapPackagingTypeToPackingType(selectedPacketUnit.packaging_type),
+        pack_size_kg: selectedPackSizeKg,
       })
       setPackEntryForm({
         sorting_output_id: '',
         product_id: '',
-        packing_type: '',
-        pack_identifier: '',
+        packet_unit_code: '',
         quantity_kg: '',
       })
       setShowPackEntryForm(false)
@@ -904,6 +1021,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     setStorageAllocationForm({
       pack_entry_id: '',
       storage_type: '',
+      box_unit_code: '',
       units_count: '',
       packs_per_unit: '',
       notes: '',
@@ -917,6 +1035,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     setStorageAllocationForm({
       pack_entry_id: String(row.pack_entry_id),
       storage_type: row.storage_type,
+      box_unit_code: row.box_unit_code || '',
       units_count: String(row.units_count),
       packs_per_unit: String(row.packs_per_unit),
       notes: row.notes || '',
@@ -928,9 +1047,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     e.preventDefault()
     const packEntryId = Number(storageAllocationForm.pack_entry_id)
     const unitsCount = Number(storageAllocationForm.units_count)
-    const packsPerUnit = Number(storageAllocationForm.packs_per_unit)
+    const storageType = storageAllocationForm.storage_type as '' | 'BOX' | 'SHOP_PACKING'
+    const packsPerUnit = computedPacksPerUnit
 
-    if (!packEntryId || !storageAllocationForm.storage_type) {
+    if (!packEntryId || !storageType) {
       toast.error('Select pack entry and storage type')
       return
     }
@@ -939,7 +1059,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       return
     }
     if (!Number.isInteger(packsPerUnit) || packsPerUnit <= 0) {
-      toast.error('Packs per unit must be a whole number greater than 0')
+      toast.error('Unable to determine packs per unit for this allocation')
+      return
+    }
+
+    if (storageType === 'BOX' && !storageAllocationForm.box_unit_code) {
+      toast.error('Select a box unit')
+      return
+    }
+    if (storageType === 'BOX' && !selectedStorageBoxRule) {
+      toast.error('No active box pack rule found for selected packet and box')
       return
     }
 
@@ -968,7 +1097,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     try {
       if (editingStorageAllocationId) {
         await updateStorageAllocation(editingStorageAllocationId, {
-          storage_type: storageAllocationForm.storage_type as 'BOX' | 'BAG' | 'SHOP_PACKING',
+          storage_type: storageType as 'BOX' | 'SHOP_PACKING',
+          box_unit_code: storageType === 'BOX' ? storageAllocationForm.box_unit_code || null : null,
           units_count: unitsCount,
           packs_per_unit: packsPerUnit,
           notes: storageAllocationForm.notes || null,
@@ -977,7 +1107,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       } else {
         await addStorageAllocation({
           pack_entry_id: packEntryId,
-          storage_type: storageAllocationForm.storage_type as 'BOX' | 'BAG' | 'SHOP_PACKING',
+          storage_type: storageType as 'BOX' | 'SHOP_PACKING',
+          box_unit_code: storageType === 'BOX' ? storageAllocationForm.box_unit_code || null : null,
           units_count: unitsCount,
           packs_per_unit: packsPerUnit,
           notes: storageAllocationForm.notes || null,
@@ -1110,15 +1241,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
                     : 0
                   const remainingKg = selectedWip ? Math.max(0, selectedWip.quantity_kg - failedRejectedKg - usedKg) : 0
-                  const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                  const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
+                  const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
                   const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
                   const remainderKg =
-                    selectedPackSize && Number.isFinite(quantityKg)
-                      ? Math.max(0, quantityKg - Math.floor(quantityKg / selectedPackSize.kg) * selectedPackSize.kg)
+                    selectedPackSizeKg > 0 && Number.isFinite(quantityKg)
+                      ? Math.max(0, quantityKg - Math.floor(quantityKg / selectedPackSizeKg) * selectedPackSizeKg)
                       : 0
                   const packCount =
-                    selectedPackSize && Number.isFinite(quantityKg)
-                      ? Math.floor(quantityKg / selectedPackSize.kg)
+                    selectedPackSizeKg > 0 && Number.isFinite(quantityKg)
+                      ? Math.floor(quantityKg / selectedPackSizeKg)
                       : 0
 
                   return (
@@ -1138,7 +1270,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                           Metal rejects deducted:{' '}
                           <strong className="text-text-dark">{selectedWip ? failedRejectedKg.toFixed(2) : '—'} kg</strong>
                         </span>
-                        {selectedPackSize && Number.isFinite(quantityKg) && quantityKg >= 0 && (
+                        {selectedPackSizeKg > 0 && Number.isFinite(quantityKg) && quantityKg >= 0 && (
                           <span>
                             Packs from this entry:{' '}
                             <strong className="text-text-dark">
@@ -1184,39 +1316,23 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Packing type</Label>
+                    <Label>Packet unit *</Label>
                     <select
-                      value={packEntryForm.packing_type}
-                      onChange={(e) => setPackEntryForm({ ...packEntryForm, packing_type: e.target.value })}
-                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      disabled={saving || externalLoading}
-                    >
-                      <option value="">Select packing type</option>
-                      {PACKING_TYPES.map((pt) => (
-                        <option key={pt} value={pt}>
-                          {pt}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Pack size *</Label>
-                    <select
-                      value={packEntryForm.pack_identifier}
+                      value={packEntryForm.packet_unit_code}
                       onChange={(e) =>
                         setPackEntryForm({
                           ...packEntryForm,
-                          pack_identifier: e.target.value,
+                          packet_unit_code: e.target.value,
                         })
                       }
                       required
                       disabled={saving || externalLoading}
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     >
-                      <option value="">Select pack size</option>
-                      {PACK_SIZE_OPTIONS.map((size) => (
-                        <option key={size.value} value={size.value}>
-                          {size.value}
+                      <option value="">Select packet unit</option>
+                      {activePacketUnits.map((unit) => (
+                        <option key={unit.code} value={unit.code}>
+                          {unit.code} - {unit.name} ({Number(unit.net_weight_kg).toFixed(3)} kg)
                         </option>
                       ))}
                     </select>
@@ -1253,10 +1369,11 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       type="text"
                       readOnly
                       value={(() => {
-                        const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                        const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
+                        const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
                         const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
-                        if (!selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
-                        return Math.floor(quantityKg / selectedPackSize.kg).toString()
+                        if (selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
+                        return Math.floor(quantityKg / selectedPackSizeKg).toString()
                       })()}
                       disabled={saving || externalLoading}
                     />
@@ -1267,11 +1384,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       type="text"
                       readOnly
                       value={(() => {
-                        const selectedPackSize = PACK_SIZE_OPTIONS.find((size) => size.value === packEntryForm.pack_identifier)
+                        const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
+                        const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
                         const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
-                        if (!selectedPackSize || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
-                        const packCount = Math.floor(quantityKg / selectedPackSize.kg)
-                        const remainderKg = Math.max(0, quantityKg - packCount * selectedPackSize.kg)
+                        if (selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
+                        const packCount = Math.floor(quantityKg / selectedPackSizeKg)
+                        const remainderKg = Math.max(0, quantityKg - packCount * selectedPackSizeKg)
                         return remainderKg.toFixed(2)
                       })()}
                       disabled={saving || externalLoading}
@@ -1295,21 +1413,23 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 {packEntries.map((pe) => {
                   const wip = sortedWips.find((w) => w.id === pe.sorting_output_id)
                   const finishedProduct = pe.product_id ? finishedProducts.find((p) => p.id === pe.product_id) : null
-                  const packSize =
-                    typeof pe.pack_size_kg === 'number'
-                      ? { value: pe.pack_identifier, kg: pe.pack_size_kg }
-                      : PACK_SIZE_OPTIONS.find((size) => size.value === pe.pack_identifier)
+                  const packetUnitCode = pe.packet_unit_code || pe.pack_identifier
+                  const packetUnit = packetUnitByCode.get(packetUnitCode)
+                  const packSizeKg =
+                    typeof pe.pack_size_kg === 'number' && pe.pack_size_kg > 0
+                      ? pe.pack_size_kg
+                      : Number(packetUnit?.net_weight_kg) || 0
                   const packCount =
                     typeof pe.pack_count === 'number'
                       ? pe.pack_count
-                      : packSize
-                      ? Math.floor(pe.quantity_kg / packSize.kg)
+                      : packSizeKg > 0
+                      ? Math.floor(pe.quantity_kg / packSizeKg)
                       : null
                   const remainderKg =
                     typeof pe.remainder_kg === 'number'
                       ? pe.remainder_kg
-                      : packSize
-                      ? pe.quantity_kg - (packCount ?? 0) * packSize.kg
+                      : packSizeKg > 0
+                      ? pe.quantity_kg - (packCount ?? 0) * packSizeKg
                       : null
                   return (
                     <li
@@ -1318,7 +1438,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     >
                       <span className="text-text-dark">
                         {wip?.product_name ?? `Output #${pe.sorting_output_id}`} → {finishedProduct?.name ?? (pe.product_id ? `Product #${pe.product_id}` : '—')}
-                        {pe.packing_type ? ` [${pe.packing_type}]` : ''} — {pe.pack_identifier}: {pe.quantity_kg} kg
+                        {pe.packing_type ? ` [${pe.packing_type}]` : ''} — {packetUnitCode}: {pe.quantity_kg} kg
                         {pe.metal_check_status && (
                           <span className="ml-2 text-text-dark/70">
                             | Metal: {pe.metal_check_status} (attempts: {pe.metal_check_attempts ?? 0})
@@ -1847,7 +1967,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         .filter((entry) => (Number(entry.pack_count) || 0) > 0)
                         .map((entry) => (
                           <option key={entry.id} value={entry.id}>
-                            {entry.pack_identifier} · {(Number(entry.pack_count) || 0)} packs · {getRemainingPackCountByEntry(entry.id)} remaining
+                            {(entry.packet_unit_code || entry.pack_identifier)} · {(Number(entry.pack_count) || 0)} packs · {getRemainingPackCountByEntry(entry.id)} remaining
                           </option>
                         ))}
                     </select>
@@ -1856,7 +1976,13 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <Label>Storage Type *</Label>
                     <select
                       value={storageAllocationForm.storage_type}
-                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, storage_type: e.target.value as '' | 'BOX' | 'BAG' | 'SHOP_PACKING' }))}
+                      onChange={(e) =>
+                        setStorageAllocationForm((prev) => ({
+                          ...prev,
+                          storage_type: e.target.value as '' | 'BOX' | 'SHOP_PACKING',
+                          box_unit_code: e.target.value === 'BOX' ? prev.box_unit_code || '' : '',
+                        }))
+                      }
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
                       disabled={saving || externalLoading}
@@ -1868,6 +1994,32 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       ))}
                     </select>
                   </div>
+                  {storageAllocationForm.storage_type === 'BOX' && (
+                    <div className="space-y-2">
+                      <Label>Box unit *</Label>
+                      <select
+                        value={storageAllocationForm.box_unit_code || ''}
+                        onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, box_unit_code: e.target.value }))}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                        disabled={saving || externalLoading}
+                      >
+                        <option value="">Select box unit</option>
+                        {activeBoxUnits.map((boxUnit) => {
+                          const hasRule =
+                            selectedStoragePacketUnit != null &&
+                            boxRuleByPair.has(`${boxUnit.id}:${selectedStoragePacketUnit.id}`)
+                          if (!selectedStoragePacketUnit || !hasRule) return null
+                          const rule = boxRuleByPair.get(`${boxUnit.id}:${selectedStoragePacketUnit.id}`)!
+                          return (
+                            <option key={boxUnit.code} value={boxUnit.code}>
+                              {boxUnit.code} - {boxUnit.name} ({rule.packets_per_box} packs/box)
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <Label>Units Count *</Label>
                     <Input
@@ -1884,11 +2036,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <Label>Packs/Unit *</Label>
                     <Input
                       type="number"
-                      min="1"
-                      step="1"
-                      value={storageAllocationForm.packs_per_unit}
-                      onChange={(e) => setStorageAllocationForm((prev) => ({ ...prev, packs_per_unit: e.target.value }))}
-                      required
+                      value={computedPacksPerUnit > 0 ? String(computedPacksPerUnit) : ''}
+                      readOnly
                       disabled={saving || externalLoading}
                     />
                   </div>
@@ -1931,7 +2080,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 <div className="divide-y divide-olive-light/20">
                   {packEntries.map((entry) => (
                     <div key={`summary-${entry.id}`} className="px-4 py-2 text-sm text-text-dark/80">
-                      {entry.pack_identifier}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
+                      {(entry.packet_unit_code || entry.pack_identifier)}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
                     </div>
                   ))}
                 </div>
@@ -1948,7 +2097,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-text-dark">
                             {allocation.storage_type} · {allocation.units_count} units · {allocation.packs_per_unit} packs/unit · {allocation.total_packs} packs · {Number(allocation.total_quantity_kg).toFixed(2)} kg
-                            {entry ? ` · ${entry.pack_identifier}` : ''}
+                            {allocation.storage_type === 'BOX' && allocation.box_unit_code ? ` · ${allocation.box_unit_code}` : ''}
+                            {entry ? ` · ${entry.packet_unit_code || entry.pack_identifier}` : ''}
                             {allocation.notes ? ` · ${allocation.notes}` : ''}
                           </span>
                           <div className="flex items-center gap-2">
