@@ -24,6 +24,8 @@ interface SortingStepProps {
   stepRun: ProcessStepRun
   loading?: boolean
   originalSupplyBatchId?: number | null
+  lotProductName?: string | null
+  lotProductId?: number | null
   availableQuantity?: {
     availableQty: number
     initialQty: number
@@ -38,6 +40,8 @@ export function SortingStep({
   stepRun,
   loading: externalLoading = false,
   originalSupplyBatchId = null,
+  lotProductName = null,
+  lotProductId = null,
   availableQuantity,
   onQuantityChange,
 }: SortingStepProps) {
@@ -87,20 +91,41 @@ export function SortingStep({
   >([])
   const [loadingReworks, setLoadingReworks] = useState(false)
 
+  const isMacadamiaLot = useMemo(() => {
+    const name = String(lotProductName || '').toLowerCase()
+    return name.includes('macadamia') || name.includes('macs')
+  }, [lotProductName])
+
+  const isMacadamiaCandidateProduct = (product: { name: string; sku: string | null }) => {
+    const haystack = `${product.name} ${product.sku || ''}`.toLowerCase()
+    return haystack.includes('macadamia') || haystack.includes('macs')
+  }
+
   useEffect(() => {
-    // Fetch only Work In Progress (WIP) products
+    // Fetch only Work In Progress (WIP) products and, when possible, filter by raw-material mapping
     supabase
       .from('products')
-      .select('id, name, sku')
+      .select(
+        `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
+      )
       .eq('status', 'ACTIVE')
       .eq('product_type', 'WIP')
       .order('name', { ascending: true })
       .then(({ data, error }) => {
         if (!error && data) {
-          setProducts(data as Array<{ id: number; name: string; sku: string | null }>)
+          const rows = data as Array<{ id: number; name: string; sku: string | null; product_components?: { component_product_id?: number | null }[] | null }>
+          let filtered = rows
+          if (lotProductId) {
+            // include any WIP whose components include the lot raw material
+            filtered = filtered.filter((row) =>
+              (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
+            )
+          }
+          filtered = isMacadamiaLot ? filtered.filter(isMacadamiaCandidateProduct) : filtered
+          setProducts(filtered)
         }
       })
-  }, [])
+  }, [isMacadamiaLot, lotProductId])
 
   // Fetch reworks linked to this lot (fallback to step run if lot id is missing)
   useEffect(() => {
@@ -256,13 +281,15 @@ export function SortingStep({
     }
 
     // Validate: waste comes after outputs and reworks
-    // Total waste must not exceed remaining after outputs and reworks
+    // Use tolerance to avoid floating precision issues
     const currentTotalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
     const newTotalWaste = currentTotalWaste + quantity
+    const safeMaxWaste = maxTotalWaste !== null ? Number(maxTotalWaste.toFixed(4)) : null
+    const withinLimit = safeMaxWaste !== null ? newTotalWaste <= safeMaxWaste + 1e-6 : false
 
-    if (maxTotalWaste === null || newTotalWaste > maxTotalWaste) {
+    if (safeMaxWaste === null || !withinLimit) {
       toast.error(
-        `Total waste cannot exceed remaining quantity after outputs and reworks. Remaining: ${maxTotalWaste?.toFixed(2) || 0} kg, Attempted: ${newTotalWaste.toFixed(2)} kg`
+        `Total waste cannot exceed remaining quantity after outputs and reworks. Remaining: ${(safeMaxWaste ?? 0).toFixed(2)} kg, Attempted: ${newTotalWaste.toFixed(2)} kg`
       )
       return
     }
@@ -423,6 +450,9 @@ export function SortingStep({
     maxTotalRework !== null ? maxTotalRework - totalReworkQuantity : null
   const remainingForWaste =
     maxTotalWaste !== null ? maxTotalWaste - totalWaste : null
+
+  // Clamp and round to 2 decimals to avoid floating point edge cases in max inputs
+  const maxWasteQtyDisplay = remainingForWaste !== null ? Number(Math.max(0, remainingForWaste).toFixed(2)) : null
 
   // When adding/editing outputs, remaining should account for existing reworks/waste.
   const editingOutputQty = editingOutputId ? (outputs.find((o) => o.id === editingOutputId)?.quantity_kg ?? 0) : 0
@@ -939,9 +969,9 @@ export function SortingStep({
               <div className="space-y-2">
                 <Label htmlFor="waste_quantity">
                   Quantity (kg) *
-                  {availableQuantity && remainingForWaste !== null && (
+                  {availableQuantity && maxWasteQtyDisplay !== null && (
                     <span className="ml-2 text-xs font-normal text-text-dark/60">
-                      (Max: {Math.max(0, remainingForWaste).toFixed(2)} kg)
+                      (Max: {maxWasteQtyDisplay.toFixed(2)} kg)
                     </span>
                   )}
                 </Label>
@@ -950,7 +980,7 @@ export function SortingStep({
                   type="number"
                   step="0.01"
                   min="0"
-                  max={availableQuantity && remainingForWaste !== null ? Math.max(0, remainingForWaste) : undefined}
+                  max={maxWasteQtyDisplay !== null ? maxWasteQtyDisplay : undefined}
                   value={wasteFormData.quantity_kg}
                   onChange={(e) => setWasteFormData({ ...wasteFormData, quantity_kg: e.target.value })}
                   placeholder="0.00"
@@ -958,9 +988,9 @@ export function SortingStep({
                   disabled={saving || externalLoading}
                   className="bg-white"
                 />
-                {availableQuantity && remainingForWaste !== null && (
+                {availableQuantity && maxWasteQtyDisplay !== null && (
                   <p className="text-xs text-text-dark/50">
-                    Remaining after this entry: {(remainingForWaste - parseFloat(wasteFormData.quantity_kg || '0')).toFixed(2)} kg
+                    Remaining after this entry: {(maxWasteQtyDisplay - parseFloat(wasteFormData.quantity_kg || '0')).toFixed(2)} kg
                   </p>
                 )}
               </div>

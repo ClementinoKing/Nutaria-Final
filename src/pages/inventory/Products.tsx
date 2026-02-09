@@ -21,6 +21,17 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 
+interface ComponentProduct {
+  id: number
+  name: string | null
+  sku: string | null
+  product_type: 'RAW' | 'WIP' | 'FINISHED' | null
+}
+
+interface ProductComponentRow {
+  component_product: ComponentProduct | null
+}
+
 interface Product {
   id: number
   sku: string | null
@@ -35,6 +46,7 @@ interface Product {
   created_at: string | null
   updated_at: string | null
   product_type: 'RAW' | 'WIP' | 'FINISHED' | null
+  product_components?: ProductComponentRow[] | null
 }
 
 interface PreparedProduct extends Product {
@@ -57,12 +69,14 @@ interface ProductFormData {
   status: string
   notes: string
   product_type: string
+  component_ids: number[]
 }
 
 interface FormErrors {
   name?: string
   status?: string
   product_type?: string
+  components?: string
 }
 
 interface BulkEditFormData {
@@ -71,6 +85,8 @@ interface BulkEditFormData {
   safety_stock: string
   target_stock: string
   status: string
+  raw_component_ids: number[]
+  wip_component_ids: number[]
 }
 
 const statusBadgeStyles = {
@@ -106,6 +122,7 @@ function createEmptyProductForm(existingProducts: Product[] = []): ProductFormDa
     status: 'ACTIVE',
     notes: '',
     product_type: 'RAW',
+    component_ids: [],
   }
 }
 
@@ -144,6 +161,18 @@ function formatNumber(value: number | string | null | undefined): string {
   }).format(numeric)
 }
 
+function formatComponentsLine(product: Product): string | null {
+  const components = product.product_components
+    ?.map((row) => row?.component_product)
+    .filter((p): p is ComponentProduct => !!p && !!p.id)
+  if (!components || components.length === 0) return null
+  const names = components.map((c) => c.name || `#${c.id}`)
+  const type = (product.product_type || '').toUpperCase()
+  if (type === 'WIP') return `Raw materials: ${names.join(', ')}`
+  if (type === 'FINISHED') return `From WIPs: ${names.join(', ')}`
+  return `Components: ${names.join(', ')}`
+}
+
 function generateSku(existingProducts: Product[]): string {
   const nextId =
     existingProducts.length === 0 ? 1 : Math.max(...existingProducts.map((p) => p.id), 0) + 1
@@ -157,6 +186,8 @@ function createEmptyBulkEditForm(): BulkEditFormData {
     safety_stock: '',
     target_stock: '',
     status: 'NO_CHANGE',
+    raw_component_ids: [],
+    wip_component_ids: [],
   }
 }
 
@@ -192,12 +223,48 @@ function Products() {
     setLoading(true)
     setError(null)
 
-    const { data, error: fetchError } = await supabase
-      .from('products')
-      .select(
-        'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
+    // First attempt: include component join; fallback to basic select if relation/table missing
+    const complexSelect = `
+      id,
+      sku,
+      name,
+      category,
+      base_unit_id,
+      reorder_point,
+      safety_stock,
+      target_stock,
+      status,
+      notes,
+      created_at,
+      updated_at,
+      product_type,
+      product_components:product_components!product_components_parent_product_id_fkey (
+        component_product:products!product_components_component_product_id_fkey (id, name, sku, product_type)
       )
-      .order('updated_at', { ascending: false, nullsFirst: false })
+    `
+
+    let data: any[] | null = null
+    let fetchError: PostgrestError | null = null
+
+    const attempt = await supabase.from('products').select(complexSelect).order('updated_at', { ascending: false, nullsFirst: false })
+    if (attempt.error) {
+      console.warn('Products fetch with components failed, retrying without components:', attempt.error)
+      fetchError = attempt.error
+      const fallback = await supabase
+        .from('products')
+        .select(
+          'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
+        )
+        .order('updated_at', { ascending: false, nullsFirst: false })
+      data = fallback.data ?? []
+      if (fallback.error) {
+        fetchError = fallback.error
+      } else {
+        fetchError = null
+      }
+    } else {
+      data = attempt.data ?? []
+    }
 
     if (fetchError) {
       console.error('Error fetching products', fetchError)
@@ -262,6 +329,74 @@ function Products() {
       })),
     [products]
   )
+
+  const rawProductOptions = useMemo(
+    () => products.filter((p) => (p.product_type || '').toUpperCase() === 'RAW'),
+    [products]
+  )
+  const wipProductOptions = useMemo(
+    () => products.filter((p) => (p.product_type || '').toUpperCase() === 'WIP'),
+    [products]
+  )
+  const [componentSearch, setComponentSearch] = useState('')
+  const [bulkComponentSearch, setBulkComponentSearch] = useState('')
+  const filteredRawOptions = useMemo(() => {
+    const q = componentSearch.trim().toLowerCase()
+    const filtered = rawProductOptions.filter((p) => {
+      if (!q) return true
+      return (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+    })
+    const selected = new Set(formData.component_ids)
+    return filtered.sort((a, b) => {
+      const aSel = selected.has(a.id) ? 1 : 0
+      const bSel = selected.has(b.id) ? 1 : 0
+      if (aSel !== bSel) return bSel - aSel
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [componentSearch, rawProductOptions, formData.component_ids])
+  const filteredWipOptions = useMemo(() => {
+    const q = componentSearch.trim().toLowerCase()
+    const filtered = wipProductOptions.filter((p) => {
+      if (!q) return true
+      return (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+    })
+    const selected = new Set(formData.component_ids)
+    return filtered.sort((a, b) => {
+      const aSel = selected.has(a.id) ? 1 : 0
+      const bSel = selected.has(b.id) ? 1 : 0
+      if (aSel !== bSel) return bSel - aSel
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [componentSearch, wipProductOptions, formData.component_ids])
+  const filteredRawOptionsBulk = useMemo(() => {
+    const q = bulkComponentSearch.trim().toLowerCase()
+    const filtered = rawProductOptions.filter((p) => {
+      if (!q) return true
+      return (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+    })
+    const selected = new Set(bulkEditForm.raw_component_ids)
+    return filtered.sort((a, b) => {
+      const aSel = selected.has(a.id) ? 1 : 0
+      const bSel = selected.has(b.id) ? 1 : 0
+      if (aSel !== bSel) return bSel - aSel
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [bulkComponentSearch, rawProductOptions, bulkEditForm.raw_component_ids])
+  const filteredWipOptionsBulk = useMemo(() => {
+    const q = bulkComponentSearch.trim().toLowerCase()
+    const filtered = wipProductOptions.filter((p) => {
+      if (!q) return true
+      return (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+    })
+    const selected = new Set(bulkEditForm.wip_component_ids)
+    return filtered.sort((a, b) => {
+      const aSel = selected.has(a.id) ? 1 : 0
+      const bSel = selected.has(b.id) ? 1 : 0
+      if (aSel !== bSel) return bSel - aSel
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [bulkComponentSearch, wipProductOptions, bulkEditForm.wip_component_ids])
+  const editingProductId = useMemo(() => (editingProduct?.id ? editingProduct.id : null), [editingProduct])
 
   const statusOptions = useMemo(() => {
     const statusSet = new Set<string>()
@@ -332,6 +467,22 @@ function Products() {
   const paginatedProducts = useMemo(
     () => filteredProducts.slice((page - 1) * pageSize, page * pageSize),
     [filteredProducts, page, pageSize]
+  )
+
+  const selectedProductsForBulk = useMemo(() => {
+    const map = new Map(products.map((p) => [p.id, p]))
+    return selectedProductIds
+      .map((id) => map.get(id))
+      .filter((p): p is Product => Boolean(p))
+  }, [products, selectedProductIds])
+
+  const hasWipSelection = useMemo(
+    () => selectedProductsForBulk.some((p) => (p.product_type || '').toUpperCase() === 'WIP'),
+    [selectedProductsForBulk]
+  )
+  const hasFinishedSelection = useMemo(
+    () => selectedProductsForBulk.some((p) => (p.product_type || '').toUpperCase() === 'FINISHED'),
+    [selectedProductsForBulk]
   )
 
   useEffect(() => {
@@ -432,6 +583,10 @@ function Products() {
       status: (product.status ?? 'ACTIVE').toUpperCase(),
       notes: product.notes ?? '',
       product_type: (product.product_type ?? 'RAW').toUpperCase(),
+      component_ids:
+        product.product_components
+          ?.map((row) => row?.component_product?.id)
+          .filter((id): id is number => typeof id === 'number') ?? [],
     })
     setFormErrors({})
     setModalMode('edit')
@@ -444,13 +599,21 @@ function Products() {
       if (!product?.id) return
       setDeletingProductId(product.id)
       try {
+        try {
+          await supabase
+            .from('product_components')
+            .delete()
+            .or(`parent_product_id.eq.${product.id},component_product_id.eq.${product.id}`)
+        } catch (pcErr) {
+          console.warn('Failed to delete product_components links; table may be missing', pcErr)
+        }
         const { error: deleteError } = await supabase
           .from('products')
           .delete()
           .eq('id', product.id)
         if (deleteError) throw deleteError
         toast.success('Product deleted.')
-        setProducts((prev) => prev.filter((p) => p.id !== product.id))
+        await fetchProducts()
       } catch (err) {
         const msg = (err as PostgrestError)?.message ?? 'Unable to delete product.'
         toast.error(msg)
@@ -458,7 +621,7 @@ function Products() {
         setDeletingProductId(null)
       }
     },
-    []
+    [fetchProducts]
   )
 
   const requestDeleteProduct = useCallback((product: Product) => {
@@ -503,11 +666,11 @@ function Products() {
   const handleBulkEditFormChange = useCallback(
     (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       const { name, value } = event.target
-      setBulkEditForm((previous) => ({
-        ...previous,
-        [name]: value,
-      }))
-    },
+    setBulkEditForm((previous) => ({
+      ...previous,
+      [name]: value,
+    }))
+  },
     []
   )
 
@@ -543,24 +706,44 @@ function Products() {
     }
 
     if (Object.keys(payload).length === 0) {
-      toast.warning('Set at least one field to update.')
-      return
+      if (bulkEditForm.raw_component_ids.length === 0 && bulkEditForm.wip_component_ids.length === 0) {
+        toast.warning('Set at least one field to update or choose components to map.')
+        return
+      }
     }
 
     setBulkActionLoading(true)
     try {
-      const { error: updateError } = await supabase.from('products').update(payload).in('id', selectedProductIds)
-      if (updateError) throw updateError
+      if (Object.keys(payload).length > 0) {
+        const { error: updateError } = await supabase.from('products').update(payload).in('id', selectedProductIds)
+        if (updateError) throw updateError
+      }
 
-      setProducts((previous) =>
-        previous.map((product) =>
-          selectedProductIds.includes(product.id) ? { ...product, ...payload } : product
-        )
-      )
+      // Apply composition mappings where provided
+      const selectedProductsMap = new Map(products.map((p) => [p.id, p]))
+      const rawAllowed = new Set(rawProductOptions.map((p) => p.id))
+      const wipAllowed = new Set(wipProductOptions.map((p) => p.id))
+
+      for (const pid of selectedProductIds) {
+        const product = selectedProductsMap.get(pid)
+        if (!product) continue
+        const type = (product.product_type || 'RAW').toUpperCase()
+        if (type === 'WIP' && bulkEditForm.raw_component_ids.length > 0) {
+          const safeIds = bulkEditForm.raw_component_ids.filter((id) => rawAllowed.has(id))
+          await saveProductComponents(pid, safeIds, 'WIP')
+        }
+        if (type === 'FINISHED' && bulkEditForm.wip_component_ids.length > 0) {
+          const safeIds = bulkEditForm.wip_component_ids.filter((id) => wipAllowed.has(id))
+          await saveProductComponents(pid, safeIds, 'FINISHED')
+        }
+      }
+
       toast.success(`Updated ${selectedProductIds.length} product(s).`)
+      await fetchProducts()
       setSelectedProductIds([])
       setBulkEditModalOpen(false)
       setBulkEditForm(createEmptyBulkEditForm())
+      setBulkComponentSearch('')
     } catch (err) {
       const message = (err as PostgrestError)?.message ?? 'Unable to apply bulk edit.'
       toast.error(message)
@@ -585,6 +768,31 @@ function Products() {
     return Number.isNaN(numeric) ? null : numeric
   }
 
+  const saveProductComponents = async (
+    parentProductId: number,
+    componentIds: number[],
+    parentType: 'RAW' | 'WIP' | 'FINISHED'
+  ) => {
+    try {
+      // Clear existing links
+      await supabase.from('product_components').delete().eq('parent_product_id', parentProductId)
+
+      if (componentIds.length === 0) return
+
+      // Insert new links
+      const rows = componentIds.map((componentId) => ({
+        parent_product_id: parentProductId,
+        component_product_id: componentId,
+      }))
+
+      const { error } = await supabase.from('product_components').insert(rows)
+      if (error) throw error
+    } catch (err) {
+      console.warn('Failed to save product components; ensure product_components table exists', err)
+      toast.error('Could not save product composition. Please ensure product_components table exists.')
+    }
+  }
+
   const validateForm = (): boolean => {
     const errors: FormErrors = {}
 
@@ -604,6 +812,14 @@ function Products() {
       errors.product_type = 'Product type must be Raw, WIP, or Finished.'
     }
 
+    const type = (formData.product_type || 'RAW').toUpperCase()
+    if (type === 'WIP' && formData.component_ids.length === 0) {
+      errors.components = 'Select at least one raw material for WIP products.'
+    }
+    if (type === 'FINISHED' && formData.component_ids.length === 0) {
+      errors.components = 'Select at least one WIP for finished products.'
+    }
+
     setFormErrors(errors)
     return Object.keys(errors).length === 0
   }
@@ -620,6 +836,17 @@ function Products() {
       const productType = (formData.product_type || 'RAW').toUpperCase()
       const productTypeVal =
         productType === 'RAW' || productType === 'WIP' || productType === 'FINISHED' ? productType : 'RAW'
+      const allowedComponentIds = new Set(
+        productTypeVal === 'WIP'
+          ? rawProductOptions.map((p) => p.id)
+          : productTypeVal === 'FINISHED'
+          ? wipProductOptions.map((p) => p.id)
+          : []
+      )
+      const sanitizedComponentIds =
+        productTypeVal === 'RAW'
+          ? []
+          : formData.component_ids.filter((id) => allowedComponentIds.has(id))
       const internalSku = isEditing
         ? (editingProduct?.sku ?? generateSku(products))
         : generateSku(products)
@@ -650,10 +877,10 @@ function Products() {
           throw updateError
         }
 
+        await saveProductComponents((data as Product).id, sanitizedComponentIds, productTypeVal)
+
         toast.success('Product updated successfully.')
-        setProducts((previous) =>
-          data ? previous.map((product: Product) => (product.id === (data as unknown as Product).id ? (data as unknown as Product) : product)) : previous
-        )
+        await fetchProducts()
       } else {
         const { data, error: insertError } = await supabase
           .from('products')
@@ -667,8 +894,12 @@ function Products() {
           throw insertError
         }
 
+        if (data) {
+          await saveProductComponents((data as Product).id, sanitizedComponentIds, productTypeVal)
+        }
+
         toast.success('Product added successfully.')
-        setProducts((previous) => (data ? [data as unknown as Product, ...previous] : previous))
+        await fetchProducts()
       }
 
       setIsModalOpen(false)
@@ -735,6 +966,9 @@ function Products() {
                 <Package2 className="h-3.5 w-3.5" />
                 <span className="line-clamp-1">{product.notes}</span>
               </div>
+            ) : null}
+            {formatComponentsLine(product) ? (
+              <div className="mt-1 text-xs text-text-dark/60">{formatComponentsLine(product)}</div>
             ) : null}
           </div>
         ),
@@ -1207,7 +1441,7 @@ function Products() {
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl h-[85vh] max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-olive-light/30 bg-gradient-to-r from-olive-light/30 via-olive-light/20 to-beige px-6 py-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-olive shadow-sm">
@@ -1236,7 +1470,7 @@ function Products() {
               </Button>
             </div>
 
-            <form onSubmit={handleSubmit} className="px-6 py-6 space-y-6">
+            <form onSubmit={handleSubmit} className="flex-1 px-6 py-6 space-y-6 overflow-y-auto">
               <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold text-text-dark">Core Details</h3>
@@ -1284,7 +1518,13 @@ function Products() {
                       id="product-type"
                       name="product_type"
                       value={formData.product_type}
-                      onChange={handleFormChange}
+                      onChange={(event) => {
+                        handleFormChange(event)
+                        const nextType = event.target.value.toUpperCase()
+                        if (nextType === 'RAW') {
+                          setFormData((prev) => ({ ...prev, component_ids: [] }))
+                        }
+                      }}
                       className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
                       disabled={isSubmitting}
                     >
@@ -1297,6 +1537,107 @@ function Products() {
                     ) : null}
                   </div>
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold text-text-dark">Composition</h3>
+                  <p className="text-xs text-text-dark/60">
+                    Link products to their inputs. WIP → raw materials. Finished → WIPs.
+                  </p>
+                </div>
+                {(formData.product_type.toUpperCase() === 'WIP' || formData.product_type.toUpperCase() === 'FINISHED') && (
+                  <div className="mb-3">
+                    <Input
+                      value={componentSearch}
+                      onChange={(e) => setComponentSearch(e.target.value)}
+                      placeholder="Search components by name or SKU"
+                      disabled={isSubmitting}
+                      className="bg-white"
+                    />
+                  </div>
+                )}
+                {formData.product_type.toUpperCase() === 'RAW' ? (
+                  <p className="text-sm text-text-dark/60">Raw products do not require components.</p>
+                ) : null}
+
+                {formData.product_type.toUpperCase() === 'WIP' && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-text-dark/60">Select raw materials (one or more).</p>
+                    <div className="grid max-h-64 overflow-y-auto gap-2 sm:grid-cols-2">
+                      {filteredRawOptions
+                        .filter((p) => p.id !== editingProductId)
+                        .map((raw) => (
+                          <label
+                            key={raw.id}
+                            className="flex items-center gap-2 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark"
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-olive-light/60"
+                              checked={formData.component_ids.includes(raw.id)}
+                              onChange={(e) => {
+                                const checked = e.target.checked
+                                setFormData((prev) => {
+                                  const next = new Set(prev.component_ids)
+                                  if (checked) next.add(raw.id)
+                                  else next.delete(raw.id)
+                                  return { ...prev, component_ids: Array.from(next) }
+                                })
+                              }}
+                              disabled={isSubmitting}
+                            />
+                            <span className="flex-1">
+                              {raw.name ?? 'Unnamed raw'}
+                              {raw.sku ? <span className="text-text-dark/50"> ({raw.sku})</span> : null}
+                            </span>
+                          </label>
+                        ))}
+                    </div>
+                    {formErrors.components ? (
+                      <p className="text-sm text-red-600">{formErrors.components}</p>
+                    ) : null}
+                  </div>
+                )}
+
+                {formData.product_type.toUpperCase() === 'FINISHED' && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-text-dark/60">Select WIP inputs (one or more).</p>
+                    <div className="grid max-h-64 overflow-y-auto gap-2 sm:grid-cols-2">
+                      {filteredWipOptions
+                        .filter((p) => p.id !== editingProductId)
+                        .map((wip) => (
+                          <label
+                            key={wip.id}
+                            className="flex items-center gap-2 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark"
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-olive-light/60"
+                              checked={formData.component_ids.includes(wip.id)}
+                              onChange={(e) => {
+                                const checked = e.target.checked
+                                setFormData((prev) => {
+                                  const next = new Set(prev.component_ids)
+                                  if (checked) next.add(wip.id)
+                                  else next.delete(wip.id)
+                                  return { ...prev, component_ids: Array.from(next) }
+                                })
+                              }}
+                              disabled={isSubmitting}
+                            />
+                            <span className="flex-1">
+                              {wip.name ?? 'Unnamed WIP'}
+                              {wip.sku ? <span className="text-text-dark/50"> ({wip.sku})</span> : null}
+                            </span>
+                          </label>
+                        ))}
+                    </div>
+                    {formErrors.components ? (
+                      <p className="text-sm text-red-600">{formErrors.components}</p>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
               <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
@@ -1409,7 +1750,7 @@ function Products() {
 
       {bulkEditModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl h-[80vh] max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-olive-light/30 bg-olive-light/20 px-6 py-4">
               <div>
                 <h2 className="text-lg font-semibold text-text-dark">Bulk Edit Products</h2>
@@ -1429,10 +1770,10 @@ function Products() {
               </Button>
             </div>
 
-            <div className="space-y-4 px-6 py-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="bulk-base-unit">Base Unit</Label>
+            <div className="flex-1 space-y-4 px-6 py-6 overflow-y-auto">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <Label htmlFor="bulk-base-unit">Base Unit</Label>
                   <select
                     id="bulk-base-unit"
                     name="base_unit_id"
@@ -1507,6 +1848,105 @@ function Products() {
                     onChange={handleBulkEditFormChange}
                     disabled={bulkActionLoading}
                   />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h4 className="text-sm font-semibold text-text-dark">Bulk Composition Mapping</h4>
+                    <p className="text-xs text-text-dark/60">
+                      For WIP products: add raw materials. For Finished products: add WIPs. Only applies to selected products of the matching type.
+                    </p>
+                  </div>
+                  <div className="w-full sm:w-64">
+                    <Input
+                      placeholder="Search components"
+                      value={bulkComponentSearch}
+                      onChange={(e) => setBulkComponentSearch(e.target.value)}
+                      disabled={bulkActionLoading}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-sm font-medium text-text-dark">Raw materials (for WIP)</div>
+                    <div className="grid max-h-56 gap-2 overflow-y-auto rounded-md border border-olive-light/40 bg-white p-2">
+                      {filteredRawOptionsBulk
+                        .filter(() => hasWipSelection) // only show when WIP products are selected
+                        .map((raw) => (
+                        <label
+                          key={raw.id}
+                          className="flex items-center gap-2 rounded-md border border-olive-light/30 bg-olive-light/5 px-2 py-1 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-olive-light/60"
+                            checked={bulkEditForm.raw_component_ids.includes(raw.id)}
+                            onChange={(e) => {
+                              const checked = e.target.checked
+                              setBulkEditForm((prev) => {
+                                const next = new Set(prev.raw_component_ids)
+                                if (checked) next.add(raw.id)
+                                else next.delete(raw.id)
+                                return { ...prev, raw_component_ids: Array.from(next) }
+                              })
+                            }}
+                            disabled={bulkActionLoading}
+                          />
+                          <span className="flex-1 truncate">
+                            {raw.name ?? 'Unnamed raw'}
+                            {raw.sku ? <span className="text-text-dark/50"> ({raw.sku})</span> : null}
+                          </span>
+                        </label>
+                      ))}
+                      {!hasWipSelection ? (
+                        <div className="text-xs text-text-dark/60">Select at least one WIP product to map raw materials.</div>
+                      ) : filteredRawOptionsBulk.length === 0 ? (
+                        <div className="text-xs text-text-dark/60">No raw materials match the search.</div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-sm font-medium text-text-dark">WIPs (for Finished)</div>
+                    <div className="grid max-h-56 gap-2 overflow-y-auto rounded-md border border-olive-light/40 bg-white p-2">
+                      {filteredWipOptionsBulk
+                        .filter(() => hasFinishedSelection) // only show when Finished products are selected
+                        .map((wip) => (
+                        <label
+                          key={wip.id}
+                          className="flex items-center gap-2 rounded-md border border-olive-light/30 bg-olive-light/5 px-2 py-1 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-olive-light/60"
+                            checked={bulkEditForm.wip_component_ids.includes(wip.id)}
+                            onChange={(e) => {
+                              const checked = e.target.checked
+                              setBulkEditForm((prev) => {
+                                const next = new Set(prev.wip_component_ids)
+                                if (checked) next.add(wip.id)
+                                else next.delete(wip.id)
+                                return { ...prev, wip_component_ids: Array.from(next) }
+                              })
+                            }}
+                            disabled={bulkActionLoading}
+                          />
+                          <span className="flex-1 truncate">
+                            {wip.name ?? 'Unnamed WIP'}
+                            {wip.sku ? <span className="text-text-dark/50"> ({wip.sku})</span> : null}
+                          </span>
+                        </label>
+                      ))}
+                      {!hasFinishedSelection ? (
+                        <div className="text-xs text-text-dark/60">Select at least one Finished product to map WIPs.</div>
+                      ) : filteredWipOptionsBulk.length === 0 ? (
+                        <div className="text-xs text-text-dark/60">No WIPs match the search.</div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               </div>
 

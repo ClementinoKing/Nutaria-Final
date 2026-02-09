@@ -17,6 +17,8 @@ const WIPProductDetailPage = lazy(() => import('./pages/inventory/WIPProductDeta
 const AllocationPage = lazy(() => import('./pages/inventory/AllocationPage'))
 const AllocationDetailsPage = lazy(() => import('./pages/inventory/AllocationDetailsPage'))
 const RemaindersPage = lazy(() => import('./pages/inventory/RemaindersPage'))
+const WastePage = lazy(() => import('./pages/inventory/WastePage'))
+const WasteDetailsPage = lazy(() => import('./pages/inventory/WasteDetailsPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
@@ -196,6 +198,22 @@ function App() {
           element={
             <ProtectedRoute>
               <RemaindersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/waste"
+          element={
+            <ProtectedRoute>
+              <WastePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/stock-levels/waste-details/:lotRunId"
+          element={
+            <ProtectedRoute>
+              <WasteDetailsPage />
             </ProtectedRoute>
           }
         />

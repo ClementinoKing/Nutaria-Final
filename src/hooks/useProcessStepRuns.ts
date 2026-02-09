@@ -67,7 +67,7 @@ export function useProcessStepRuns(options: UseProcessStepRunsOptions): UseProce
         try {
           processStepsResult = await supabase
             .from('process_steps')
-            .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
+            .select('id, process_id, seq, step_name_id, description, requires_qc, can_be_skipped, default_location_id, estimated_duration')
             .in('id', stepIds)
 
           if (processStepsResult.error) {
@@ -76,7 +76,7 @@ export function useProcessStepRuns(options: UseProcessStepRunsOptions): UseProce
               stepIds.map((id) =>
                 supabase
                   .from('process_steps')
-                  .select('id, process_id, seq, step_name_id, description, requires_qc, default_location_id, estimated_duration')
+                  .select('id, process_id, seq, step_name_id, description, requires_qc, can_be_skipped, default_location_id, estimated_duration')
                   .eq('id', id)
                   .maybeSingle()
               )

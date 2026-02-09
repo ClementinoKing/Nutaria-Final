@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { AlertCircle, ArrowLeft, ArrowUpRight, BarChart3 } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowUpRight, BarChart3, SlidersHorizontal, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { Button } from '@/components/ui/button'
 
 const QUALITY_HOLD_STATUSES = new Set(['PENDING', 'HOLD'])
 
@@ -74,6 +75,7 @@ interface StockLevel {
   notes: string | null
   packSize: number | null
   status: string | null
+  unprocessed_qty: number
 }
 
 interface EnrichedStockLevel extends StockLevel {
@@ -125,6 +127,9 @@ function SupplyStockPage() {
   const [monthFilter, setMonthFilter] = useState('')
   const [showLowStockOnly, setShowLowStockOnly] = useState(false)
   const [coverageThreshold, setCoverageThreshold] = useState(14)
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const [loading, setLoading] = useState(true)
   const [errors, setErrors] = useState<string[]>([])
 
@@ -155,10 +160,13 @@ function SupplyStockPage() {
           batchQuery = batchQuery.eq('product_id', Number.parseInt(productFilter, 10))
         }
 
-        const {
-          data: batchRows,
-          error: batchError,
-        } = await batchQuery
+        const [
+          { data: batchRows, error: batchError },
+          { data: packEntries, error: packError },
+        ] = await Promise.all([
+          batchQuery,
+          supabase.from('process_packaging_pack_entries').select('sorting_output_id, quantity_kg'),
+        ])
 
         if (batchError) {
           collectedErrors.push(`supply_batches: ${batchError.message}`)
@@ -168,8 +176,17 @@ function SupplyStockPage() {
           }
           return
         }
+        if (packError) {
+          collectedErrors.push(`pack_entries: ${packError.message}`)
+        }
 
         const batches = (Array.isArray(batchRows) ? batchRows : []) as SupplyBatch[]
+        const packedBySortingOutput = new Map<number, number>()
+        ;(packEntries ?? []).forEach((pe: any) => {
+          if (!pe?.sorting_output_id) return
+          const qty = Number(pe.quantity_kg) || 0
+          packedBySortingOutput.set(pe.sorting_output_id, (packedBySortingOutput.get(pe.sorting_output_id) || 0) + qty)
+        })
 
         if (batches.length === 0) {
           if (isMounted) {
@@ -179,13 +196,21 @@ function SupplyStockPage() {
           return
         }
 
-        // Batches currently in process (have an IN_PROGRESS process_lot_run)
-        const { data: inProgressRuns } = await supabase
-          .from('process_lot_runs')
-          .select('supply_batch_id')
-          .eq('status', 'IN_PROGRESS')
+        const [{ data: inProgressRuns }, { data: startedRuns }] = await Promise.all([
+          supabase
+            .from('process_lot_runs')
+            .select('supply_batch_id')
+            .eq('status', 'IN_PROGRESS'),
+          supabase
+            .from('process_lot_runs')
+            .select('supply_batch_id, started_at')
+            .not('started_at', 'is', null),
+        ])
         const inProgressBatchIds = new Set(
           (inProgressRuns ?? []).map((r: { supply_batch_id: number }) => r.supply_batch_id)
+        )
+        const startedBatchIds = new Set(
+          (startedRuns ?? []).map((r: { supply_batch_id: number; started_at: string | null }) => r.supply_batch_id)
         )
 
         const productIds = Array.from(
@@ -268,17 +293,19 @@ function SupplyStockPage() {
         const warehousesMap = new Map<number, Warehouse>((Array.isArray(warehouseRows) ? warehouseRows : []).map((warehouse: Warehouse) => [warehouse.id, warehouse]))
         const unitsMap = new Map<number, Unit>((Array.isArray(unitRows) ? unitRows : []).map((unit: Unit) => [unit.id, unit]))
 
-        interface AggregatedRecord {
-          id: string
-          product_id: number
-          warehouse_id: number | null
-          unit_id: number | null
-          received: number
-          accepted: number
-          rejected: number
-          hold: number
-          in_process: number
-        }
+interface AggregatedRecord {
+  id: string
+  product_id: number
+  warehouse_id: number | null
+  unit_id: number | null
+  received: number
+  accepted: number
+  rejected: number
+  hold: number
+  in_process: number
+  available_base: number
+  unprocessed_base: number
+}
 
         const aggregated = new Map<string, AggregatedRecord>()
 
@@ -304,6 +331,8 @@ function SupplyStockPage() {
               rejected: 0,
               hold: 0,
               in_process: 0,
+              available_base: 0,
+              unprocessed_base: 0,
             })
           }
 
@@ -318,9 +347,17 @@ function SupplyStockPage() {
           const status = (batch.quality_status ?? '').toUpperCase()
           const inferredPending = Math.max(receivedQty - acceptedQty - rejectedQty, 0)
 
+          const currentQty = parseNumber(batch.current_qty)
+          const derivedAvailable = acceptedQty + (QUALITY_HOLD_STATUSES.has(status) ? inferredPending : 0)
+          const availableQty = batch.current_qty !== null && batch.current_qty !== undefined ? currentQty : derivedAvailable
+
           record.received += receivedQty
           record.accepted += acceptedQty
           record.rejected += rejectedQty
+          record.available_base += availableQty
+          if (!startedBatchIds.has(batch.id)) {
+            record.unprocessed_base += availableQty
+          }
 
           if (QUALITY_HOLD_STATUSES.has(status)) {
             record.hold += inferredPending
@@ -330,7 +367,7 @@ function SupplyStockPage() {
 
           // Quantity in process: batches with IN_PROGRESS process_lot_run count as committed
           if (inProgressBatchIds.has(batch.id)) {
-            const batchOnHand = Math.max(acceptedQty + (QUALITY_HOLD_STATUSES.has(status) ? inferredPending : 0) + (status === 'FAILED' ? Math.max(rejectedQty, 0) : 0), 0)
+            const batchOnHand = Math.max(availableQty + (status === 'FAILED' ? Math.max(rejectedQty, 0) : 0), 0)
             record.in_process += batchOnHand
           }
         })
@@ -344,10 +381,10 @@ function SupplyStockPage() {
 
           const reorderPoint = toNullableNumber(product?.reorder_point)
           const safetyStock = toNullableNumber(product?.safety_stock)
-          const onHand = Math.max(record.accepted + record.hold, 0)
+          const onHand = Math.max(record.available_base, 0)
           const qualityHold = Math.max(record.hold, 0)
           const inProcess = roundNumber(record.in_process)
-          const availableSnapshot = Math.max(onHand - qualityHold - inProcess, 0)
+          const availableSnapshot = Math.max(onHand - inProcess, 0)
 
           let lowStockReason: string | null = null
           if (reorderPoint !== null && availableSnapshot < reorderPoint) {
@@ -376,6 +413,7 @@ function SupplyStockPage() {
             notes: null,
             packSize: product?.pack_size ?? null,
             status: product?.status ?? null,
+            unprocessed_qty: roundNumber(Math.max(record.unprocessed_base, 0)),
           }
         })
 
@@ -490,13 +528,59 @@ function SupplyStockPage() {
     })
   }, [enrichedStockLevels, searchTerm, warehouseFilter, productFilter, showLowStockOnly, coverageThreshold])
 
+  const paginatedStockLevels = useMemo(
+    () => filteredStockLevels.slice((page - 1) * pageSize, page * pageSize),
+    [filteredStockLevels, page, pageSize]
+  )
+
+  useEffect(() => {
+    setPage(1)
+  }, [searchTerm, warehouseFilter, productFilter, monthFilter, showLowStockOnly, coverageThreshold])
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredStockLevels.length / pageSize))
+    if (page > totalPages) setPage(totalPages)
+  }, [filteredStockLevels.length, page, pageSize])
+
   const totalOnHand = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.on_hand ?? 0), 0)
   const totalUnprocessed = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => {
-    const unprocessed = Math.max((entry.on_hand ?? 0) - (entry.quality_hold ?? 0) - (entry.in_process ?? 0), 0)
+    const unprocessed = Math.max(entry.unprocessed_qty ?? 0, 0)
     return total + unprocessed
   }, 0)
   const totalInProcess = filteredStockLevels.reduce((total: number, entry: EnrichedStockLevel) => total + (entry.in_process ?? 0), 0)
   const lowStockCount = filteredStockLevels.filter((entry: EnrichedStockLevel) => entry.isBelowReorder || entry.isBelowSafety).length
+  const activeFilterCount = useMemo(() => {
+    let count = 0
+    if (searchTerm.trim()) count += 1
+    if (productFilter) count += 1
+    if (monthFilter) count += 1
+    if (warehouseFilter !== 'ALL') count += 1
+    if (coverageThreshold !== 14) count += 1
+    if (showLowStockOnly) count += 1
+    return count
+  }, [searchTerm, productFilter, monthFilter, warehouseFilter, coverageThreshold, showLowStockOnly])
+
+  const resetFilters = () => {
+    setSearchTerm('')
+    setProductFilter('')
+    setMonthFilter('')
+    setWarehouseFilter('ALL')
+    setCoverageThreshold(14)
+    setShowLowStockOnly(false)
+  }
+
+  useEffect(() => {
+    if (!isFilterPanelOpen) return
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFilterPanelOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [isFilterPanelOpen])
 
   const columns = useMemo(
     () => [
@@ -792,8 +876,8 @@ function SupplyStockPage() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-            <div className="sm:col-span-2">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr),auto]">
+            <div>
               <Label htmlFor="stock-search">Search</Label>
               <Input
                 id="stock-search"
@@ -803,65 +887,17 @@ function SupplyStockPage() {
                 className="mt-1"
               />
             </div>
-            <div>
-              <Label htmlFor="product-filter">Product</Label>
-              <SearchableSelect
-                id="product-filter"
-                options={productOptions}
-                value={productFilter}
-                onChange={setProductFilter}
-                placeholder="All Products"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label htmlFor="month-filter">Month</Label>
-              <SearchableSelect
-                id="month-filter"
-                options={monthOptions}
-                value={monthFilter}
-                onChange={setMonthFilter}
-                placeholder="All Months"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label htmlFor="warehouse-filter">Warehouse</Label>
-              <select
-                id="warehouse-filter"
-                value={warehouseFilter}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) => setWarehouseFilter(event.target.value)}
-                className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
-              >
-                <option value="ALL">All warehouses</option>
-                {warehouses.map((warehouse: string) => (
-                  <option key={warehouse} value={warehouse}>
-                    {warehouse}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="coverage-threshold">Coverage threshold (days)</Label>
-              <Input
-                id="coverage-threshold"
-                type="number"
-                min={1}
-                value={coverageThreshold}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setCoverageThreshold(Number(event.target.value) || 0)}
-                className="mt-1"
-              />
-            </div>
-            <div className="flex items-end">
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-text-dark/80">
-                <input
-                  type="checkbox"
-                  checked={showLowStockOnly}
-                  onChange={(event: ChangeEvent<HTMLInputElement>) => setShowLowStockOnly(event.target.checked)}
-                  className="h-4 w-4 rounded border border-olive-light/50 text-olive focus:ring-olive"
-                />
-                Focus on risk items
-              </label>
+            <div className="flex flex-wrap items-end justify-end gap-2 rounded-md border border-olive-light/30 bg-olive-light/5 px-3 py-2">
+              <div className="text-sm text-text-dark/70">
+                {activeFilterCount > 0 ? `${activeFilterCount} active filter${activeFilterCount > 1 ? 's' : ''}` : 'No active filters'}
+              </div>
+              <Button type="button" variant="outline" onClick={resetFilters}>
+                Reset
+              </Button>
+              <Button type="button" className="bg-olive hover:bg-olive-dark" onClick={() => setIsFilterPanelOpen(true)}>
+                <SlidersHorizontal className="mr-2 h-4 w-4" />
+                Filters
+              </Button>
             </div>
           </div>
 
@@ -870,18 +906,172 @@ function SupplyStockPage() {
               No supply stock recorded yet. Add supplies to see stock levels here.
             </div>
           ) : (
-            <ResponsiveTable
-              columns={columns}
-              data={filteredStockLevels}
-              rowKey="id"
-              tableClassName=""
-              mobileCardClassName=""
-              getRowClassName={() => ''}
-              onRowClick={undefined}
-            />
+            <div className="space-y-4">
+              <ResponsiveTable
+                columns={columns}
+                data={paginatedStockLevels}
+                rowKey="id"
+                tableClassName=""
+                mobileCardClassName=""
+                getRowClassName={() => ''}
+                onRowClick={undefined}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
+                <div className="text-sm text-text-dark/70">
+                  Showing {(page - 1) * pageSize + 1}-
+                  {Math.min(page * pageSize, filteredStockLevels.length)} of {filteredStockLevels.length}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="supply-page-size" className="text-sm text-text-dark/70">
+                    Per page
+                  </label>
+                  <select
+                    id="supply-page-size"
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value))
+                      setPage(1)
+                    }}
+                    className="rounded-md border border-olive-light/60 bg-white px-2 py-1 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => p + 1)}
+                    disabled={page * pageSize >= filteredStockLevels.length}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
+
+      <div className={`fixed inset-0 z-50 ${isFilterPanelOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
+        <button
+          type="button"
+          className={`absolute inset-0 bg-black/30 transition-opacity duration-300 ${isFilterPanelOpen ? 'opacity-100' : 'opacity-0'}`}
+          onClick={() => setIsFilterPanelOpen(false)}
+          aria-label="Close filters panel"
+        />
+        <aside
+          className={`absolute right-0 top-0 h-full w-full max-w-md border-l border-olive-light/40 bg-white shadow-xl transition-transform duration-300 ${
+            isFilterPanelOpen ? 'translate-x-0' : 'translate-x-full'
+          }`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Supply stock filters"
+        >
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-olive-light/30 px-4 py-3">
+              <div>
+                <h3 className="text-base font-semibold text-text-dark">Filters</h3>
+                <p className="text-xs text-text-dark/60">Refine supply stock results</p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setIsFilterPanelOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto p-4">
+              <div>
+                <Label htmlFor="product-filter">Product</Label>
+                <SearchableSelect
+                  id="product-filter"
+                  options={productOptions}
+                  value={productFilter}
+                  onChange={setProductFilter}
+                  placeholder="All Products"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="month-filter">Month</Label>
+                <SearchableSelect
+                  id="month-filter"
+                  options={monthOptions}
+                  value={monthFilter}
+                  onChange={setMonthFilter}
+                  placeholder="All Months"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="warehouse-filter">Warehouse</Label>
+                <select
+                  id="warehouse-filter"
+                  value={warehouseFilter}
+                  onChange={(event: ChangeEvent<HTMLSelectElement>) => setWarehouseFilter(event.target.value)}
+                  className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                >
+                  <option value="ALL">All warehouses</option>
+                  {warehouses.map((warehouse: string) => (
+                    <option key={warehouse} value={warehouse}>
+                      {warehouse}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="coverage-threshold">Coverage threshold (days)</Label>
+                <Input
+                  id="coverage-threshold"
+                  type="number"
+                  min={1}
+                  value={coverageThreshold}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => setCoverageThreshold(Number(event.target.value) || 0)}
+                  className="mt-1"
+                />
+              </div>
+              <div className="rounded-md border border-olive-light/30 px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-text-dark/80">Focus on risk products</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showLowStockOnly}
+                    onClick={() => setShowLowStockOnly((prev) => !prev)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-olive ${
+                      showLowStockOnly ? 'bg-olive' : 'bg-olive-light/50'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        showLowStockOnly ? 'translate-x-5' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-olive-light/30 p-4">
+              <Button type="button" variant="outline" onClick={resetFilters}>
+                Reset
+              </Button>
+              <Button type="button" className="bg-olive hover:bg-olive-dark" onClick={() => setIsFilterPanelOpen(false)}>
+                Apply
+              </Button>
+            </div>
+          </div>
+        </aside>
+      </div>
     </PageLayout>
   )
 }

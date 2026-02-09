@@ -32,23 +32,35 @@ function WIPStockPage() {
     setLoading(true)
     setError(null)
     try {
-      const { data: outputs, error: outputsError } = await supabase
-        .from('process_sorting_outputs')
-        .select(`
-          id,
-          product_id,
-          quantity_kg,
-          created_at,
-          product:products(id, name, sku),
-          process_step_runs(process_lot_run_id, process_lot_runs(id, supply_batches(lot_no)))
-        `)
-        .order('created_at', { ascending: false })
+      const [{ data: outputs, error: outputsError }, { data: packEntries, error: packError }] = await Promise.all([
+        supabase
+          .from('process_sorting_outputs')
+          .select(`
+            id,
+            product_id,
+            quantity_kg,
+            created_at,
+            product:products(id, name, sku),
+            process_step_runs(process_lot_run_id, process_lot_runs(id, supply_batches(lot_no)))
+          `)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('process_packaging_pack_entries')
+          .select('sorting_output_id, quantity_kg'),
+      ])
 
-      if (outputsError) {
-        setError(outputsError.message)
+      if (outputsError || packError) {
+        setError(outputsError?.message || packError?.message || 'Failed to load WIP data')
         setRows([])
         return
       }
+
+      const consumedByOutput = new Map<number, number>()
+      ;(packEntries ?? []).forEach((pe: any) => {
+        if (!pe?.sorting_output_id) return
+        const qty = Number(pe.quantity_kg) || 0
+        consumedByOutput.set(pe.sorting_output_id, (consumedByOutput.get(pe.sorting_output_id) || 0) + qty)
+      })
 
       type StepRun = {
         process_lot_run_id: number
@@ -71,7 +83,13 @@ function WIPStockPage() {
         const productId = o.product_id
         const name = o.product?.name ?? 'Unknown'
         const sku = o.product?.sku ?? ''
-        const qty = Number(o.quantity_kg) || 0
+        const rawQty = Number(o.quantity_kg) || 0
+        const consumed = consumedByOutput.get(o.id) || 0
+        const qty = Math.max(0, rawQty - consumed)
+        if (qty <= 0) {
+          // fully packed/consumed WIP; skip from WIP stock aggregation
+          continue
+        }
         if (!byProduct.has(productId)) {
           byProduct.set(productId, { quantity: 0, count: 0, name, sku, lotSet: new Map() })
         }

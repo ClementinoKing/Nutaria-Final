@@ -168,6 +168,8 @@ function ProcessStepsProgress() {
   const [saving, setSaving] = useState(false)
   const [skipAlertOpen, setSkipAlertOpen] = useState(false)
   const [finishWithNCAlertOpen, setFinishWithNCAlertOpen] = useState(false)
+  const [completeStepAlertOpen, setCompleteStepAlertOpen] = useState(false)
+  const [startProcessAlertOpen, setStartProcessAlertOpen] = useState(false)
   const [showNCForm, setShowNCForm] = useState(false)
   const [showSignoffs, setShowSignoffs] = useState(false)
   const [creatingLotRun, setCreatingLotRun] = useState(false)
@@ -291,6 +293,7 @@ function ProcessStepsProgress() {
 
   const activeStepRun = stepRuns[currentStepIndex] ?? null
   const activeStep: ProcessStep | undefined = activeStepRun?.process_step
+  const isActiveStepSkippable = activeStep?.can_be_skipped === true
 
   const { nonConformances, addNonConformance, resolveNonConformance } = useNonConformances({
     stepRunId: activeStepRun?.id ?? null,
@@ -372,6 +375,16 @@ function ProcessStepsProgress() {
   }, [lotRunId, activeStepRun?.id, activeStep?.step_code])
 
   const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED' || step.status === 'SKIPPED')
+  const isLastCompletableStep = useMemo(() => {
+    if (!activeStepRun) return false
+    if (activeStepRun.status === 'COMPLETED' || activeStepRun.status === 'SKIPPED') return false
+    return stepRuns.every(
+      (step) =>
+        step.id === activeStepRun.id ||
+        step.status === 'COMPLETED' ||
+        step.status === 'SKIPPED'
+    )
+  }, [stepRuns, activeStepRun])
   const canStartNextStep = useMemo(() => {
     const currentStep = stepRuns[currentStepIndex]
     return currentStep?.status === 'COMPLETED' || currentStep?.status === 'SKIPPED'
@@ -386,7 +399,7 @@ function ProcessStepsProgress() {
     navigate('/process/process-steps')
   }
 
-  const handleCreateLotRun = async () => {
+  const performCreateLotRun = async () => {
     if (!selectedLot) {
       toast.error('No lot selected')
       return
@@ -425,6 +438,14 @@ function ProcessStepsProgress() {
     } finally {
       setCreatingLotRun(false)
     }
+  }
+
+  const handleCreateLotRun = () => {
+    if (!selectedLot) {
+      toast.error('No lot selected')
+      return
+    }
+    setStartProcessAlertOpen(true)
   }
 
   const goToStep = (index: number) => {
@@ -475,6 +496,70 @@ function ProcessStepsProgress() {
 
   const handleStepStatusChange = async (status: ProcessStepRun['status']) => {
     if (!activeStepRun || !lotRunId || !user?.id) return
+
+    if (status === 'COMPLETED' && activeStep?.step_code?.toUpperCase() === 'SORT') {
+      if (!selectedLot?.id) {
+        toast.error('Unable to validate sorting quantity. Please refresh and try again.')
+        return
+      }
+
+      try {
+        let baseAvailable = sortingAvailableQty?.availableQty ?? null
+        if (baseAvailable === null) {
+          const recalculated = await calculateAvailableQuantity(lotRunId, activeStepRun.id)
+          baseAvailable = recalculated.availableQty
+        }
+
+        const [{ data: outputsData, error: outputsError }, { data: reworksData, error: reworksError }] =
+          await Promise.all([
+            supabase
+              .from('process_sorting_outputs')
+              .select('id, quantity_kg')
+              .eq('process_step_run_id', activeStepRun.id),
+            supabase
+              .from('reworked_lots')
+              .select('quantity_kg')
+              .eq('original_supply_batch_id', selectedLot.id),
+          ])
+
+        if (outputsError || reworksError) {
+          toast.error('Failed to validate sorting quantities before completion')
+          return
+        }
+
+        const outputRows = outputsData || []
+        const outputIds = outputRows.map((row) => row.id)
+        const outputTotal = outputRows.reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
+        const reworkTotal = (reworksData || []).reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
+
+        let wasteTotal = 0
+        if (outputIds.length > 0) {
+          const { data: wasteData, error: wasteError } = await supabase
+            .from('process_sorting_waste')
+            .select('quantity_kg')
+            .in('sorting_run_id', outputIds)
+
+          if (wasteError) {
+            toast.error('Failed to validate sorting waste before completion')
+            return
+          }
+
+          wasteTotal = (wasteData || []).reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
+        }
+
+        const remaining = Number(baseAvailable) - outputTotal - reworkTotal - wasteTotal
+        if (remaining > 0.0001) {
+          toast.error(
+            `Sorting is incomplete. Remaining quantity is ${remaining.toFixed(2)} kg. Allocate all kgs to outputs, reworks, or waste before completing this step.`
+          )
+          return
+        }
+      } catch (error) {
+        console.error('Error validating sorting completion:', error)
+        toast.error('Failed to validate sorting completion')
+        return
+      }
+    }
 
     const updates: Partial<ProcessStepRun> = { status }
     const previousStatus = activeStepRun.status
@@ -680,6 +765,29 @@ function ProcessStepsProgress() {
     }
 
     performCompleteProcess()
+  }
+
+  const handleCompleteStep = async () => {
+    if (!activeStepRun) return
+
+    const shouldCompleteProcessAfterStep = stepRuns.every(
+      (step) =>
+        step.id === activeStepRun.id ||
+        step.status === 'COMPLETED' ||
+        step.status === 'SKIPPED'
+    )
+
+    await handleStepStatusChange('COMPLETED')
+    setCompleteStepAlertOpen(false)
+
+    if (!shouldCompleteProcessAfterStep) return
+
+    if (unresolvedNCs.length > 0) {
+      setFinishWithNCAlertOpen(true)
+      return
+    }
+
+    await performCompleteProcess()
   }
 
   const handleSignoff = async (role: 'operator' | 'supervisor' | 'qa') => {
@@ -1027,12 +1135,18 @@ function ProcessStepsProgress() {
                         </div>
                       </div>
 
-                      <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="step_location">Location</Label>
+                      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+                        <div className="rounded-xl border border-olive-light/35 bg-olive-light/10 p-4">
+                          <Label
+                            htmlFor="step_location"
+                            className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70"
+                          >
+                            <MapPin className="h-4 w-4 text-olive" aria-hidden />
+                            Location
+                          </Label>
                           <select
                             id="step_location"
-                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            className="flex h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 py-2 text-sm font-medium text-text-dark shadow-sm transition focus:outline-none focus:ring-2 focus:ring-olive-light/50"
                             value={stepFormData.location_id}
                             onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                               setStepFormData({ ...stepFormData, location_id: e.target.value })
@@ -1048,17 +1162,12 @@ function ProcessStepsProgress() {
                           </select>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label className="flex items-center gap-2">
-                            <Timer className="h-4 w-4 text-olive" aria-hidden />
-                            Started at
-                          </Label>
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm text-text-dark py-2 flex-1">
-                              {activeStepRun.started_at
-                                ? new Date(activeStepRun.started_at).toLocaleString()
-                                : '—'}
-                            </p>
+                        <div className="rounded-xl border border-olive-light/35 bg-white p-4">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <Label className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                              <Timer className="h-4 w-4 text-olive" aria-hidden />
+                              Started at
+                            </Label>
                             {activeStepRun.status !== 'COMPLETED' && activeStepRun.status !== 'SKIPPED' && (
                               <Button
                                 type="button"
@@ -1081,18 +1190,24 @@ function ProcessStepsProgress() {
                                   }
                                 }}
                                 disabled={saving || loadingStepRuns}
-                                className="shrink-0 border-olive-light/40"
+                                className="shrink-0 border-olive-light/50"
                                 title="Record current time as start"
                               >
                                 <Timer className="h-4 w-4" />
                               </Button>
                             )}
                           </div>
+                          <p className="text-lg font-semibold text-text-dark">
+                            {activeStepRun.started_at ? new Date(activeStepRun.started_at).toLocaleString() : '—'}
+                          </p>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label>Completed at</Label>
-                          <p className="text-sm text-text-dark py-2">
+                        <div className="rounded-xl border border-olive-light/35 bg-white p-4">
+                          <Label className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                            <CheckCircle2 className="h-4 w-4 text-olive" aria-hidden />
+                            Completed at
+                          </Label>
+                          <p className="text-lg font-semibold text-text-dark">
                             {activeStepRun.completed_at
                               ? new Date(activeStepRun.completed_at).toLocaleString()
                               : '—'}
@@ -1124,6 +1239,8 @@ function ProcessStepsProgress() {
                                 stepRun={activeStepRun}
                                 loading={saving || loadingStepRuns}
                                 originalSupplyBatchId={selectedLot?.id ?? null}
+                                lotProductName={selectedLot?.products?.name ?? null}
+                                lotProductId={selectedLot?.product_id ?? null}
                                 availableQuantity={sortingAvailableQty}
                                 onQuantityChange={() => {
                                   // Refetch available qty so remaining stays accurate after add/edit/delete
@@ -1284,19 +1401,21 @@ function ProcessStepsProgress() {
                         activeStepRun.status !== 'COMPLETED' &&
                         activeStepRun.status !== 'SKIPPED' && (
                           <>
+                            {isActiveStepSkippable && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleSkipStep}
+                                disabled={saving || loadingStepRuns}
+                                className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
+                              >
+                                <SkipForward className="mr-2 h-4 w-4" />
+                                Skip
+                              </Button>
+                            )}
                             <Button
                               type="button"
-                              variant="outline"
-                              onClick={handleSkipStep}
-                              disabled={saving || loadingStepRuns}
-                              className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
-                            >
-                              <SkipForward className="mr-2 h-4 w-4" />
-                              Skip
-                            </Button>
-                            <Button
-                              type="button"
-                              onClick={() => handleStepStatusChange('COMPLETED')}
+                              onClick={() => setCompleteStepAlertOpen(true)}
                               disabled={saving || loadingStepRuns}
                               className="bg-olive hover:bg-olive-dark"
                             >
@@ -1365,6 +1484,77 @@ function ProcessStepsProgress() {
               onClick={() => performCompleteProcess()}
             >
               Proceed
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={startProcessAlertOpen} onOpenChange={setStartProcessAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start process for this lot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Confirm the lot details before starting. Once the process starts, the kilograms cannot be changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="space-y-2 rounded-md border border-olive-light/30 bg-olive-light/10 p-3 text-sm">
+            <p>
+              <span className="font-semibold text-text-dark">Supply Document:</span>{' '}
+              <span className="text-text-dark/80">{selectedLot?.supplies?.doc_no ?? 'Unknown document'}</span>
+            </p>
+            <p>
+              <span className="font-semibold text-text-dark">Product:</span>{' '}
+              <span className="text-text-dark/80">{selectedLot?.products?.name ?? 'Unknown product'}</span>
+            </p>
+            <p>
+              <span className="font-semibold text-text-dark">Available Qty:</span>{' '}
+              <span className="text-text-dark/80">
+                {selectedLot ? `${selectedLot.current_qty ?? selectedLot.received_qty ?? '—'} ${selectedLot.units?.symbol ?? ''}` : '—'}
+              </span>
+            </p>
+          </div>
+
+          <p className="text-xs text-amber-700">
+            Important: After starting the process, the kg value is locked and cannot be edited.
+          </p>
+
+          <AlertDialogFooter className="grid w-full grid-cols-2 gap-3 sm:grid-cols-2">
+            <AlertDialogCancel className="w-full">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="w-full bg-olive hover:bg-olive-dark"
+              onClick={() => {
+                setStartProcessAlertOpen(false)
+                void performCreateLotRun()
+              }}
+            >
+              {creatingLotRun ? 'Starting…' : 'Confirm & Start'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={completeStepAlertOpen} onOpenChange={setCompleteStepAlertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {isLastCompletableStep
+                ? 'Complete process and create production batch?'
+                : 'Complete this step?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {isLastCompletableStep
+                ? 'This will mark the current step complete, finish the process, and create the production batch.'
+                : 'This will mark the current step as completed.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-olive hover:bg-olive-dark"
+              onClick={() => handleCompleteStep()}
+            >
+              {isLastCompletableStep ? 'Complete & Create Batch' : 'Complete Step'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

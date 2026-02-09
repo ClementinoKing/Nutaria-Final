@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
-import { Package, Layers, Box, Scale } from 'lucide-react'
+import { Package, Layers, Box, Scale, Trash2 } from 'lucide-react'
 
 const SEGMENTS = [
   {
@@ -36,6 +36,14 @@ const SEGMENTS = [
     icon: Scale,
     className: 'border-orange-200/70 hover:border-orange-400/80 hover:bg-orange-50/60',
   },
+  {
+    key: 'waste',
+    title: 'Waste',
+    description: 'Waste and foreign-object losses by lot run, with lost kg totals.',
+    path: '/inventory/stock-levels/waste',
+    icon: Trash2,
+    className: 'border-rose-200/70 hover:border-rose-400/80 hover:bg-rose-50/60',
+  },
 ] as const
 
 function StockLevels() {
@@ -49,7 +57,7 @@ function StockLevels() {
     >
       <div className="mb-6">
         <p className="text-muted-foreground">
-          View stock by stage: supply (received), work in progress, allocations, or remainders.
+          View stock by stage: supply, work in progress, allocations, remainders, or waste.
         </p>
       </div>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">

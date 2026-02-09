@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { Plus, Trash2, Upload, Package as PackageIcon } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Plus, Trash2, Upload, XCircle, Package as PackageIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
@@ -102,6 +102,25 @@ const METAL_CHECK_STATUS_OPTIONS: Array<{ value: '' | 'PASS' | 'FAIL'; label: st
   { value: 'PASS', label: 'PASS' },
   { value: 'FAIL', label: 'FAIL' },
 ]
+const PRIMARY_PACKAGING_OPTIONS = [
+  'Bag',
+  'Box',
+  'Vacuum bag',
+  'Poly bag',
+  'Doypack',
+  'Pouch',
+  'Sachet',
+  'Tin',
+  'Drum',
+].map((label) => ({ value: label, label }))
+const SECONDARY_PACKAGING_OPTIONS = ['Carton', 'Pallet', 'Crate', 'Shrink wrap', 'Sleeve', 'Display box'].map((label) => ({
+  value: label,
+  label,
+}))
+const SECONDARY_TYPE_OPTIONS = ['Inner liner', 'Outer', 'Stretch wrap', 'Strapping', 'Labelled', 'Unlabelled'].map((label) => ({
+  value: label,
+  label,
+}))
 const VISUAL_STATUS_OPTIONS = ['', 'Pass', 'Rework', 'Hold']
 const PEST_STATUS_OPTIONS = ['', 'None', 'Minor', 'Major']
 const FOREIGN_OBJECT_STATUS_OPTIONS = ['', 'None', 'Detected']
@@ -182,7 +201,6 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     loading,
     savePackagingRun,
     addWeightCheck,
-    updateWeightCheck,
     deleteWeightCheck,
     addPhoto,
     deletePhoto,
@@ -207,6 +225,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const [sortedWips, setSortedWips] = useState<SortedWipRow[]>([])
   const [finishedProducts, setFinishedProducts] = useState<FinishedProductOption[]>([])
+  const selectedWipProductIdRef = useRef<number | null>(null)
   const [packagingUnits, setPackagingUnits] = useState<PackagingUnitOption[]>([])
   const [boxPackRules, setBoxPackRules] = useState<BoxPackRuleOption[]>([])
   const [loadingWips, setLoadingWips] = useState(false)
@@ -325,14 +344,31 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     try {
       const { data, error } = await supabase
         .from('products')
-        .select('id, name, sku')
+        .select(
+          `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
+        )
         .eq('product_type', 'FINISHED')
         .order('name', { ascending: true })
       if (error) {
         setFinishedProducts([])
         return
       }
-      setFinishedProducts((data as FinishedProductOption[]) ?? [])
+
+      const lotProductId = selectedWipProductIdRef.current
+
+      const mapped = (data as Array<{
+        id: number
+        name: string
+        sku: string | null
+        product_components?: { component_product_id?: number | null }[] | null
+      }>)
+        .filter((row) => {
+          if (!lotProductId) return true
+          return (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
+        })
+        .map((row) => ({ id: row.id, name: row.name, sku: row.sku }))
+
+      setFinishedProducts(mapped)
     } catch {
       setFinishedProducts([])
     }
@@ -509,6 +545,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [autoCreatingRun, setAutoCreatingRun] = useState(false)
   const autoCreateAttemptedRef = useRef(false)
   const lastCheckerIdsRef = useRef('')
+  const usedWeightCheckNumbers = useMemo(
+    () => new Set(weightChecks.map((check) => check.check_no)),
+    [weightChecks]
+  )
+  const availableWeightCheckNumbers = useMemo(
+    () => [1, 2, 3, 4].filter((checkNo) => !usedWeightCheckNumbers.has(checkNo)),
+    [usedWeightCheckNumbers]
+  )
+  const firstAvailableWeightCheckNo = availableWeightCheckNumbers[0] ?? 1
 
   useEffect(() => {
     if (packagingRun) {
@@ -657,6 +702,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       })
   }, [packagingRun, loading, externalLoading, saving, savePackagingRun])
 
+  useEffect(() => {
+    if (!showWeightForm) return
+    setWeightCheckFormData((prev) => {
+      if (usedWeightCheckNumbers.has(prev.check_no)) {
+        return { ...prev, check_no: firstAvailableWeightCheckNo }
+      }
+      return prev
+    })
+  }, [showWeightForm, usedWeightCheckNumbers, firstAvailableWeightCheckNo])
+
   const handleWeightCheckSubmit = async (e: FormEvent) => {
     e.preventDefault()
 
@@ -671,36 +726,26 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       return
     }
 
-    // Check if check_no already exists
-    const existing = weightChecks.find((c) => c.check_no === weightCheckFormData.check_no)
-    if (existing) {
-      setSaving(true)
-      try {
-        await updateWeightCheck(existing.id, { weight_kg: weight })
-        toast.success('Weight check updated')
-      } catch (error) {
-        console.error('Error updating weight check:', error)
-        toast.error('Failed to update weight check')
-      } finally {
-        setSaving(false)
-      }
-    } else {
-      setSaving(true)
-      try {
-        await addWeightCheck({
-          check_no: weightCheckFormData.check_no,
-          weight_kg: weight,
-        })
-        toast.success('Weight check added')
-      } catch (error) {
-        console.error('Error adding weight check:', error)
-        toast.error('Failed to add weight check')
-      } finally {
-        setSaving(false)
-      }
+    if (usedWeightCheckNumbers.has(weightCheckFormData.check_no)) {
+      toast.error('This verification number is already recorded')
+      return
     }
 
-    setWeightCheckFormData({ check_no: 1, weight_kg: '' })
+    setSaving(true)
+    try {
+      await addWeightCheck({
+        check_no: weightCheckFormData.check_no,
+        weight_kg: weight,
+      })
+      toast.success('Weight check added')
+    } catch (error) {
+      console.error('Error adding weight check:', error)
+      toast.error('Failed to add weight check')
+    } finally {
+      setSaving(false)
+    }
+
+    setWeightCheckFormData({ check_no: firstAvailableWeightCheckNo, weight_kg: '' })
     setShowWeightForm(false)
   }
 
@@ -850,6 +895,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     () => sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id) ?? null,
     [sortedWips, packEntryForm.sorting_output_id]
   )
+  useEffect(() => {
+    selectedWipProductIdRef.current = selectedWipForPackEntry?.product_id ?? null
+  }, [selectedWipForPackEntry])
   const selectedWipUsedKg = useMemo(() => {
     if (!selectedWipForPackEntry) return 0
     return packEntries
@@ -877,6 +925,13 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     })
   }, [sortedWips, getLatestMetalCheck, getFailedRejectedWeightBySortingOutput, packEntries])
   const hasEligibleWipsForPacking = eligibleWipsForPacking.length > 0
+  const allSortedWipsPassedMetalCheck = useMemo(() => {
+    if (sortedWips.length === 0) return false
+    return sortedWips.every((wip) => {
+      const latestCheck = getLatestMetalCheck(wip.id)
+      return latestCheck?.status === 'PASS'
+    })
+  }, [sortedWips, getLatestMetalCheck])
   const selectedStoragePackEntryId = Number(storageAllocationForm.pack_entry_id || 0)
   const selectedStoragePackEntry = packEntries.find((entry) => entry.id === selectedStoragePackEntryId) ?? null
   const selectedStoragePacketCode = selectedStoragePackEntry?.packet_unit_code ?? selectedStoragePackEntry?.pack_identifier ?? null
@@ -1218,7 +1273,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     <div className="space-y-6">
       {/* Sorted WIPs to be packed */}
       <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
-        <h4 className="text-sm font-semibold text-text-dark mb-2">Sorted WIPs to be packed</h4>
+        <h4 className="text-sm font-semibold text-text-dark mb-2">Packaging - Step Data Entry</h4>
         <p className="text-xs text-text-dark/60 mb-3">
           Sorting outputs from this run available for pack entries. Save packaging data first, then add pack entries below.
         </p>
@@ -1314,9 +1369,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 Add pack entry
               </Button>
             </div>
-            {!hasEligibleWipsForPacking && (
+            {!allSortedWipsPassedMetalCheck && (
               <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
-                Complete and pass metal checks for at least one sorted output before adding pack entries.
+                Complete and pass metal checks before adding pack entries.
               </p>
             )}
             {showPackEntryForm && packagingRun && (
@@ -1727,8 +1782,8 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         </div>
       )}
 
-      <div className="space-y-4">
-        <div className="grid gap-4 md:grid-cols-3">
+      <div className="flex flex-col gap-4">
+        <div className="order-3 grid gap-4 md:grid-cols-3">
           {/* Visual Inspection */}
           <div className="rounded-lg border border-olive-light/20 p-4">
             <h4 className="text-sm font-semibold text-text-dark mb-4">Visual Inspection</h4>
@@ -1901,17 +1956,17 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         </div>
 
         {/* Packaging Details */}
-        <div className="border-b border-olive-light/20 pb-4">
+        <div className="order-2 border-b border-olive-light/20 pb-4">
           <h4 className="text-sm font-semibold text-text-dark mb-4">Packaging Details</h4>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="primary_packaging_type">Primary Packaging Type</Label>
-              <Input
+              <SearchableSelect
                 id="primary_packaging_type"
-                type="text"
+                options={PRIMARY_PACKAGING_OPTIONS}
                 value={formData.primary_packaging_type}
-                onChange={(e) => setFormData({ ...formData, primary_packaging_type: e.target.value })}
-                placeholder="e.g., Bag, Box"
+                onChange={(value) => setFormData({ ...formData, primary_packaging_type: value })}
+                placeholder="Select primary packaging"
                 disabled={saving || externalLoading}
                 className="bg-white"
               />
@@ -1932,12 +1987,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
             <div className="space-y-2">
               <Label htmlFor="secondary_packaging">Secondary Packaging</Label>
-              <Input
+              <SearchableSelect
                 id="secondary_packaging"
-                type="text"
+                options={SECONDARY_PACKAGING_OPTIONS}
                 value={formData.secondary_packaging}
-                onChange={(e) => setFormData({ ...formData, secondary_packaging: e.target.value })}
-                placeholder="e.g., Carton, Pallet"
+                onChange={(value) => setFormData({ ...formData, secondary_packaging: value })}
+                placeholder="Select secondary packaging"
                 disabled={saving || externalLoading}
                 className="bg-white"
               />
@@ -1945,12 +2000,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
             <div className="space-y-2">
               <Label htmlFor="secondary_packaging_type">Secondary Packaging Type</Label>
-              <Input
+              <SearchableSelect
                 id="secondary_packaging_type"
-                type="text"
+                options={SECONDARY_TYPE_OPTIONS}
                 value={formData.secondary_packaging_type}
-                onChange={(e) => setFormData({ ...formData, secondary_packaging_type: e.target.value })}
-                placeholder="Type"
+                onChange={(value) => setFormData({ ...formData, secondary_packaging_type: value })}
+                placeholder="Select type"
                 disabled={saving || externalLoading}
                 className="bg-white"
               />
@@ -1971,9 +2026,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           </div>
         </div>
 
-        {/* Label and Pallet Checks */}
-        <div className="border-b border-olive-light/20 pb-4">
-          <h4 className="text-sm font-semibold text-text-dark mb-4">Label and Pallet Checks</h4>
+        {/* Quality Control Check */}
+        <div className="order-4 border-b border-olive-light/20 pb-4">
+          <h4 className="text-sm font-semibold text-text-dark mb-4">Quality Control Check</h4>
           <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
               <Label htmlFor="label_correct">Label Correct</Label>
@@ -2031,7 +2086,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         </div>
 
         {/* Storage Allocation */}
-        <div className="border-b border-olive-light/20 pb-4">
+        <div className="order-1 border-b border-olive-light/20 pb-4">
           <h4 className="text-sm font-semibold text-text-dark mb-4">Storage Allocation</h4>
           <p className="text-xs text-text-dark/60 mb-3">
             Allocate packed entries into storage units (box, bag, shop packing) for shipment readiness.
@@ -2040,8 +2095,21 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           {packEntries.length === 0 ? (
             <p className="text-sm text-text-dark/60">Add pack entries first before creating storage allocations.</p>
           ) : (
-            <div className="space-y-4">
-              <form onSubmit={handleStorageAllocationSubmit} className="rounded-lg border border-olive-light/30 bg-white p-4">
+            <div className="flex flex-col gap-4">
+              <div className="order-1 rounded-lg border border-olive-light/30 bg-white">
+                <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
+                  Pack Entry Summary
+                </div>
+                <div className="divide-y divide-olive-light/20">
+                  {packEntries.map((entry) => (
+                    <div key={`summary-${entry.id}`} className="px-4 py-2 text-sm text-text-dark/80">
+                      {(entry.packet_unit_code || entry.pack_identifier)}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <form onSubmit={handleStorageAllocationSubmit} className="order-2 rounded-lg border border-olive-light/30 bg-white p-4">
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
                   <div className="space-y-2 lg:col-span-2">
                     <Label>Pack Entry *</Label>
@@ -2177,23 +2245,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 </div>
               </form>
 
-              <div className="rounded-lg border border-olive-light/30 bg-white">
-                <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
-                  Pack Entry Summary
-                </div>
-                <div className="divide-y divide-olive-light/20">
-                  {packEntries.map((entry) => (
-                    <div key={`summary-${entry.id}`} className="px-4 py-2 text-sm text-text-dark/80">
-                      {(entry.packet_unit_code || entry.pack_identifier)}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               {storageAllocations.length === 0 ? (
-                <p className="text-sm text-text-dark/60">No storage allocations recorded yet.</p>
+                <p className="order-3 text-sm text-text-dark/60">No storage allocations recorded yet.</p>
               ) : (
-                <ul className="space-y-2">
+                <ul className="order-3 space-y-2">
                   {storageAllocations.map((allocation) => {
                     const entry = packEntries.find((item) => item.id === allocation.pack_entry_id)
                     return (
@@ -2224,23 +2279,254 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         </div>
 
         {/* Allergen Swab */}
-        <div className="border-b border-olive-light/20 pb-4">
+        <div className="order-5 border-b border-olive-light/20 pb-4">
           <div className="space-y-2">
-            <Label htmlFor="allergen_swab_result">Allergen Swab Result</Label>
-            <Input
-              id="allergen_swab_result"
-              type="text"
-              value={formData.allergen_swab_result}
-              onChange={(e) => setFormData({ ...formData, allergen_swab_result: e.target.value })}
-              placeholder="e.g., Pass, Fail, Pending"
-              disabled={saving || externalLoading}
-              className="bg-white"
-            />
+            <Label>Allergen Swab Result</Label>
+            <div className="grid grid-cols-3 gap-3">
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => setFormData({ ...formData, allergen_swab_result: 'Pass' })}
+                disabled={
+                  saving ||
+                  externalLoading ||
+                  (!!formData.allergen_swab_result && formData.allergen_swab_result !== 'Pass')
+                }
+                className={
+                  formData.allergen_swab_result === 'Pass'
+                    ? 'h-12 bg-emerald-600 text-white hover:bg-emerald-600 hover:scale-105 transition-transform ring-2 ring-emerald-300'
+                    : formData.allergen_swab_result
+                    ? 'h-12 bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'h-12 bg-emerald-500 text-white hover:bg-emerald-500 hover:scale-105 transition-transform'
+                }
+              >
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                Passed
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => setFormData({ ...formData, allergen_swab_result: 'Pending' })}
+                disabled={
+                  saving ||
+                  externalLoading ||
+                  (!!formData.allergen_swab_result && formData.allergen_swab_result !== 'Pending')
+                }
+                className={
+                  formData.allergen_swab_result === 'Pending'
+                    ? 'h-12 bg-orange-600 text-white hover:bg-orange-600 hover:scale-105 transition-transform ring-2 ring-orange-300'
+                    : formData.allergen_swab_result
+                    ? 'h-12 bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'h-12 bg-orange-500 text-white hover:bg-orange-500 hover:scale-105 transition-transform'
+                }
+              >
+                <AlertTriangle className="mr-2 h-4 w-4" />
+                Pending
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => setFormData({ ...formData, allergen_swab_result: 'Fail' })}
+                disabled={
+                  saving ||
+                  externalLoading ||
+                  (!!formData.allergen_swab_result && formData.allergen_swab_result !== 'Fail')
+                }
+                className={
+                  formData.allergen_swab_result === 'Fail'
+                    ? 'h-12 bg-red-600 text-white hover:bg-red-600 hover:scale-105 transition-transform ring-2 ring-red-300'
+                    : formData.allergen_swab_result
+                    ? 'h-12 bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'h-12 bg-red-500 text-white hover:bg-red-500 hover:scale-105 transition-transform'
+                }
+              >
+                <XCircle className="mr-2 h-4 w-4" />
+                Failed
+                </Button>
+            </div>
           </div>
         </div>
 
+        {/* Weight Verification */}
+        <div className="order-6 border-t border-olive-light/20 pt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-text-dark">Weight Verification (4 checks required)</h4>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowWeightForm(!showWeightForm)}
+              disabled={saving || externalLoading || !packagingRun || availableWeightCheckNumbers.length === 0}
+              className="border-olive-light/30"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Add Weight Check
+            </Button>
+          </div>
+
+          {showWeightForm && (
+            <form onSubmit={handleWeightCheckSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="check_no">Check Number (1-4) *</Label>
+                  <select
+                    id="check_no"
+                    value={weightCheckFormData.check_no}
+                    onChange={(e) =>
+                      setWeightCheckFormData({ ...weightCheckFormData, check_no: parseInt(e.target.value, 10) })
+                    }
+                    required
+                    disabled={saving || externalLoading || availableWeightCheckNumbers.length === 0}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {[1, 2, 3, 4].map((checkNo) => {
+                      const isUsed = usedWeightCheckNumbers.has(checkNo)
+                      return (
+                        <option key={checkNo} value={checkNo} disabled={isUsed}>
+                          Check {checkNo}{isUsed ? ' (Already recorded)' : ''}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="weight_kg">Weight (kg) *</Label>
+                  <Input
+                    id="weight_kg"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={weightCheckFormData.weight_kg}
+                    onChange={(e) => setWeightCheckFormData({ ...weightCheckFormData, weight_kg: e.target.value })}
+                    placeholder="0.00"
+                    required
+                    disabled={saving || externalLoading}
+                    className="bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setShowWeightForm(false)
+                    setWeightCheckFormData({ check_no: firstAvailableWeightCheckNo, weight_kg: '' })
+                  }}
+                  disabled={saving || externalLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={saving || externalLoading || availableWeightCheckNumbers.length === 0}
+                  className="bg-olive hover:bg-olive-dark"
+                >
+                  Add Check
+                </Button>
+              </div>
+            </form>
+          )}
+
+          {weightChecks.length === 0 ? (
+            <p className="text-sm text-text-dark/60 py-4 text-center">No weight checks recorded yet</p>
+          ) : (
+            <div className="space-y-2">
+              {[1, 2, 3, 4].map((checkNo) => {
+                const check = weightChecks.find((c) => c.check_no === checkNo)
+                return (
+                  <div
+                    key={checkNo}
+                    className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
+                  >
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm font-medium text-text-dark">Check {checkNo}</span>
+                      {check ? (
+                        <span className="text-sm text-text-dark/70">{check.weight_kg} kg</span>
+                      ) : (
+                        <span className="text-xs text-text-dark/50 italic">Not recorded</span>
+                      )}
+                    </div>
+                    {check && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteWeightCheck(check.id)}
+                        disabled={saving || externalLoading}
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Photos */}
+        <div className="order-7 border-t border-olive-light/20 pt-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-text-dark">Photos (up to 3: product, label, pallet)</h4>
+            <div className="flex gap-2">
+              {PHOTO_TYPES.map((type) => {
+                const existing = photos.find((p) => p.photo_type === type.value)
+                return (
+                  <label
+                    key={type.value}
+                    className="flex items-center gap-2 rounded-md border border-olive-light/30 bg-white px-3 py-2 text-sm cursor-pointer hover:bg-olive-light/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {type.label}
+                    {existing && <span className="text-xs text-green-600">✓</span>}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePhotoUpload}
+                      disabled={saving || externalLoading || !packagingRun || existing !== undefined}
+                      className="hidden"
+                    />
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+
+          {photos.length === 0 ? (
+            <p className="text-sm text-text-dark/60 py-4 text-center">No photos uploaded yet</p>
+          ) : (
+            <div className="space-y-2">
+              {photos.map((photo) => (
+                <div
+                  key={photo.id}
+                  className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
+                >
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm font-medium text-text-dark capitalize">{photo.photo_type}</span>
+                    <span className="text-xs text-text-dark/50">{photo.file_path}</span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeletePhoto(photo.id)}
+                    disabled={saving || externalLoading}
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Remarks */}
-        <div className="space-y-2">
+        <div className="order-8 space-y-2">
           <Label htmlFor="remarks">Remarks</Label>
           <textarea
             id="remarks"
@@ -2251,174 +2537,6 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             disabled={saving || externalLoading}
           />
         </div>
-      </div>
-
-      {/* Weight Verification */}
-      <div className="border-t border-olive-light/20 pt-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-text-dark">Weight Verification (4 checks required)</h4>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowWeightForm(!showWeightForm)}
-            disabled={saving || externalLoading || !packagingRun}
-            className="border-olive-light/30"
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Add Weight Check
-          </Button>
-        </div>
-
-        {showWeightForm && (
-          <form onSubmit={handleWeightCheckSubmit} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="check_no">Check Number (1-4) *</Label>
-                <Input
-                  id="check_no"
-                  type="number"
-                  min="1"
-                  max="4"
-                  value={weightCheckFormData.check_no}
-                  onChange={(e) =>
-                    setWeightCheckFormData({ ...weightCheckFormData, check_no: parseInt(e.target.value, 10) })
-                  }
-                  required
-                  disabled={saving || externalLoading}
-                  className="bg-white"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="weight_kg">Weight (kg) *</Label>
-                <Input
-                  id="weight_kg"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={weightCheckFormData.weight_kg}
-                  onChange={(e) => setWeightCheckFormData({ ...weightCheckFormData, weight_kg: e.target.value })}
-                  placeholder="0.00"
-                  required
-                  disabled={saving || externalLoading}
-                  className="bg-white"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 mt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setShowWeightForm(false)
-                  setWeightCheckFormData({ check_no: 1, weight_kg: '' })
-                }}
-                disabled={saving || externalLoading}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={saving || externalLoading} className="bg-olive hover:bg-olive-dark">
-                {weightChecks.find((c) => c.check_no === weightCheckFormData.check_no) ? 'Update' : 'Add'} Check
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {weightChecks.length === 0 ? (
-          <p className="text-sm text-text-dark/60 py-4 text-center">No weight checks recorded yet</p>
-        ) : (
-          <div className="space-y-2">
-            {[1, 2, 3, 4].map((checkNo) => {
-              const check = weightChecks.find((c) => c.check_no === checkNo)
-              return (
-                <div
-                  key={checkNo}
-                  className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
-                >
-                  <div className="flex items-center gap-4">
-                    <span className="text-sm font-medium text-text-dark">Check {checkNo}</span>
-                    {check ? (
-                      <span className="text-sm text-text-dark/70">{check.weight_kg} kg</span>
-                    ) : (
-                      <span className="text-xs text-text-dark/50 italic">Not recorded</span>
-                    )}
-                  </div>
-                  {check && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeleteWeightCheck(check.id)}
-                      disabled={saving || externalLoading}
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Photos */}
-      <div className="border-t border-olive-light/20 pt-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-text-dark">Photos (up to 3: product, label, pallet)</h4>
-          <div className="flex gap-2">
-            {PHOTO_TYPES.map((type) => {
-              const existing = photos.find((p) => p.photo_type === type.value)
-              return (
-                <label
-                  key={type.value}
-                  className="flex items-center gap-2 rounded-md border border-olive-light/30 bg-white px-3 py-2 text-sm cursor-pointer hover:bg-olive-light/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Upload className="h-4 w-4" />
-                  {type.label}
-                  {existing && <span className="text-xs text-green-600">✓</span>}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handlePhotoUpload}
-                    disabled={saving || externalLoading || !packagingRun || existing !== undefined}
-                    className="hidden"
-                  />
-                </label>
-              )
-            })}
-          </div>
-        </div>
-
-        {photos.length === 0 ? (
-          <p className="text-sm text-text-dark/60 py-4 text-center">No photos uploaded yet</p>
-        ) : (
-          <div className="space-y-2">
-            {photos.map((photo) => (
-              <div
-                key={photo.id}
-                className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
-              >
-                <div className="flex items-center gap-4">
-                  <span className="text-sm font-medium text-text-dark capitalize">{photo.photo_type}</span>
-                  <span className="text-xs text-text-dark/50">{photo.file_path}</span>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDeletePhoto(photo.id)}
-                  disabled={saving || externalLoading}
-                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Waste recording disabled for Packaging step per requirements */}

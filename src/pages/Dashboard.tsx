@@ -1,5 +1,6 @@
 /// <reference types="../vite-env" />
 import { useMemo, memo } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { AlertCircle, Package, Truck, Users, LucideIcon } from 'lucide-react'
@@ -9,6 +10,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 interface NormalizedInventoryRow {
   id: string
+  product_id: number | null
   product_name: string
   product_sku: string
   warehouse_name: string
@@ -63,6 +65,7 @@ interface StatCardProps {
   color: string
   loading: boolean
   formatter: Intl.NumberFormat
+  to: string
 }
 
 const StatCard = memo(function StatCard({
@@ -73,25 +76,28 @@ const StatCard = memo(function StatCard({
   color,
   loading,
   formatter,
+  to,
 }: StatCardProps) {
   return (
-    <Card className="border border-border bg-card">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-foreground">{title}</CardTitle>
-        <div className={`${color} rounded-md p-2 text-white`}>
-          <Icon className="h-4 w-4 text-white" />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold text-foreground">
-          {loading ? '—' : formatter.format(value ?? 0)}
-        </div>
-        <CardDescription className="mt-1 text-xs text-muted-foreground">
-          {description}
-          {title === 'Low Stock Items' && !loading && value === 0 ? ' (all clear)' : ''}
-        </CardDescription>
-      </CardContent>
-    </Card>
+    <Link to={to} className="block">
+      <Card className="border border-border bg-card transition hover:border-olive/40 hover:shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-sm font-medium text-foreground">{title}</CardTitle>
+          <div className={`${color} rounded-md p-2 text-white`}>
+            <Icon className="h-4 w-4 text-white" />
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold text-foreground">
+            {loading ? '—' : formatter.format(value ?? 0)}
+          </div>
+          <CardDescription className="mt-1 text-xs text-muted-foreground">
+            {description}
+            {title === 'Low Stock Items' && !loading && value === 0 ? ' (all clear)' : ''}
+          </CardDescription>
+        </CardContent>
+      </Card>
+    </Link>
   )
 })
 
@@ -110,29 +116,35 @@ const RecentStockItem = memo(function RecentStockItem({ stock, quantityFormatter
     timestamp instanceof Date && !Number.isNaN(timestamp.valueOf())
       ? timestamp.toLocaleString()
       : 'Timestamp unavailable'
+  const targetPath =
+    stock.product_id !== null && stock.product_id !== undefined
+      ? `/inventory/stock-levels/supply?product=${stock.product_id}`
+      : '/inventory/stock-levels/supply'
 
   return (
-    <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <p className="text-sm font-semibold text-foreground">{stock.product_name}</p>
-        <p className="text-xs text-muted-foreground">SKU: {stock.product_sku || 'Not captured'}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{stock.warehouse_name || 'Warehouse not set'}</p>
-      </div>
-      <div className="flex flex-col items-start gap-2 sm:items-end">
-        <span className="text-sm font-semibold text-foreground">
-          {displayQty} {stock.unit || ''}
-        </span>
-        <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground sm:items-end">
-          <span>{timestampLabel}</span>
-          {isLow && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-1 font-medium text-orange-900 dark:bg-orange-500/20 dark:text-orange-200">
-              <AlertCircle className="h-3 w-3" />
-              Low Stock (threshold {quantityFormatter.format(threshold)})
-            </span>
-          )}
+    <Link to={targetPath} className="block rounded-md px-1 transition hover:bg-olive-light/10">
+      <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-foreground">{stock.product_name}</p>
+          <p className="text-xs text-muted-foreground">SKU: {stock.product_sku || 'Not captured'}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{stock.warehouse_name || 'Warehouse not set'}</p>
+        </div>
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <span className="text-sm font-semibold text-foreground">
+            {displayQty} {stock.unit || ''}
+          </span>
+          <div className="flex flex-col items-start gap-1 text-xs text-muted-foreground sm:items-end">
+            <span>{timestampLabel}</span>
+            {isLow && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-1 font-medium text-orange-900 dark:bg-orange-500/20 dark:text-orange-200">
+                <AlertCircle className="h-3 w-3" />
+                Low Stock (threshold {quantityFormatter.format(threshold)})
+              </span>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </Link>
   )
 })
 
@@ -163,6 +175,7 @@ function Dashboard() {
         description: 'SKUs in catalog',
         icon: Package,
         color: 'bg-olive-dark',
+        to: '/inventory/products',
       },
       {
         title: 'Low Stock Items',
@@ -170,6 +183,7 @@ function Dashboard() {
         description: 'Below safety levels',
         icon: AlertCircle,
         color: 'bg-orange-500',
+        to: '/inventory/stock-levels/supply',
       },
       {
         title: 'Open Shipments',
@@ -177,6 +191,7 @@ function Dashboard() {
         description: 'Pending dispatch',
         icon: Truck,
         color: 'bg-brown',
+        to: '/shipments',
       },
       {
         title: 'Suppliers',
@@ -184,6 +199,7 @@ function Dashboard() {
         description: 'Total suppliers',
         icon: Users,
         color: 'bg-olive',
+        to: '/suppliers-customers/suppliers',
       },
     ],
     [stats]
@@ -227,6 +243,7 @@ function Dashboard() {
             color={stat.color}
             loading={loading}
             formatter={integerFormatter}
+            to={stat.to}
           />
         ))}
       </div>
@@ -288,4 +305,3 @@ function Dashboard() {
 }
 
 export default Dashboard
-
