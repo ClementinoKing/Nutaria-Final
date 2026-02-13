@@ -4,8 +4,8 @@ import { ReactNode } from 'react'
 interface Column<T = unknown> {
   key?: string
   accessor?: string
-  header: string
-  mobileHeader?: string
+  header: ReactNode
+  mobileHeader?: ReactNode
   render?: (item: T, rowIndex: number) => ReactNode
   mobileRender?: (item: T, rowIndex: number) => ReactNode
   headerClassName?: string
@@ -26,8 +26,11 @@ interface ResponsiveTableProps<T = unknown> {
   onRowClick?: (item: T, index: number) => void
 }
 
-function getColumnKey<T>(column: Column<T>): string {
-  return column.key ?? column.accessor ?? column.header
+function getColumnKey<T>(column: Column<T>, index: number): string {
+  if (column.key) return column.key
+  if (column.accessor) return column.accessor
+  if (typeof column.header === 'string') return column.header
+  return `col-${index}`
 }
 
 function renderColumnValue<T>(column: Column<T>, item: T, rowIndex: number): ReactNode {
@@ -92,8 +95,8 @@ function ResponsiveTable<T = unknown>({
           >
             <thead className="bg-olive-light/10">
               <tr>
-                {columns.map((column) => {
-                  const columnKey = getColumnKey(column)
+                {columns.map((column, columnIndex) => {
+                  const columnKey = getColumnKey(column, columnIndex)
                   return (
                     <th
                       key={columnKey}
@@ -142,8 +145,8 @@ function ResponsiveTable<T = unknown>({
                     role={typeof onRowClick === 'function' ? 'button' : undefined}
                     tabIndex={typeof onRowClick === 'function' ? 0 : undefined}
                   >
-                    {columns.map((column) => {
-                      const columnKey = getColumnKey(column)
+                    {columns.map((column, columnIndex) => {
+                      const columnKey = getColumnKey(column, columnIndex)
                       return (
                         <td
                           key={columnKey}
@@ -193,12 +196,12 @@ function ResponsiveTable<T = unknown>({
               role={typeof onRowClick === 'function' ? 'button' : undefined}
               tabIndex={typeof onRowClick === 'function' ? 0 : undefined}
             >
-              {columns.map((column) => {
+              {columns.map((column, columnIndex) => {
                 if (column.hideOnMobile) {
                   return null
                 }
 
-                const columnKey = getColumnKey(column)
+                const columnKey = getColumnKey(column, columnIndex)
                 const headerLabel = column.mobileHeader || column.header
                 const value = renderColumnValue(column, item, rowIndex)
 
@@ -232,5 +235,3 @@ function ResponsiveTable<T = unknown>({
 }
 
 export default ResponsiveTable
-
-

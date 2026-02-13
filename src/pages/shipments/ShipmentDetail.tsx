@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
 import { Button } from '@/components/ui/button'
-import { FileText, MapPin, User2 } from 'lucide-react'
+import { ArrowLeft, FileText, MapPin, User2 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 
@@ -316,9 +316,9 @@ function ShipmentDetail() {
       <PageLayout
         title="Shipment Detail"
         activeItem="shipments"
-        actions={
-          <Button variant="outline" onClick={handleBack}>
-            Back to Shipments
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Shipments">
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
@@ -335,9 +335,9 @@ function ShipmentDetail() {
       <PageLayout
         title="Shipment Detail"
         activeItem="shipments"
-        actions={
-          <Button variant="outline" onClick={handleBack}>
-            Back to Shipments
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Shipments">
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
@@ -362,9 +362,9 @@ function ShipmentDetail() {
       <PageLayout
         title="Shipment Detail"
         activeItem="shipments"
-        actions={
-          <Button variant="outline" onClick={handleBack}>
-            Back to Shipments
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Shipments">
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
@@ -392,15 +392,15 @@ function ShipmentDetail() {
     <PageLayout
       title="Shipment Detail"
       activeItem="shipments"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Shipments">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       actions={
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleBack}>
-            Back to Shipments
-          </Button>
-          <Button className="bg-olive hover:bg-olive-dark" onClick={handleEdit}>
-            Edit Shipment
-          </Button>
-        </div>
+        <Button className="bg-olive hover:bg-olive-dark" onClick={handleEdit}>
+          Edit Shipment
+        </Button>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >

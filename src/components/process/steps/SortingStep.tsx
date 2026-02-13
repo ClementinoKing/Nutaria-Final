@@ -1,4 +1,4 @@
-import { useState, FormEvent, useEffect, useMemo } from 'react'
+import { useState, FormEvent, useEffect, useMemo, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -91,18 +91,9 @@ export function SortingStep({
   >([])
   const [loadingReworks, setLoadingReworks] = useState(false)
 
-  const isMacadamiaLot = useMemo(() => {
-    const name = String(lotProductName || '').toLowerCase()
-    return name.includes('macadamia') || name.includes('macs')
-  }, [lotProductName])
-
-  const isMacadamiaCandidateProduct = (product: { name: string; sku: string | null }) => {
-    const haystack = `${product.name} ${product.sku || ''}`.toLowerCase()
-    return haystack.includes('macadamia') || haystack.includes('macs')
-  }
-
   useEffect(() => {
-    // Fetch only Work In Progress (WIP) products and, when possible, filter by raw-material mapping
+    // Fetch only Work In Progress (WIP) products and filter by composition mapping
+    // (product_components: parent WIP product -> component raw material product).
     supabase
       .from('products')
       .select(
@@ -116,64 +107,63 @@ export function SortingStep({
           const rows = data as Array<{ id: number; name: string; sku: string | null; product_components?: { component_product_id?: number | null }[] | null }>
           let filtered = rows
           if (lotProductId) {
-            // include any WIP whose components include the lot raw material
+            // Include only WIP products whose composition includes the lot's raw material.
             filtered = filtered.filter((row) =>
               (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
             )
           }
-          filtered = isMacadamiaLot ? filtered.filter(isMacadamiaCandidateProduct) : filtered
           setProducts(filtered)
         }
       })
-  }, [isMacadamiaLot, lotProductId])
+  }, [lotProductId])
 
-  // Fetch reworks linked to this lot (fallback to step run if lot id is missing)
-  useEffect(() => {
-    const fetchReworks = async () => {
-      if (!stepRun?.id && !originalSupplyBatchId) {
-        setReworks([])
-        return
-      }
-
-      setLoadingReworks(true)
-      try {
-        let query = supabase
-          .from('reworked_lots')
-          .select('id, quantity_kg, reason, created_at, rework_supply_batch_id')
-          .order('created_at', { ascending: false })
-
-        if (originalSupplyBatchId) {
-          query = query.eq('original_supply_batch_id', originalSupplyBatchId)
-        } else if (stepRun?.id) {
-          query = query.eq('process_step_run_id', stepRun.id)
-        }
-
-        const { data, error } = await query
-
-        if (error) {
-          console.error('Error fetching reworks:', error)
-          setReworks([])
-        } else {
-          setReworks(
-            (data || []) as Array<{
-              id: number
-              quantity_kg: number
-              reason: string | null
-              created_at: string
-              rework_supply_batch_id: number
-            }>
-          )
-        }
-      } catch (error) {
-        console.error('Error fetching reworks:', error)
-        setReworks([])
-      } finally {
-        setLoadingReworks(false)
-      }
+  const fetchReworks = useCallback(async () => {
+    if (!stepRun?.id && !originalSupplyBatchId) {
+      setReworks([])
+      return
     }
 
+    setLoadingReworks(true)
+    try {
+      let query = supabase
+        .from('reworked_lots')
+        .select('id, quantity_kg, reason, created_at, rework_supply_batch_id')
+        .order('created_at', { ascending: false })
+
+      if (stepRun?.id) {
+        query = query.eq('process_step_run_id', stepRun.id)
+      } else if (originalSupplyBatchId) {
+        query = query.eq('original_supply_batch_id', originalSupplyBatchId)
+      }
+
+      const { data, error } = await query
+
+      if (error) {
+        console.error('Error fetching reworks:', error)
+        setReworks([])
+      } else {
+        setReworks(
+          (data || []) as Array<{
+            id: number
+            quantity_kg: number
+            reason: string | null
+            created_at: string
+            rework_supply_batch_id: number
+          }>
+        )
+      }
+    } catch (error) {
+      console.error('Error fetching reworks:', error)
+      setReworks([])
+    } finally {
+      setLoadingReworks(false)
+    }
+  }, [stepRun?.id, originalSupplyBatchId])
+
+  // Fetch reworks linked to this run/lot
+  useEffect(() => {
     fetchReworks()
-  }, [stepRun?.id, originalSupplyBatchId, onQuantityChange])
+  }, [fetchReworks])
 
   const handleOutputSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -416,6 +406,7 @@ export function SortingStep({
       toast.success(`Rework created successfully. New lot created.`)
       setReworkFormData({ quantity_kg: '', reason: '' })
       setShowReworkForm(false)
+      await fetchReworks()
       onQuantityChange?.()
     } catch (error) {
       console.error('Error creating rework:', error)
@@ -865,7 +856,9 @@ export function SortingStep({
             <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Linked Reworks</p>
             {loadingReworks && <span className="text-xs text-text-dark/50">Loading…</span>}
           </div>
-          {reworks.length === 0 ? (
+          {loadingReworks ? (
+            <p className="text-sm text-text-dark/60">Loading reworks…</p>
+          ) : reworks.length === 0 ? (
             <p className="text-sm text-text-dark/60">No reworks linked to this lot yet.</p>
           ) : (
             <div className="space-y-2">

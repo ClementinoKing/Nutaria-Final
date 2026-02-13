@@ -19,6 +19,7 @@ interface StepRunRow {
 function CompletedProcessDetail() {
   const { lotRunId } = useParams<{ lotRunId: string }>()
   const [lotNo, setLotNo] = useState<string | null>(null)
+  const [lotSummary, setLotSummary] = useState<string | null>(null)
   const [productName, setProductName] = useState<string | null>(null)
   const [processName, setProcessName] = useState<string | null>(null)
   const [processCode, setProcessCode] = useState<string | null>(null)
@@ -46,6 +47,11 @@ function CompletedProcessDetail() {
           started_at,
           completed_at,
           supply_batches: supply_batch_id (lot_no, products: product_id (name)),
+          process_lot_run_batches (
+            id,
+            is_primary,
+            supply_batches:supply_batch_id (lot_no, products:product_id (name))
+          ),
           processes: process_id (name, code)
         `)
         .eq('id', id)
@@ -59,9 +65,17 @@ function CompletedProcessDetail() {
 
       const batch = (lotRun as any).supply_batches
       const process = (lotRun as any).processes
+      const linkedLots = (((lotRun as any).process_lot_run_batches || []) as any[])
+        .map((row) => (Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches))
+        .filter(Boolean)
       const batchSingle = Array.isArray(batch) ? batch[0] : batch
       const processSingle = Array.isArray(process) ? process[0] : process
       setLotNo(batchSingle?.lot_no ?? null)
+      if (linkedLots.length > 1) {
+        setLotSummary(`${linkedLots[0]?.lot_no ?? batchSingle?.lot_no ?? 'Lot'} +${linkedLots.length - 1}`)
+      } else {
+        setLotSummary(linkedLots[0]?.lot_no ?? batchSingle?.lot_no ?? null)
+      }
       setProductName(batchSingle?.products?.name ?? null)
       setProcessName(processSingle?.name ?? null)
       setProcessCode(processSingle?.code ?? null)
@@ -212,7 +226,7 @@ function CompletedProcessDetail() {
             <CheckCircle2 className="h-5 w-5 text-green-600" />
             <div>
               <CardTitle className="text-text-dark">
-                {lotNo ?? 'Lot'} {productName ? `· ${productName}` : ''}
+                {lotSummary ?? lotNo ?? 'Lot'} {productName ? `· ${productName}` : ''}
               </CardTitle>
               <CardDescription>
                 {processName ?? 'Process'} {processCode ? `(${processCode})` : ''}

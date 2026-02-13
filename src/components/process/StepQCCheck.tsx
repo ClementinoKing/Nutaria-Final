@@ -170,7 +170,6 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
           isFinal: false,
         })
         lastSavedHashRef.current = payloadHash
-        await refreshSavedQC()
       } catch (error) {
         if ((error as any)?.code !== 'PGRST205' && (error as any)?.code !== 'PGRST116') {
           console.error('Error auto-saving QC check:', error)
@@ -178,7 +177,7 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
       } finally {
         setAutoSaving(false)
       }
-    }, 600)
+    }, 10000)
 
     return () => {
       if (autoSaveTimeoutRef.current) {
@@ -186,7 +185,7 @@ export function StepQCCheck({ stepRunId, qualityParameters, onPass, onFail, load
         autoSaveTimeoutRef.current = null
       }
     }
-  }, [scores, results, remarks, qualityParameters, stepRunId, user?.id, refreshSavedQC, hasFinalStatus])
+  }, [scores, results, remarks, qualityParameters, stepRunId, user?.id, hasFinalStatus])
 
   const handleEvaluate = async (e: FormEvent) => {
     e.preventDefault()

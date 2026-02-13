@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { useSupplierTypes } from '@/hooks/useSupplierTypes'
+import { ArrowLeft } from 'lucide-react'
 
 function formatEnumLabel(value: string | number | null | undefined): string {
   const label = value ?? ''
@@ -428,15 +429,15 @@ function SupplierDetail() {
     <PageLayout
       title="Supplier Detail"
       activeItem="suppliersCustomers"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Suppliers">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       actions={
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleBack}>
-            Back to Suppliers
-          </Button>
-          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenEdit}>
-            Edit Supplier
-          </Button>
-        </div>
+        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenEdit}>
+          Edit Supplier
+        </Button>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >

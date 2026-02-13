@@ -54,7 +54,7 @@ interface UsePackagingRunReturn {
     quantity_kg: number
     packing_type: string | null
     pack_size_kg?: number | null
-  }) => Promise<void>
+  }) => Promise<ProcessPackagingPackEntry>
   deletePackEntry: (id: number) => Promise<void>
   addStorageAllocation: (data: {
     pack_entry_id: number
@@ -512,7 +512,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       quantity_kg: number
       packing_type: string | null
       pack_size_kg?: number | null
-    }) => {
+    }): Promise<ProcessPackagingPackEntry> => {
       if (!packagingRun) {
         throw new Error('Packaging run must be created before adding pack entries')
       }
@@ -524,7 +524,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
 
       const attempts = metalChecksBySortingOutput[data.sorting_output_id]?.length || 0
 
-      const { error: insertError } = await supabase
+      const { data: insertedEntry, error: insertError } = await supabase
         .from('process_packaging_pack_entries')
         .insert({
           packaging_run_id: packagingRun.id,
@@ -541,9 +541,13 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           metal_check_last_checked_at: latestCheck.checked_at,
           metal_check_last_checked_by: latestCheck.checked_by,
         })
+        .select('*')
+        .single()
 
       if (insertError) throw insertError
       await fetchData()
+      if (!insertedEntry) throw new Error('Failed to read created pack entry')
+      return insertedEntry as ProcessPackagingPackEntry
     },
     [packagingRun, fetchData, getLatestMetalCheck, metalChecksBySortingOutput]
   )

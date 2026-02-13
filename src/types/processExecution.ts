@@ -12,6 +12,31 @@ export interface ProcessLotRun {
   original_process_lot_run_id?: number | null
 }
 
+export interface ProcessRunLot {
+  id: number
+  process_lot_run_id: number
+  supply_batch_id: number
+  is_primary: boolean
+  created_at: string
+  supply_batch?: {
+    id: number
+    lot_no: string
+    product_id: number
+    current_qty: number
+    unit_id: number
+    process_status: string
+    quality_status: string
+    products?: {
+      name: string
+      sku: string | null
+    }
+    units?: {
+      name: string
+      symbol: string
+    }
+  }
+}
+
 export interface ProcessStepRun {
   id: number
   process_lot_run_id: number
@@ -94,6 +119,7 @@ export interface ProcessSignoff {
 export interface ProductionBatch {
   id: number
   process_lot_run_id: number
+  supply_batch_id?: number | null
   product_id: number
   batch_code: string
   quantity: number
@@ -135,6 +161,7 @@ export interface ProcessLotRunWithDetails extends ProcessLotRun {
   step_runs?: ProcessStepRun[]
   signoffs?: ProcessSignoff[]
   production_batch?: ProductionBatch
+  run_lots?: ProcessRunLot[]
 }
 
 // Form state types

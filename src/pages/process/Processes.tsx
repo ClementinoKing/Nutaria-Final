@@ -41,7 +41,7 @@ interface Product {
   id: number
   sku: string | null
   name: string
-  product_type: 'RAW' | 'WIP' | 'FINISHED' | null
+  product_type: 'RAW' | 'WIP' | 'FINISHED' | 'OP' | null
 }
 
 interface FormStep {
@@ -1334,7 +1334,10 @@ function Processes() {
                                         ? qualityParameters.filter((qp: QualityParameter) => {
                                             const name = (qp.name || '').toLowerCase()
                                             const code = (qp.code || '').toLowerCase()
-                                            const spec = (qp.specification || '').toLowerCase()
+                                            const spec = (
+                                              (qp as QualityParameter & { specification?: string | null })
+                                                .specification || ''
+                                            ).toLowerCase()
                                             return name.includes(searchTerm) || code.includes(searchTerm) || spec.includes(searchTerm)
                                           })
                                         : qualityParameters
@@ -1372,9 +1375,9 @@ function Processes() {
                                                   <div className="flex-1">
                                                     <p className="font-medium text-text-dark">{qp.name}</p>
                                                     <p className="text-xs text-text-dark/60">{qp.code}</p>
-                                                    {qp.specification && (
+                                                    {(qp as QualityParameter & { specification?: string | null }).specification && (
                                                       <p className="text-xs text-text-dark/50 mt-0.5">
-                                                        {qp.specification}
+                                                        {(qp as QualityParameter & { specification?: string | null }).specification}
                                                       </p>
                                                     )}
                                                   </div>

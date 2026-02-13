@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { AlertTriangle, CheckCircle2, Plus, Trash2, Upload, XCircle, Package as PackageIcon } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Plus, Trash2, Upload, XCircle, Package as PackageIcon, History, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
@@ -64,6 +64,32 @@ interface BoxPackRuleOption {
   box_unit_name?: string | null
   packet_unit_code?: string | null
   packet_unit_name?: string | null
+}
+
+interface RemainderCandidate {
+  id: number
+  packaging_run_id: number
+  source_product_id: number | null
+  source_product_name: string
+  source_product_sku: string | null
+  process_name: string
+  process_code: string
+  lot_no: string | null
+  finished_product_id: number | null
+  finished_product_name: string
+  finished_product_sku: string | null
+  packet_unit_code: string | null
+  remainder_kg: number
+  packed_at: string | null
+}
+
+interface RemainderPrefillSource {
+  id: number
+  process_name: string
+  process_code: string
+  lot_no: string | null
+  remainder_kg: number
+  packed_at: string | null
 }
 
 interface PackagingStepProps {
@@ -230,6 +256,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [boxPackRules, setBoxPackRules] = useState<BoxPackRuleOption[]>([])
   const [loadingWips, setLoadingWips] = useState(false)
   const [showPackEntryForm, setShowPackEntryForm] = useState(false)
+  const [showRemaindersModal, setShowRemaindersModal] = useState(false)
+  const [loadingRemainders, setLoadingRemainders] = useState(false)
+  const [remaindersError, setRemaindersError] = useState<string | null>(null)
+  const [remainderRows, setRemainderRows] = useState<RemainderCandidate[]>([])
+  const [selectedRemainderId, setSelectedRemainderId] = useState('')
+  const [usedRemainderIds, setUsedRemainderIds] = useState<Set<number>>(new Set())
+  const [remainderSearchTerm, setRemainderSearchTerm] = useState('')
+  const [remainderDateFilter, setRemainderDateFilter] = useState<'ALL' | '7D' | '30D'>('ALL')
+  const [remainderPrefillSource, setRemainderPrefillSource] = useState<RemainderPrefillSource | null>(null)
+  const [addedRemainderSources, setAddedRemainderSources] = useState<RemainderPrefillSource[]>([])
   const [packEntryForm, setPackEntryForm] = useState({
     sorting_output_id: '',
     product_id: '',
@@ -545,6 +581,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [autoCreatingRun, setAutoCreatingRun] = useState(false)
   const autoCreateAttemptedRef = useRef(false)
   const lastCheckerIdsRef = useRef('')
+  const remaindersModalRef = useRef<HTMLDivElement | null>(null)
   const usedWeightCheckNumbers = useMemo(
     () => new Set(weightChecks.map((check) => check.check_no)),
     [weightChecks]
@@ -643,7 +680,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
       flushSavePackaging()
-    }, 300)
+    }, 10000)
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
@@ -912,6 +949,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     if (!selectedWipForPackEntry) return null
     return Math.max(0, selectedWipForPackEntry.quantity_kg - selectedWipRejectedKg - selectedWipUsedKg)
   }, [selectedWipForPackEntry, selectedWipUsedKg, selectedWipRejectedKg])
+  const packEntryAdditionalRemainderKg = useMemo(
+    () => addedRemainderSources.reduce((sum, source) => sum + (Number(source.remainder_kg) || 0), 0),
+    [addedRemainderSources]
+  )
+  const packEntryEffectiveLimitKg = useMemo(() => {
+    if (selectedWipRemainingKg == null) return null
+    return Math.max(0, selectedWipRemainingKg + packEntryAdditionalRemainderKg)
+  }, [selectedWipRemainingKg, packEntryAdditionalRemainderKg])
   const eligibleWipsForPacking = useMemo(() => {
     return sortedWips.filter((wip) => {
       const latestCheck = getLatestMetalCheck(wip.id)
@@ -1023,6 +1068,297 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
   }, [eligibleWipsForPacking, packEntryForm.sorting_output_id])
 
+  useEffect(() => {
+    setRemainderPrefillSource(null)
+    setAddedRemainderSources([])
+  }, [packEntryForm.sorting_output_id])
+
+  const loadRecentRemaindersForSelectedWip = useCallback(async () => {
+    if (!selectedWipForPackEntry?.product_id) {
+      setRemainderRows([])
+      setRemaindersError(null)
+      return
+    }
+
+    setLoadingRemainders(true)
+    setRemaindersError(null)
+    try {
+      const { data: sortingOutputs, error: sortingOutputsError } = await supabase
+        .from('process_sorting_outputs')
+        .select('id')
+        .eq('product_id', selectedWipForPackEntry.product_id)
+
+      if (sortingOutputsError) {
+        throw sortingOutputsError
+      }
+
+      const sortingOutputIds = (sortingOutputs ?? []).map((row: { id: number }) => row.id).filter(Boolean)
+      if (sortingOutputIds.length === 0) {
+        setRemainderRows([])
+        setSelectedRemainderId('')
+        return
+      }
+
+      const { data, error: fetchError } = await supabase
+        .from('process_packaging_pack_entries')
+        .select(`
+          id,
+          packaging_run_id,
+          sorting_output_id,
+          product_id,
+          quantity_kg,
+          packet_unit_code,
+          pack_identifier,
+          remainder_kg,
+          created_at,
+          usages:process_packaging_remainder_usages!process_packaging_remainder_usages_source_pack_entry_id_fkey(
+            quantity_kg
+          ),
+          finished_product:products!process_packaging_pack_entries_product_id_fkey(id, name, sku),
+          sorting_output:process_sorting_outputs(
+            product:products(id, name, sku)
+          ),
+          packaging_run:process_packaging_runs(
+            id,
+            process_step_run_id,
+            process_step_runs(
+              process_lot_run_id,
+              process_lot_runs(
+                processes(code, name),
+                supply_batches(lot_no)
+              )
+            )
+          )
+        `)
+        .in('sorting_output_id', sortingOutputIds)
+        .gt('remainder_kg', 0)
+        .order('created_at', { ascending: false })
+
+      if (fetchError) {
+        throw fetchError
+      }
+
+      const unwrap = <T,>(value: T | T[] | null | undefined): T | null =>
+        Array.isArray(value) ? value[0] ?? null : value ?? null
+
+      const mapped = ((data ?? []) as any[])
+        .map((row): RemainderCandidate | null => {
+          const stepRun = unwrap(row.packaging_run?.process_step_runs)
+          const lotRun = stepRun?.process_lot_runs ?? null
+          const processInfo = lotRun?.processes ?? null
+          const supplyBatch = lotRun?.supply_batches ?? null
+          const sourceProduct = row.sorting_output?.product ?? null
+          const finishedProduct = row.finished_product ?? null
+          const usageRows = Array.isArray(row.usages) ? row.usages : []
+          const usedKg = usageRows.reduce((sum: number, usage: { quantity_kg?: number | null }) => {
+            return sum + (Number(usage.quantity_kg) || 0)
+          }, 0)
+          const availableRemainderKg = Math.max(0, (Number(row.remainder_kg) || 0) - usedKg)
+
+          return {
+            id: Number(row.id),
+            packaging_run_id: Number(row.packaging_run_id),
+            source_product_id: sourceProduct?.id ?? null,
+            source_product_name: sourceProduct?.name ?? selectedWipForPackEntry.product_name ?? 'Unknown',
+            source_product_sku: sourceProduct?.sku ?? null,
+            process_name: processInfo?.name ?? 'Unknown',
+            process_code: processInfo?.code ?? '—',
+            lot_no: supplyBatch?.lot_no ?? null,
+            finished_product_id: finishedProduct?.id ?? row.product_id ?? null,
+            finished_product_name: finishedProduct?.name ?? (row.product_id ? `Product #${row.product_id}` : 'Unknown'),
+            finished_product_sku: finishedProduct?.sku ?? null,
+            packet_unit_code: row.packet_unit_code ?? row.pack_identifier ?? null,
+            remainder_kg: availableRemainderKg,
+            packed_at: row.created_at ?? null,
+          }
+        })
+        .filter((row): row is RemainderCandidate => !!row && row.remainder_kg > 0)
+        .filter((row) => row.packaging_run_id !== packagingRun?.id)
+
+      const latestRunIds = Array.from(new Set(mapped.map((row) => row.packaging_run_id))).slice(0, 5)
+      const latestRunIdSet = new Set(latestRunIds)
+      const trimmed = mapped.filter((row) => latestRunIdSet.has(row.packaging_run_id))
+
+      setRemainderRows(trimmed)
+      setSelectedRemainderId(trimmed[0] ? String(trimmed[0].id) : '')
+    } catch (error) {
+      setRemainderRows([])
+      setSelectedRemainderId('')
+      const message = error instanceof Error ? error.message : 'Failed to load recent remainders'
+      setRemaindersError(message)
+    } finally {
+      setLoadingRemainders(false)
+    }
+  }, [selectedWipForPackEntry, packagingRun?.id])
+
+  const openRemaindersModal = async () => {
+    if (!selectedWipForPackEntry) {
+      toast.info('Select WIP first to load matching remainder history.')
+      return
+    }
+    setRemainderSearchTerm('')
+    setRemainderDateFilter('ALL')
+    setShowRemaindersModal(true)
+    await loadRecentRemaindersForSelectedWip()
+  }
+
+  const closeRemaindersModal = () => {
+    setShowRemaindersModal(false)
+  }
+
+  const filteredRemainderRows = useMemo(() => {
+    const now = Date.now()
+    return remainderRows.filter((row) => {
+      if (remainderDateFilter !== 'ALL') {
+        const dateValue = row.packed_at ? new Date(row.packed_at).getTime() : NaN
+        const threshold = remainderDateFilter === '7D' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000
+        if (!Number.isFinite(dateValue) || now - dateValue > threshold) {
+          return false
+        }
+      }
+
+      const search = remainderSearchTerm.trim().toLowerCase()
+      if (!search) return true
+      const haystack = [
+        row.finished_product_name,
+        row.finished_product_sku ?? '',
+        row.packet_unit_code ?? '',
+        row.lot_no ?? '',
+        row.process_code,
+        row.process_name,
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(search)
+    })
+  }, [remainderRows, remainderDateFilter, remainderSearchTerm])
+
+  const selectedRemainderRow = useMemo(
+    () => filteredRemainderRows.find((row) => String(row.id) === selectedRemainderId) ?? null,
+    [filteredRemainderRows, selectedRemainderId]
+  )
+  const selectableFilteredRemainderRows = useMemo(
+    () => filteredRemainderRows.filter((row) => !usedRemainderIds.has(row.id)),
+    [filteredRemainderRows, usedRemainderIds]
+  )
+
+  const remainderTotalKg = useMemo(
+    () => filteredRemainderRows.reduce((sum, row) => sum + row.remainder_kg, 0),
+    [filteredRemainderRows]
+  )
+  const remainderSourceRuns = useMemo(
+    () => new Set(filteredRemainderRows.map((row) => row.packaging_run_id)).size,
+    [filteredRemainderRows]
+  )
+
+  const applySelectedRemainder = () => {
+    if (!selectedRemainderRow || !selectedWipForPackEntry) return
+    if (usedRemainderIds.has(selectedRemainderRow.id)) {
+      toast.error('This remainder has already been used in this packing session.')
+      return
+    }
+    const remainingKg = selectedWipRemainingKg ?? 0
+    const adjustedLimitKg = remainingKg + selectedRemainderRow.remainder_kg
+    const boundedQuantity = Math.max(0, Math.min(selectedRemainderRow.remainder_kg, adjustedLimitKg))
+    const quantityValue = boundedQuantity > 0 ? boundedQuantity.toFixed(2) : ''
+
+    const packetMatch = selectedRemainderRow.packet_unit_code
+      ? activePacketUnits.find(
+          (unit) => normalizeUnitCode(unit.code) === normalizeUnitCode(selectedRemainderRow.packet_unit_code)
+        ) ?? null
+      : null
+    const productMatch = selectedRemainderRow.finished_product_id
+      ? finishedProducts.find((product) => product.id === selectedRemainderRow.finished_product_id) ?? null
+      : null
+
+    setPackEntryForm((prev) => ({
+      ...prev,
+      packet_unit_code: packetMatch?.code ?? '',
+      product_id: productMatch ? String(productMatch.id) : '',
+      quantity_kg: quantityValue,
+    }))
+
+    setRemainderPrefillSource({
+      id: selectedRemainderRow.id,
+      process_name: selectedRemainderRow.process_name,
+      process_code: selectedRemainderRow.process_code,
+      lot_no: selectedRemainderRow.lot_no,
+      remainder_kg: selectedRemainderRow.remainder_kg,
+      packed_at: selectedRemainderRow.packed_at,
+    })
+    setAddedRemainderSources((prev) => {
+      if (prev.some((row) => row.id === selectedRemainderRow.id)) return prev
+      return [
+        ...prev,
+        {
+          id: selectedRemainderRow.id,
+          process_name: selectedRemainderRow.process_name,
+          process_code: selectedRemainderRow.process_code,
+          lot_no: selectedRemainderRow.lot_no,
+          remainder_kg: selectedRemainderRow.remainder_kg,
+          packed_at: selectedRemainderRow.packed_at,
+        },
+      ]
+    })
+    setUsedRemainderIds((prev) => new Set(prev).add(selectedRemainderRow.id))
+
+    closeRemaindersModal()
+    toast.success('Pack form prefilled from remainder source.')
+    toast.info(`Quantity limit adjusted to ${(adjustedLimitKg).toFixed(2)} kg including remainder.`)
+    if (!packetMatch) {
+      toast.warning('Historical packet unit is not active. Please select a packet unit.')
+    }
+    if (!productMatch) {
+      toast.warning('Historical finished product is not valid for this WIP. Please select a finished product.')
+    }
+  }
+
+  useEffect(() => {
+    if (!showRemaindersModal) return
+
+    const modalNode = remaindersModalRef.current
+    const focusables = modalNode?.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    if (focusables && focusables.length > 0) {
+      focusables[0].focus()
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeRemaindersModal()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const nodes = remaindersModalRef.current?.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )
+      if (!nodes || nodes.length === 0) return
+      const first = nodes[0]
+      const last = nodes[nodes.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [showRemaindersModal])
+
+  useEffect(() => {
+    if (!showRemaindersModal) return
+    if (selectedRemainderId && selectedRemainderRow && !usedRemainderIds.has(selectedRemainderRow.id)) return
+    const firstAvailable = selectableFilteredRemainderRows[0]
+    setSelectedRemainderId(firstAvailable ? String(firstAvailable.id) : '')
+  }, [showRemaindersModal, selectedRemainderId, selectedRemainderRow, selectableFilteredRemainderRows, usedRemainderIds])
+
   const openMetalCheckModal = (wip: SortedWipRow) => {
     setSelectedMetalCheckWip(wip)
     setMetalCheckForm({ status: '', remarks: '' })
@@ -1102,7 +1438,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
     const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
     const latestCheck = sortingOutputId ? getLatestMetalCheck(sortingOutputId) : null
-    const remainingKg =
+    const remainingKgBase =
       selectedWipForPackEntry && selectedWipForPackEntry.id === sortingOutputId
         ? selectedWipRemainingKg ?? 0
         : selectedWip
@@ -1112,6 +1448,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             .filter((entry) => entry.sorting_output_id === selectedWip.id)
             .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
         : 0
+    const remainingKg = Math.max(0, remainingKgBase + packEntryAdditionalRemainderKg)
 
     if (!sortingOutputId || !selectedPacketUnit || selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) {
       toast.error('Select a WIP, packet unit, and valid quantity')
@@ -1135,7 +1472,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
     setSaving(true)
     try {
-      await addPackEntry({
+      const createdPackEntry = await addPackEntry({
         sorting_output_id: sortingOutputId,
         product_id: productId,
         packet_unit_code: selectedPacketUnit.code,
@@ -1144,12 +1481,55 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         packing_type: mapPackagingTypeToPackingType(selectedPacketUnit.packaging_type),
         pack_size_kg: selectedPackSizeKg,
       })
+      const remainderUsageNeededKg = Math.max(0, quantityKg - Math.max(0, remainingKgBase))
+      if (remainderUsageNeededKg > 0 && addedRemainderSources.length > 0) {
+        let remainingToAllocate = remainderUsageNeededKg
+        const usagePayload: Array<{
+          source_pack_entry_id: number
+          consumer_pack_entry_id: number
+          quantity_kg: number
+          created_by: string | null
+        }> = []
+
+        const { data: authData } = await supabase.auth.getUser()
+        const userId = authData?.user?.id ?? null
+
+        for (const source of addedRemainderSources) {
+          if (remainingToAllocate <= 0) break
+          const sourceAvailableKg = Number(source.remainder_kg) || 0
+          if (sourceAvailableKg <= 0) continue
+          const consumedKg = Math.min(sourceAvailableKg, remainingToAllocate)
+          if (consumedKg <= 0) continue
+          usagePayload.push({
+            source_pack_entry_id: source.id,
+            consumer_pack_entry_id: createdPackEntry.id,
+            quantity_kg: consumedKg,
+            created_by: userId,
+          })
+          remainingToAllocate -= consumedKg
+        }
+
+        if (usagePayload.length > 0) {
+          const { error: usageInsertError } = await supabase
+            .from('process_packaging_remainder_usages')
+            .insert(usagePayload)
+
+          if (usageInsertError) {
+            await deletePackEntry(createdPackEntry.id).catch((rollbackError) => {
+              console.error('Failed to rollback pack entry after remainder usage failure:', rollbackError)
+            })
+            throw usageInsertError
+          }
+        }
+      }
       setPackEntryForm({
         sorting_output_id: '',
         product_id: '',
         packet_unit_code: '',
         quantity_kg: '',
       })
+      setRemainderPrefillSource(null)
+      setAddedRemainderSources([])
       setShowPackEntryForm(false)
       toast.success('Pack entry added')
     } catch (err) {
@@ -1386,6 +1766,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         .reduce((sum, entry) => sum + (Number(entry.quantity_kg) || 0), 0)
                     : 0
                   const remainingKg = selectedWip ? Math.max(0, selectedWip.quantity_kg - failedRejectedKg - usedKg) : 0
+                  const effectiveLimitKg = Math.max(0, remainingKg + packEntryAdditionalRemainderKg)
                   const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
                   const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
                   const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
@@ -1412,6 +1793,18 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                           </strong>
                         </span>
                         <span>
+                          Qty limit:{' '}
+                          <strong className="text-text-dark">
+                            {selectedWip ? effectiveLimitKg.toFixed(2) : '—'} kg
+                          </strong>
+                        </span>
+                        {packEntryAdditionalRemainderKg > 0 && (
+                          <span>
+                            Remainder added:{' '}
+                            <strong className="text-text-dark">{packEntryAdditionalRemainderKg.toFixed(2)} kg</strong>
+                          </span>
+                        )}
+                        <span>
                           Metal rejects deducted:{' '}
                           <strong className="text-text-dark">{selectedWip ? failedRejectedKg.toFixed(2) : '—'} kg</strong>
                         </span>
@@ -1428,6 +1821,53 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             </div>
           )
         })()}
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-olive-light/30 bg-olive-light/5 px-3 py-2">
+                  <p className="text-xs text-text-dark/70">
+                    Reuse remainder history from recent packing runs for this WIP to speed up entry.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={openRemaindersModal}
+                    disabled={saving || externalLoading || !packagingRun || !selectedWipForPackEntry}
+                    className="border-olive-light/40"
+                    title={!selectedWipForPackEntry ? 'Select WIP first to load matching remainder history.' : 'Load recent remainders'}
+                  >
+                    <History className="mr-2 h-4 w-4" />
+                    Add Remainders
+                  </Button>
+                </div>
+                {remainderPrefillSource && (
+                  <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                    Prefilled from remainder #{remainderPrefillSource.id} · {remainderPrefillSource.process_code} ·{' '}
+                    {remainderPrefillSource.process_name}
+                    {remainderPrefillSource.lot_no ? ` · Lot ${remainderPrefillSource.lot_no}` : ''}
+                    {' '}({remainderPrefillSource.remainder_kg.toFixed(2)} kg)
+                  </div>
+                )}
+                {addedRemainderSources.length > 0 && (
+                  <div className="mb-3 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/70">Added Remainders</p>
+                      <p className="text-xs font-semibold text-text-dark">
+                        Total added: {packEntryAdditionalRemainderKg.toFixed(2)} kg
+                      </p>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {addedRemainderSources.map((source) => (
+                        <span
+                          key={`added-remainder-${source.id}`}
+                          className="inline-flex items-center rounded-full border border-olive-light/40 bg-white px-2.5 py-1 text-[11px] text-text-dark/80"
+                        >
+                          #{source.id} · {source.process_code}
+                          {source.lot_no ? ` · Lot ${source.lot_no}` : ''}
+                          {' '}· {source.remainder_kg.toFixed(2)} kg
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="space-y-2">
                     <Label>WIP (sorted output) *</Label>
@@ -1495,10 +1935,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                           setPackEntryForm({ ...packEntryForm, quantity_kg: rawValue })
                           return
                         }
-                        const remainingKg = selectedWipRemainingKg ?? 0
+                        const remainingKg = packEntryEffectiveLimitKg ?? 0
                         const numericValue = parseFloat(rawValue)
                         if (!Number.isNaN(numericValue) && numericValue > remainingKg) {
-                          toast.error(`Quantity cannot exceed remaining ${remainingKg.toFixed(2)} kg for this WIP`)
+                          toast.error(`Quantity cannot exceed ${remainingKg.toFixed(2)} kg for this WIP (including added remainder)`)
                           setPackEntryForm({ ...packEntryForm, quantity_kg: String(remainingKg) })
                           return
                         }
@@ -1777,6 +2217,180 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     })}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRemaindersModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div
+            ref={remaindersModalRef}
+            className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-lg border border-border bg-card p-6 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add remainders"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h4 className="text-lg font-semibold text-text-dark">Add Remainders</h4>
+                <p className="mt-1 text-sm text-text-dark/70">
+                  Recent remainder history for {selectedWipForPackEntry?.product_name ?? 'selected WIP'}.
+                </p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={closeRemaindersModal}>
+                Close
+              </Button>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2">
+                <p className="text-xs text-text-dark/60">Total Candidate Remainder</p>
+                <p className="text-sm font-semibold text-text-dark">{remainderTotalKg.toFixed(2)} kg</p>
+              </div>
+              <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2">
+                <p className="text-xs text-text-dark/60">Entries</p>
+                <p className="text-sm font-semibold text-text-dark">{filteredRemainderRows.length}</p>
+              </div>
+              <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2">
+                <p className="text-xs text-text-dark/60">Source Runs</p>
+                <p className="text-sm font-semibold text-text-dark">{remainderSourceRuns}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 rounded-md border border-olive-light/30 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full sm:max-w-sm">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/50" />
+                <Input
+                  className="pl-8"
+                  placeholder="Search product, packet unit, lot..."
+                  value={remainderSearchTerm}
+                  onChange={(event) => setRemainderSearchTerm(event.target.value)}
+                  disabled={loadingRemainders}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                {[
+                  { value: 'ALL' as const, label: 'All' },
+                  { value: '7D' as const, label: 'Last 7 days' },
+                  { value: '30D' as const, label: 'Last 30 days' },
+                ].map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    variant={remainderDateFilter === option.value ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setRemainderDateFilter(option.value)}
+                    className={remainderDateFilter === option.value ? 'bg-olive hover:bg-olive-dark' : 'border-olive-light/40'}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {remaindersError && (
+              <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{remaindersError}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={loadRecentRemaindersForSelectedWip}
+                    disabled={loadingRemainders}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-lg border border-olive-light/30 bg-white">
+              <div className="max-h-[320px] overflow-auto">
+                {loadingRemainders ? (
+                  <p className="px-4 py-6 text-sm text-text-dark/60">Loading recent remainders…</p>
+                ) : filteredRemainderRows.length === 0 ? (
+                  <p className="px-4 py-6 text-sm text-text-dark/60">No recent remainders found for this WIP product.</p>
+                ) : (
+                  <table className="min-w-full divide-y divide-olive-light/20 text-sm">
+                    <thead className="bg-olive-light/10">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Pick</th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Source</th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Finished Product</th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-text-dark/60">Packet Unit</th>
+                        <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Remainder (kg)</th>
+                        <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-text-dark/60">Packed At</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-olive-light/20">
+                      {filteredRemainderRows.map((row) => (
+                        (() => {
+                          const isUsed = usedRemainderIds.has(row.id)
+                          return (
+                        <tr
+                          key={row.id}
+                          className={[
+                            selectedRemainderId === String(row.id) ? 'bg-olive-light/5' : '',
+                            isUsed ? 'opacity-60' : '',
+                          ].join(' ')}
+                          onClick={() => {
+                            if (isUsed) return
+                            setSelectedRemainderId(String(row.id))
+                          }}
+                        >
+                          <td className="px-3 py-2">
+                            <input
+                              type="radio"
+                              name="remainder_pick"
+                              checked={selectedRemainderId === String(row.id)}
+                              onChange={() => {
+                                if (isUsed) return
+                                setSelectedRemainderId(String(row.id))
+                              }}
+                              disabled={isUsed}
+                              aria-label={`Select remainder ${row.id}`}
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <p className="font-medium text-text-dark">{row.process_name}</p>
+                            <p className="text-xs text-text-dark/60">{row.process_code}{row.lot_no ? ` · Lot ${row.lot_no}` : ''}</p>
+                          </td>
+                          <td className="px-3 py-2">
+                            <p className="font-medium text-text-dark">{row.finished_product_name}</p>
+                            {row.finished_product_sku ? <p className="text-xs text-text-dark/60">{row.finished_product_sku}</p> : null}
+                          </td>
+                          <td className="px-3 py-2 text-text-dark/80">
+                            {row.packet_unit_code ?? '—'}
+                            {isUsed ? <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-600">Used</span> : null}
+                          </td>
+                          <td className="px-3 py-2 text-right font-semibold text-orange-700">{row.remainder_kg.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right text-text-dark/70">
+                            {row.packed_at ? new Date(row.packed_at).toLocaleString() : '—'}
+                          </td>
+                        </tr>
+                          )
+                        })()
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={closeRemaindersModal}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="bg-olive hover:bg-olive-dark"
+                disabled={!selectedRemainderRow || loadingRemainders || (selectedRemainderRow ? usedRemainderIds.has(selectedRemainderRow.id) : false)}
+                onClick={applySelectedRemainder}
+              >
+                Use Selected Remainder
+              </Button>
             </div>
           </div>
         </div>

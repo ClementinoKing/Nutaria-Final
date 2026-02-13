@@ -70,6 +70,30 @@ export function useProcessLotRun(options: UseProcessLotRunOptions): UseProcessLo
           role,
           signed_by,
           signed_at
+        ),
+        process_lot_run_batches (
+          id,
+          process_lot_run_id,
+          supply_batch_id,
+          is_primary,
+          created_at,
+          supply_batches:supply_batch_id (
+            id,
+            lot_no,
+            product_id,
+            current_qty,
+            unit_id,
+            process_status,
+            quality_status,
+            products:product_id (
+              name,
+              sku
+            ),
+            units:unit_id (
+              name,
+              symbol
+            )
+          )
         )
       `)
       .eq('id', lotRunId)
@@ -79,7 +103,18 @@ export function useProcessLotRun(options: UseProcessLotRunOptions): UseProcessLo
       setError(fetchError)
       setLotRun(null)
     } else {
-      setLotRun(data as ProcessLotRunWithDetails)
+      const normalized = {
+        ...(data as Record<string, unknown>),
+        run_lots: ((data as any)?.process_lot_run_batches || []).map((row: any) => ({
+          id: row.id,
+          process_lot_run_id: row.process_lot_run_id,
+          supply_batch_id: row.supply_batch_id,
+          is_primary: row.is_primary,
+          created_at: row.created_at,
+          supply_batch: Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches,
+        })),
+      }
+      setLotRun(normalized as ProcessLotRunWithDetails)
     }
 
     setLoading(false)

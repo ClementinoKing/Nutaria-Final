@@ -89,30 +89,34 @@ export function WashingStep({
     })
   }, [saveWashingRun])
 
-  // Save on field change (debounced), then hook refetches in background
+  // Save in background, 10s after last field change.
   useEffect(() => {
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false
       return
     }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(async () => {
+    saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
-      setSaving(true)
-      try {
-        await saveWashingRun({
-          washing_water_litres: formData.washing_water_litres ? parseFloat(formData.washing_water_litres) : null,
-          oxy_acid_ml: formData.oxy_acid_ml ? parseFloat(formData.oxy_acid_ml) : null,
-          moisture_percent: formData.moisture_percent ? parseFloat(formData.moisture_percent) : null,
-          remarks: formData.remarks.trim() || null,
-        })
-      } catch (error) {
+      saveWashingRun({
+        washing_water_litres: formData.washing_water_litres ? parseFloat(formData.washing_water_litres) : null,
+        oxy_acid_ml: formData.oxy_acid_ml ? parseFloat(formData.oxy_acid_ml) : null,
+        moisture_percent: formData.moisture_percent ? parseFloat(formData.moisture_percent) : null,
+        remarks: formData.remarks.trim() || null,
+      }).catch((error) => {
         console.error('Error saving washing data:', error)
         toast.error('Failed to save washing data')
-      } finally {
-        setSaving(false)
+      })
+    }, 10000)
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
       }
-    }, 300)
+    }
+  }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks])
+
+  useEffect(() => {
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
@@ -120,7 +124,7 @@ export function WashingStep({
         flushSave()
       }
     }
-  }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks])
+  }, [flushSave])
 
   const handleWasteSubmit = async (e: FormEvent) => {
     e.preventDefault()

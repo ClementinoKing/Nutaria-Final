@@ -20,26 +20,44 @@ export async function calculateAvailableQuantity(
     packagingWaste: number
   }
 }> {
-  // Get the supply batch initial quantity
-  const { data: lotRun, error: lotRunError } = await supabase
-    .from('process_lot_runs')
+  const { data: linkedLots, error: linkedLotsError } = await supabase
+    .from('process_lot_run_batches')
     .select(`
       supply_batch_id,
       supply_batches:supply_batch_id (
         current_qty
       )
     `)
-    .eq('id', lotRunId)
-    .single()
+    .eq('process_lot_run_id', lotRunId)
 
-  if (lotRunError || !lotRun) {
-    throw new Error(`Process lot run ${lotRunId} not found`)
+  if (linkedLotsError) {
+    throw linkedLotsError
   }
 
-  // Get initial quantity from supply batch
-  // Note: Reworks and sorting outputs/waste are NOT deducted from current_qty
-  // They are handled within the sorting step itself with sequential deduction: outputs → reworks → waste
-  const initialQty = (lotRun as any).supply_batches?.current_qty || 0
+  let initialQty = 0
+
+  if (linkedLots && linkedLots.length > 0) {
+    initialQty = linkedLots.reduce((sum, row: any) => {
+      const batch = Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches
+      return sum + (Number(batch?.current_qty) || 0)
+    }, 0)
+  } else {
+    const { data: lotRun, error: lotRunError } = await supabase
+      .from('process_lot_runs')
+      .select(`
+        supply_batch_id,
+        supply_batches:supply_batch_id (
+          current_qty
+        )
+      `)
+      .eq('id', lotRunId)
+      .single()
+
+    if (lotRunError || !lotRun) {
+      throw new Error(`Process lot run ${lotRunId} not found`)
+    }
+    initialQty = Number((lotRun as any).supply_batches?.current_qty) || 0
+  }
 
   // Get all step runs for this lot run (no embed: process_step_runs has no seq, and process_steps schema varies)
   const { data: stepRunsRaw, error: stepRunsError } = await supabase

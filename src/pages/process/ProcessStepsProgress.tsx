@@ -30,6 +30,9 @@ import {
   createProcessLotRun,
   createProcessStepRuns,
   skipProcessStep,
+  getActiveGlobalMetalDetectorSession,
+  startGlobalMetalDetectorSession,
+  stopGlobalMetalDetectorSession,
 } from '@/lib/processExecution'
 import { calculateAvailableQuantity } from '@/lib/processQuantityTracking'
 import { NonConformanceList } from '@/components/process/NonConformanceList'
@@ -43,6 +46,7 @@ import { MetalDetectionStep } from '@/components/process/steps/MetalDetectionSte
 import { PackagingStep } from '@/components/process/steps/PackagingStep'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { ProcessStepRun, ProcessStep } from '@/types/processExecution'
+import { formatSecondsToHms } from '@/lib/metalDetectorTimer'
 
 function ProcessStepsProgressSkeleton() {
   return (
@@ -159,8 +163,9 @@ function formatLotStatus(status: string | null | undefined): string {
 }
 
 function ProcessStepsProgress() {
-  const { lotId: lotIdParam } = useParams()
+  const { lotId: lotIdParam, lotRunId: lotRunIdParam } = useParams()
   const lotId = Number.parseInt(lotIdParam ?? '', 10)
+  const routeLotRunId = Number.parseInt(lotRunIdParam ?? '', 10)
   const navigate = useNavigate()
 
   const { user } = useAuth()
@@ -174,19 +179,86 @@ function ProcessStepsProgress() {
   const [showSignoffs, setShowSignoffs] = useState(false)
   const [creatingLotRun, setCreatingLotRun] = useState(false)
   const [selectedLot, setSelectedLot] = useState<Lot | null>(null)
+  const [selectedLots, setSelectedLots] = useState<Lot[]>([])
   const [loadingSelectedLot, setLoadingSelectedLot] = useState(true)
   const [selectedLotError, setSelectedLotError] = useState<string | null>(null)
+  const [globalMetalSession, setGlobalMetalSession] = useState<{ ends_at: string } | null>(null)
+  const [metalTimerNowMs, setMetalTimerNowMs] = useState(() => Date.now())
+
+  const [lotRunId, setLotRunId] = useState<number | null>(Number.isFinite(routeLotRunId) ? routeLotRunId : null)
+  const [checkingLotRun, setCheckingLotRun] = useState(false)
+  const lotRunLookupRequestId = useRef(0)
+  const [checkedLotId, setCheckedLotId] = useState<number | null>(null)
+  const [initialLoadCompleted, setInitialLoadCompleted] = useState(false)
 
   const refreshSelectedLot = useCallback(async () => {
-    if (!Number.isFinite(lotId)) {
-      setSelectedLot(null)
+    setLoadingSelectedLot(true)
+    setSelectedLotError(null)
+
+    if (lotRunId) {
+      const { data: rows, error: rowsError } = await supabase
+        .from('process_lot_run_batches')
+        .select(
+          `
+          id,
+          is_primary,
+          supply_batches:supply_batch_id (
+            id,
+            lot_no,
+            supply_id,
+            product_id,
+            unit_id,
+            received_qty,
+            accepted_qty,
+            rejected_qty,
+            current_qty,
+            process_status,
+            quality_status,
+            expiry_date,
+            created_at,
+            supplies (
+              doc_no,
+              received_at,
+              supplier_id,
+              warehouse_id
+            ),
+            products (
+              name,
+              sku
+            ),
+            units (
+              name,
+              symbol
+            )
+          )
+        `
+        )
+        .eq('process_lot_run_id', lotRunId)
+
+      if (rowsError) {
+        setSelectedLot(null)
+        setSelectedLots([])
+        setSelectedLotError(rowsError.message ?? 'Failed to load run lots')
+      } else {
+        const lotsInRun: Lot[] = ((rows || []) as any[])
+          .map((row) => (Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches))
+          .filter((row) => row != null) as Lot[]
+        setSelectedLots(lotsInRun)
+        const primary = ((rows || []) as any[])
+          .find((row) => row.is_primary)?.supply_batches
+        const fallback = lotsInRun[0] ?? null
+        setSelectedLot((Array.isArray(primary) ? primary[0] : primary) ?? fallback)
+      }
       setLoadingSelectedLot(false)
-      setSelectedLotError(null)
       return
     }
 
-    setLoadingSelectedLot(true)
-    setSelectedLotError(null)
+    if (!Number.isFinite(lotId)) {
+      setSelectedLot(null)
+      setSelectedLots([])
+      setLoadingSelectedLot(false)
+      return
+    }
 
     const { data, error } = await supabase
       .from('supply_batches')
@@ -219,36 +291,31 @@ function ProcessStepsProgress() {
           name,
           symbol
         )
-      `,
+      `
       )
       .eq('id', lotId)
       .maybeSingle()
 
     if (error) {
       setSelectedLot(null)
+      setSelectedLots([])
       setSelectedLotError(error.message ?? 'Failed to load lot details')
     } else {
-      setSelectedLot((data as Lot | null) ?? null)
+      const lot = (data as Lot | null) ?? null
+      setSelectedLot(lot)
+      setSelectedLots(lot ? [lot] : [])
     }
 
     setLoadingSelectedLot(false)
-  }, [lotId])
+  }, [lotId, lotRunId])
 
   useEffect(() => {
-    refreshSelectedLot()
-  }, [refreshSelectedLot])
-
-  const [lotRunId, setLotRunId] = useState<number | null>(null)
-  const [checkingLotRun, setCheckingLotRun] = useState(false)
-  const lotRunLookupRequestId = useRef(0)
-  const [checkedLotId, setCheckedLotId] = useState<number | null>(null)
-  const [initialLoadCompleted, setInitialLoadCompleted] = useState(false)
-
-  useEffect(() => {
-    if (!selectedLot) {
+    if (Number.isFinite(routeLotRunId)) {
+      setLotRunId(routeLotRunId)
+      return
+    }
+    if (!Number.isFinite(lotId)) {
       setLotRunId(null)
-      setCheckingLotRun(false)
-      setCheckedLotId(null)
       return
     }
 
@@ -256,35 +323,50 @@ function ProcessStepsProgress() {
     const requestId = ++lotRunLookupRequestId.current
     setCheckingLotRun(true)
 
-    // Check if a process lot run already exists before deciding which screen to render.
     supabase
-      .from('process_lot_runs')
-      .select('id')
-      .eq('supply_batch_id', selectedLot.id)
+      .from('process_lot_run_batches')
+      .select('process_lot_run_id')
+      .eq('supply_batch_id', lotId)
       .maybeSingle()
-      .then(({ data, error }) => {
+      .then(async ({ data }) => {
         if (isCancelled || requestId !== lotRunLookupRequestId.current) return
-        if (!error && data) {
-          setLotRunId(data.id)
-        } else {
-          setLotRunId(null)
+        if (data?.process_lot_run_id) {
+          setLotRunId(data.process_lot_run_id)
+          return
         }
-        setCheckedLotId(selectedLot.id)
+        const fallback = await supabase
+          .from('process_lot_runs')
+          .select('id')
+          .eq('supply_batch_id', lotId)
+          .maybeSingle()
+        if (isCancelled || requestId !== lotRunLookupRequestId.current) return
+        setLotRunId(fallback.data?.id ?? null)
       })
       .finally(() => {
         if (isCancelled || requestId !== lotRunLookupRequestId.current) return
+        setCheckedLotId(lotId)
         setCheckingLotRun(false)
       })
 
     return () => {
       isCancelled = true
     }
-  }, [selectedLot])
+  }, [lotId, routeLotRunId])
+
+  useEffect(() => {
+    refreshSelectedLot()
+  }, [refreshSelectedLot])
 
   const { lotRun, loading: loadingLotRun, refresh: refreshLotRun } = useProcessLotRun({
     lotRunId,
     enabled: lotRunId !== null,
   })
+
+  useEffect(() => {
+    if (!lotRunId) return
+    if (Number.isFinite(routeLotRunId)) return
+    navigate(`/process/process-steps/run/${lotRunId}`, { replace: true })
+  }, [lotRunId, routeLotRunId, navigate])
 
   const { stepRuns, loading: loadingStepRuns, refresh: refreshStepRuns } = useProcessStepRuns({
     lotRunId,
@@ -395,6 +477,17 @@ function ProcessStepsProgress() {
     [nonConformances]
   )
 
+  const runTotalAvailableQty = useMemo(
+    () => selectedLots.reduce((sum, lot) => sum + (Number(lot.current_qty ?? lot.received_qty) || 0), 0),
+    [selectedLots]
+  )
+  const runUnitSymbol = useMemo(() => {
+    const symbols = Array.from(new Set(selectedLots.map((lot) => lot.units?.symbol).filter(Boolean)))
+    if (symbols.length === 1) return symbols[0] as string
+    return symbols[0] ?? 'kg'
+  }, [selectedLots])
+  const isSortingStep = (activeStep?.step_code ?? '').toUpperCase() === 'SORT'
+
   const handleBack = () => {
     navigate('/process/process-steps')
   }
@@ -416,12 +509,12 @@ function ProcessStepsProgress() {
         toast.info('Process lot run already exists for this batch')
         // Refresh to get the existing lot run ID
         const { data } = await supabase
-          .from('process_lot_runs')
-          .select('id')
+          .from('process_lot_run_batches')
+          .select('process_lot_run_id')
           .eq('supply_batch_id', selectedLot.id)
           .maybeSingle()
-        if (data) {
-          setLotRunId(data.id)
+        if (data?.process_lot_run_id) {
+          setLotRunId(data.process_lot_run_id)
         }
       }
     } catch (error) {
@@ -678,7 +771,7 @@ function ProcessStepsProgress() {
   }, [activeStepRun, activeStep])
 
   const stepFormSaveSkippedFirst = useRef(false)
-  // Auto-save step details on field change (debounced), then refresh in background
+  // Auto-save step details in background, 10s after last field change.
   useEffect(() => {
     if (!activeStepRun || !stepFormInitialized.current) return
     if (!stepFormSaveSkippedFirst.current) {
@@ -690,7 +783,7 @@ function ProcessStepsProgress() {
       clearTimeout(stepFormSaveTimeout.current)
     }
 
-    stepFormSaveTimeout.current = setTimeout(async () => {
+    stepFormSaveTimeout.current = setTimeout(() => {
       stepFormSaveTimeout.current = null
       const updates: Partial<ProcessStepRun> = {
         location_id: stepFormData.location_id ? parseInt(stepFormData.location_id, 10) : null,
@@ -698,14 +791,11 @@ function ProcessStepsProgress() {
       if (!activeStepRun.performed_by && user?.id) {
         updates.performed_by = user.id
       }
-      try {
-        await updateProcessStepRun(activeStepRun.id, updates)
-        await refreshStepRuns()
-      } catch (error) {
-        console.error('Error saving step:', error)
-        toast.error('Failed to save step details')
-      }
-    }, 600)
+      updateProcessStepRun(activeStepRun.id, updates)
+        .catch((error) => {
+          console.error('Error saving step in background:', error)
+        })
+    }, 10000)
 
     return () => {
       if (stepFormSaveTimeout.current) clearTimeout(stepFormSaveTimeout.current)
@@ -846,6 +936,68 @@ function ProcessStepsProgress() {
   }, [initialLoadCompleted, initialLoadReady])
 
   const isPageLoading = !initialLoadCompleted
+  const metalTimerRemainingSeconds = useMemo(() => {
+    if (!globalMetalSession?.ends_at) return 0
+    return Math.max(0, Math.ceil((new Date(globalMetalSession.ends_at).getTime() - metalTimerNowMs) / 1000))
+  }, [globalMetalSession, metalTimerNowMs])
+  const isMetalTimerRunning = globalMetalSession != null && metalTimerRemainingSeconds > 0
+  const isMetalTimerExpired = globalMetalSession != null && metalTimerRemainingSeconds === 0
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setMetalTimerNowMs(Date.now())
+    }, 1000)
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    const refreshSession = async () => {
+      const active = await getActiveGlobalMetalDetectorSession()
+      if (active) {
+        setGlobalMetalSession({ ends_at: active.ends_at })
+      } else {
+        setGlobalMetalSession(null)
+      }
+    }
+
+    refreshSession().catch(() => undefined)
+    const refreshId = window.setInterval(() => {
+      refreshSession().catch(() => undefined)
+    }, 15000)
+
+    return () => {
+      window.clearInterval(refreshId)
+    }
+  }, [])
+
+  const handleStartMetalDetectorChecks = useCallback(async () => {
+    try {
+      const started = await startGlobalMetalDetectorSession({
+        durationMinutes: 60,
+        startedBy: user?.id ?? null,
+        startedFromProcessLotRunId: lotRunId ?? null,
+      })
+      setGlobalMetalSession({ ends_at: started.ends_at })
+      setMetalTimerNowMs(Date.now())
+      toast.success('Metal detector checks started (global).')
+    } catch (error) {
+      console.error('Failed to start metal detector checks:', error)
+      toast.error('Failed to start metal detector checks')
+    }
+  }, [lotRunId, user?.id])
+
+  const handleStopMetalDetectorChecks = useCallback(async () => {
+    try {
+      await stopGlobalMetalDetectorSession(user?.id ?? null)
+      setGlobalMetalSession(null)
+      toast.success('Metal detector timer stopped.')
+    } catch (error) {
+      console.error('Failed to stop metal detector checks:', error)
+      toast.error('Failed to stop metal detector checks')
+    }
+  }, [user?.id])
 
   return (
     <PageLayout
@@ -855,20 +1007,49 @@ function ProcessStepsProgress() {
       contentClassName="py-4 space-y-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="outline" onClick={handleBack} className="flex items-center gap-2">
-          <CornerUpLeft className="h-4 w-4" />
-          Back to Available Lots
-        </Button>
-        {selectedLot && (
-          <span
-            className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${getLotStatusStyles(
-              selectedLot.process_status,
-            )}`}
-          >
-            {formatLotStatus(selectedLot.process_status)}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={handleBack} className="flex items-center gap-2">
+            <CornerUpLeft className="h-4 w-4" />
+            Back to Available Lots
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          {!isMetalTimerRunning && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleStartMetalDetectorChecks}
+              disabled={!selectedLot}
+              className="border-olive-light/40"
+            >
+              Start Metal Detector Checks
+            </Button>
+          )}
+          {selectedLot && (
+            <span
+              className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${getLotStatusStyles(
+                selectedLot.process_status,
+              )}`}
+            >
+              {formatLotStatus(selectedLot.process_status)}
+            </span>
+          )}
+        </div>
       </div>
+
+      {selectedLots.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {selectedLots.map((lot) => (
+            <span
+              key={lot.id}
+              className="inline-flex items-center rounded-full border border-olive-light/40 bg-olive-light/15 px-3 py-1 text-xs text-text-dark/80"
+            >
+              {lot.lot_no} · {lot.current_qty ?? lot.received_qty ?? '—'} {lot.units?.symbol ?? ''}
+            </span>
+          ))}
+        </div>
+      )}
 
       {selectedLotError && (
         <Card className="border-red-300 bg-red-50 text-red-700">
@@ -880,7 +1061,7 @@ function ProcessStepsProgress() {
 
       {isPageLoading ? (
         <ProcessStepsProgressSkeleton />
-      ) : !Number.isFinite(lotId) || !selectedLot ? (
+      ) : !selectedLot ? (
         <Card className="border-red-200 bg-red-50 text-red-700">
           <CardContent className="space-y-2 py-3">
             <CardTitle className="text-base">Lot not found</CardTitle>
@@ -897,20 +1078,53 @@ function ProcessStepsProgress() {
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-olive/10 text-olive">
             <PlayCircle className="h-10 w-10" strokeWidth={1.5} aria-hidden />
           </div>
-          <Button
-            size="lg"
-            onClick={handleCreateLotRun}
-            disabled={creatingLotRun || !selectedLot}
-            className="bg-olive hover:bg-olive-dark text-white px-8 text-base font-medium"
-          >
-            {creatingLotRun ? 'Starting…' : 'Start Process'}
-          </Button>
+          <div className="flex w-full max-w-md flex-col items-center gap-3">
+            <Button
+              size="lg"
+              onClick={handleCreateLotRun}
+              disabled={creatingLotRun || !selectedLot}
+              className="w-full bg-olive hover:bg-olive-dark text-white px-8 text-base font-medium"
+            >
+              {creatingLotRun ? 'Starting…' : 'Start Process'}
+            </Button>
+            <Button
+              type="button"
+              size="lg"
+              variant="outline"
+              onClick={handleStartMetalDetectorChecks}
+              disabled={!selectedLot}
+              className="w-full border-olive-light/40 text-base font-medium"
+            >
+              Start Metal Detector Checks
+            </Button>
+            {(isMetalTimerRunning || isMetalTimerExpired) && (
+              <div className="w-full rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/70">Metal detector timer</p>
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <p className={`text-lg font-semibold ${isMetalTimerRunning ? 'text-amber-800' : 'text-red-700'}`}>
+                    {formatSecondsToHms(metalTimerRemainingSeconds)}
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleStopMetalDetectorChecks}
+                    className="border-amber-300"
+                  >
+                    Stop
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <>
           <Card className="bg-white border-olive-light/30">
             <CardHeader>
-              <CardTitle className="text-text-dark">{selectedLot.lot_no}</CardTitle>
+              <CardTitle className="text-text-dark">
+                {selectedLots.length > 1 ? `Combined Process Run (${selectedLots.length} lots)` : selectedLot.lot_no}
+              </CardTitle>
               <CardDescription>
                 {selectedLot.supplies?.doc_no ?? 'Unknown document'} ·{' '}
                 {selectedLot.products?.name ?? 'Unknown product'} ({selectedLot.products?.sku ?? 'N/A'})
@@ -920,7 +1134,7 @@ function ProcessStepsProgress() {
               <div>
                 <p className="text-xs uppercase tracking-wide text-text-dark/50">Available Qty</p>
                 <p className="text-base font-semibold text-text-dark">
-                  {selectedLot.current_qty ?? selectedLot.received_qty ?? '—'} {selectedLot.units?.symbol ?? ''}
+                  {runTotalAvailableQty.toFixed(2)} {runUnitSymbol}
                 </p>
               </div>
               <div>
@@ -949,11 +1163,23 @@ function ProcessStepsProgress() {
               <CardTitle className="text-text-dark">Process Steps Progress</CardTitle>
               <CardDescription>
                 {selectedLot
-                  ? `Tracking: ${selectedLot.lot_no} — ${selectedLot.products?.name ?? 'Unknown product'}`
+                  ? `Tracking: ${selectedLots.length > 1 ? `${selectedLots.length} combined lots` : selectedLot.lot_no} — ${selectedLot.products?.name ?? 'Unknown product'}`
                   : 'Select a lot to capture process execution data'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
+              {isSortingStep && sortingAvailableQty && (
+                <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Sorting available</p>
+                  <p className="text-2xl font-bold text-emerald-900">
+                    {sortingAvailableQty.availableQty.toFixed(2)} {runUnitSymbol}
+                  </p>
+                  <p className="text-xs text-emerald-800">
+                    Initial: {sortingAvailableQty.initialQty.toFixed(2)} {runUnitSymbol} · Deducted waste/rejections:{' '}
+                    {sortingAvailableQty.totalWaste.toFixed(2)} {runUnitSymbol}
+                  </p>
+                </div>
+              )}
               {loadingStepRuns && stepRuns.length === 0 ? (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
@@ -1510,7 +1736,7 @@ function ProcessStepsProgress() {
             <p>
               <span className="font-semibold text-text-dark">Available Qty:</span>{' '}
               <span className="text-text-dark/80">
-                {selectedLot ? `${selectedLot.current_qty ?? selectedLot.received_qty ?? '—'} ${selectedLot.units?.symbol ?? ''}` : '—'}
+                {selectedLot ? `${runTotalAvailableQty.toFixed(2)} ${runUnitSymbol}` : '—'}
               </span>
             </p>
           </div>

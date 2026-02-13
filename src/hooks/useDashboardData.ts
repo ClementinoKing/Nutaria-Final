@@ -362,15 +362,12 @@ export function useDashboardData(): UseDashboardDataReturn {
       // Try tables in order, return first successful result
       // Limit to 100 rows for dashboard (reduced from 200)
       for (const table of inventorySources) {
-        // Build column list based on table structure
-        let columns = 'id, product_id'
-        
+        // Build column list based on table structure.
+        // Use '*' for stock-like sources to avoid 400s from schema drift.
+        let columns = '*'
+
         if (table === 'supply_batches') {
           columns = 'id, supply_id, product_id, unit_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'
-        } else if (table === 'stock_levels') {
-          columns = 'id, product_id, warehouse_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
-        } else {
-          columns = 'id, product_id, warehouse_id, unit_id, on_hand, available, allocated, quality_hold, in_transit, reorder_point, safety_stock, last_updated, updated_at, created_at'
         }
 
         // Query without ordering to avoid column errors
@@ -580,4 +577,3 @@ export function useDashboardData(): UseDashboardDataReturn {
     refresh: fetchData,
   }
 }
-

@@ -102,6 +102,11 @@ interface ProcessRun {
   supply_batches: SupplyBatch | SupplyBatch[] | null
   processes: Process | Process[] | null
   process_signoffs?: ProcessSignoff[]
+  process_lot_run_batches?: Array<{
+    id: number
+    is_primary: boolean
+    supply_batches: SupplyBatch | SupplyBatch[] | null
+  }>
   is_rework?: boolean
   original_process_lot_run_id?: number | null
   original_lot_run?: {
@@ -189,6 +194,32 @@ function ProcessView() {
           role,
           signed_by,
           signed_at
+        ),
+        process_lot_run_batches (
+          id,
+          is_primary,
+          supply_batches:supply_batch_id (
+            id,
+            lot_no,
+            process_status,
+            current_qty,
+            received_qty,
+            product_id,
+            unit_id,
+            supply_id,
+            products: product_id (
+              name,
+              sku
+            ),
+            supplies: supply_id (
+              doc_no,
+              received_at
+            ),
+            units: unit_id (
+              name,
+              symbol
+            )
+          )
         ),
         original_lot_run:original_process_lot_run_id (
           id,
@@ -396,6 +427,23 @@ function ProcessView() {
     return run.supply_batches
   }
 
+  const getRunLots = (run: ProcessRun): SupplyBatch[] => {
+    const rows = run.process_lot_run_batches || []
+    const lots = rows
+      .map((row) => (Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches))
+      .filter((row): row is SupplyBatch => row != null)
+    return lots
+  }
+
+  const getLotSummary = (run: ProcessRun): string => {
+    const lots = getRunLots(run)
+    if (lots.length === 0) {
+      return getSupplyBatch(run)?.lot_no ?? 'Unknown lot'
+    }
+    if (lots.length === 1) return lots[0].lot_no
+    return `${lots[0].lot_no} +${lots.length - 1}`
+  }
+
   const timelineByRunId = useMemo(() => {
     const mapping = new Map<number, TimelineItem[]>()
 
@@ -485,14 +533,14 @@ function ProcessView() {
   const columns = [
     {
       key: 'lot',
-      header: 'Lot',
+      header: 'Lots',
       render: (run: ProcessRun) => {
         const batch = getSupplyBatch(run)
         const originalLotNo = run.original_lot_run?.supply_batches?.lot_no
         return (
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</span>
+              <span className="font-medium text-text-dark">{getLotSummary(run)}</span>
               {run.is_rework && (
                 <span className="inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs font-semibold border border-yellow-300">
                   Rework
@@ -516,7 +564,7 @@ function ProcessView() {
         return (
           <div className="text-right">
             <div className="flex items-center justify-end gap-2">
-              <span className="font-medium text-text-dark">{batch?.lot_no ?? 'Unknown lot'}</span>
+              <span className="font-medium text-text-dark">{getLotSummary(run)}</span>
               {run.is_rework && (
                 <span className="inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs font-semibold border border-yellow-300">
                   Rework
@@ -771,7 +819,7 @@ function ProcessView() {
               <div>
                 <h2 className="text-xl font-bold text-text-dark sm:text-2xl">Process Timeline</h2>
                 <p className="mt-1 text-sm text-text-dark/70">
-                  {getSupplyBatch(selectedRun)?.lot_no ?? 'Unknown lot'} ·{' '}
+                  {getLotSummary(selectedRun)} ·{' '}
                   {getSupplyBatch(selectedRun)?.products?.name ?? 'Unknown product'}
                 </p>
                 <p className="text-xs text-text-dark/50">
@@ -980,4 +1028,3 @@ function ProcessView() {
 }
 
 export default ProcessView
-

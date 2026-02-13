@@ -101,7 +101,7 @@ interface Product {
   id: number
   name: string
   sku?: string
-  product_type?: 'RAW' | 'WIP' | 'FINISHED' | null
+  product_type?: 'RAW' | 'WIP' | 'FINISHED' | 'OP' | null
   [key: string]: unknown
 }
 
@@ -117,6 +117,22 @@ interface UserProfile {
   full_name?: string
   email?: string
   [key: string]: unknown
+}
+
+interface OperationalSupplyFlow {
+  id: string
+  code: string
+  supply_name: string
+  receiving_note: string
+}
+
+interface OperationalSupplyLine {
+  product_id: string
+  unit_id: string
+  qty: string
+  unit_price: string
+  amount_paid: string
+  notes: string
 }
 
 interface QualityParameterWithId {
@@ -137,6 +153,22 @@ interface CategoryOption {
   name: string
   description: string
   icon: typeof Package
+}
+
+function toYesNoNa(value: unknown): 'YES' | 'NO' | 'NA' | '' {
+  const normalised = String(value ?? '').toUpperCase()
+  if (normalised === 'YES' || normalised === 'NO' || normalised === 'NA') {
+    return normalised
+  }
+  return ''
+}
+
+function toStrengthIntegrity(value: unknown): 'GOOD' | 'BAD' | 'NA' | '' {
+  const normalised = String(value ?? '').toUpperCase()
+  if (normalised === 'GOOD' || normalised === 'BAD' || normalised === 'NA') {
+    return normalised
+  }
+  return ''
 }
 
 function formatDateTime(value: string | Date | number | null | undefined): string {
@@ -257,7 +289,7 @@ function getMonthGrid(monthDate: Date): Date[] {
 const WEEK_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
 const STEPS = [
-  'Supplier category',
+  'Supply category',
   'Basic information',
   'Supply documents',
   'Vehicle inspections',
@@ -267,17 +299,64 @@ const STEPS = [
   'Supplier sign-off',
 ]
 
+const OPERATIONAL_STEPS = [
+  'Supply category',
+  'Operational profile',
+  'Receiving checklist',
+  'Operational supply lines',
+  'Review',
+]
+
+const OPERATIONAL_SUPPLY_FLOWS: OperationalSupplyFlow[] = [
+  {
+    id: 'nitrogen_gas',
+    code: 'AIR_PRODUCTS_NITROGEN_GAS',
+    supply_name: 'Nitrogen gas',
+    receiving_note: 'Confirm cylinder count, pressure status, and safety labels before receiving.',
+  },
+  {
+    id: 'vacuum_bags',
+    code: 'BAG_IN_A_BOX_VACUUM_BAGS',
+    supply_name: 'Vacuum bags',
+    receiving_note: 'Check seal integrity, micron spec, and box condition before acceptance.',
+  },
+  {
+    id: 'poly_bags',
+    code: 'WANG_ON_FIBRE_POLY_BAGS',
+    supply_name: 'Poly bags',
+    receiving_note: 'Check bag gauge, print quality, and contamination-free packing.',
+  },
+  {
+    id: 'pallets',
+    code: 'UPCRAFT_SOLUTIONS_PALLETS',
+    supply_name: 'Pallets',
+    receiving_note: 'Inspect pallet strength, dimensions, and broken-board count.',
+  },
+  {
+    id: 'pallet_wrap',
+    code: 'GREEK_DISTRIBUTORS_PALLET_WRAP',
+    supply_name: 'Pallet wrap',
+    receiving_note: 'Confirm roll width/thickness and verify no tears or deformation.',
+  },
+  {
+    id: 'chemicals',
+    code: 'DELUXE_CHEMICALS_PROCESSING_AND_CLEANING_CHEMICALS',
+    supply_name: 'Processing and cleaning chemicals',
+    receiving_note: 'Validate SDS availability, batch/expiry, and hazard label compliance.',
+  },
+]
+
 const CATEGORY_OPTIONS: CategoryOption[] = [
   {
     code: 'PRODUCT',
-    name: 'Product Supplier',
+    name: 'Product supply',
     description: 'Use the full receiving workflow for raw/material supplies.',
     icon: Package,
   },
   {
     code: 'SERVICE',
-    name: 'Operational Supplier',
-    description: 'Operational supplier form will be added in a future update.',
+    name: 'Operational supply',
+    description: 'Use the operational receiving flow for packaging, gas, pallets, wraps, and chemicals.',
     icon: Briefcase,
   },
 ]
@@ -317,6 +396,17 @@ function resolvePackagingParameterId(
     }
   }
   return undefined
+}
+
+function createEmptyOperationalSupplyLine(): OperationalSupplyLine {
+  return {
+    product_id: '',
+    unit_id: '',
+    qty: '',
+    unit_price: '',
+    amount_paid: '',
+    notes: '',
+  }
 }
 
 function calculateAverageScore(entries: QualityEntries): number | null {
@@ -470,6 +560,15 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   ])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
+  const [selectedOperationalFlowId, setSelectedOperationalFlowId] = useState('')
+  const [operationalDeliveryReference, setOperationalDeliveryReference] = useState('')
+  const [operationalCondition, setOperationalCondition] = useState<'PASS' | 'HOLD' | 'REJECT' | ''>('')
+  const [operationalRemarks, setOperationalRemarks] = useState('')
+  const [operationalSupplyLines, setOperationalSupplyLines] = useState<OperationalSupplyLine[]>([
+    createEmptyOperationalSupplyLine(),
+  ])
+  const [operationalMappedProducts, setOperationalMappedProducts] = useState<Product[]>([])
+  const [loadingOperationalMappedProducts, setLoadingOperationalMappedProducts] = useState(false)
   const isEditingSupply = editingSupplyId != null
 
   const computeNextDocNumber = useCallback(() => {
@@ -524,6 +623,23 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   )
 
   const [formData, setFormData] = useState<FormData>(() => getInitialFormData())
+  const isOperationalFlow = formData.category_code === 'SERVICE'
+  const selectedOperationalFlow = useMemo(
+    () => OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.id === selectedOperationalFlowId) ?? null,
+    [selectedOperationalFlowId]
+  )
+  const operationalMappedProductOptions = useMemo(
+    () =>
+      operationalMappedProducts.map((product) => ({
+        value: String(product.id),
+        label: `${String(product.name)}${product.sku ? ` (${String(product.sku)})` : ''}`,
+      })),
+    [operationalMappedProducts]
+  )
+  const operationalMappedProductIdSet = useMemo(
+    () => new Set(operationalMappedProducts.map((product) => String(product.id))),
+    [operationalMappedProducts]
+  )
 
   const supplierList = useMemo(() => (Array.isArray(supplierOptions) ? supplierOptions : []), [supplierOptions])
 
@@ -569,6 +685,15 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     })
     return map
   }, [supplierList])
+
+  const getUnitPriceSuffix = useCallback((unitId: string): string => {
+    if (!unitId) return ''
+    const unit = units.find((entry) => String(entry.id) === unitId)
+    if (!unit) return ''
+    const suffixSource = String(unit.symbol || unit.name || '').trim()
+    if (!suffixSource) return ''
+    return `/${suffixSource.toLowerCase()}`
+  }, [units])
 
   const rawProducts = useMemo(() => products.filter((product) => product.product_type === 'RAW'), [products])
   const rawProductOptions = useMemo(
@@ -988,8 +1113,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       return
     }
     const incomingValue = field === 'accepted_qty' ? sanitiseAcceptedQuantityInput(value) : value
-    if (next[index]) {
-      next[index]![field] = incomingValue
+    const batchAt = next[index]
+    if (batchAt) {
+      ;(batchAt as unknown as Record<string, string>)[field] = incomingValue
     }
 
     const currentBatch = next[index]
@@ -1102,15 +1228,85 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     }))
   }
 
+  const addOperationalSupplyLine = () => {
+    setOperationalSupplyLines((previous) => [...previous, createEmptyOperationalSupplyLine()])
+  }
+
+  const removeOperationalSupplyLine = (index: number) => {
+    setOperationalSupplyLines((previous) => {
+      if (previous.length <= 1) return previous
+      return previous.filter((_, i) => i !== index)
+    })
+  }
+
+  const updateOperationalSupplyLine = (
+    index: number,
+    field: keyof OperationalSupplyLine,
+    value: string
+  ) => {
+    setOperationalSupplyLines((previous) =>
+      previous.map((line, i) => (i === index ? { ...line, [field]: value } : line))
+    )
+  }
+
   const validateStep = useCallback(
     (step: number): boolean => {
-      if (step === 0) {
-        if (!formData.category_code) {
-          toast.error('Select a supplier category before continuing.')
+      if (isOperationalFlow) {
+        if (step === 0 && !formData.category_code) {
+          toast.error('Select a supply category before continuing.')
           return false
         }
-        if (formData.category_code === 'SERVICE') {
-          toast.info('Operational supplier form is not available yet.')
+        if (step === 1 && !selectedOperationalFlowId) {
+          toast.error('Select an operational supply profile before continuing.')
+          return false
+        }
+        if (step === 2) {
+          if (!formData.warehouse_id || !formData.supplier_id || !formData.received_at) {
+            toast.error('Complete receiving details before continuing.')
+            return false
+          }
+          if (!operationalDeliveryReference.trim()) {
+            toast.error('Enter a delivery reference before continuing.')
+            return false
+          }
+          if (!operationalCondition) {
+            toast.error('Select received condition before continuing.')
+            return false
+          }
+        }
+        if (step === 3) {
+          if (operationalSupplyLines.length === 0) {
+            toast.error('Add at least one operational supply line before continuing.')
+            return false
+          }
+          if (operationalMappedProducts.length === 0) {
+            toast.error('No products mapped for this operational flow.')
+            return false
+          }
+          const invalidLine = operationalSupplyLines.find((line) => {
+            const qty = Number.parseFloat(line.qty)
+            const unitPrice = Number.parseFloat(line.unit_price)
+            return (
+              !line.product_id ||
+              !line.unit_id ||
+              !operationalMappedProductIdSet.has(line.product_id) ||
+              !Number.isFinite(qty) ||
+              qty <= 0 ||
+              !Number.isFinite(unitPrice) ||
+              unitPrice <= 0
+            )
+          })
+          if (invalidLine) {
+            toast.error('Each operational line must use a mapped OP product, unit, quantity, and unit price greater than zero.')
+            return false
+          }
+        }
+        return true
+      }
+
+      if (step === 0) {
+        if (!formData.category_code) {
+          toast.error('Select a supply category before continuing.')
           return false
         }
       }
@@ -1222,6 +1418,12 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             return true
           }
 
+          const unitPrice = Number.parseFloat(batch.unit_price)
+          if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+            errorMessage = 'Unit price is required and must be greater than zero for each batch.'
+            return true
+          }
+
           return false
         })
 
@@ -1258,7 +1460,22 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
 
       return true
     },
-    [formData, qualityEntries, qualityParameters, supplyDocuments, vehicleInspection, packagingQuality, supplierSignOff],
+    [
+      formData,
+      isOperationalFlow,
+      operationalCondition,
+      operationalDeliveryReference,
+      operationalMappedProductIdSet,
+      operationalMappedProducts.length,
+      operationalSupplyLines,
+      packagingQuality,
+      qualityEntries,
+      qualityParameters,
+      selectedOperationalFlowId,
+      supplierSignOff,
+      supplyDocuments,
+      vehicleInspection,
+    ],
   )
 
   const handleStepBack = () => {
@@ -1273,6 +1490,207 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       return
     }
     setCurrentStep(targetStep)
+  }
+
+  const handleSaveOperationalSupply = async () => {
+    if (isSubmitting) {
+      return
+    }
+
+    const warehouseId = parseInt(formData.warehouse_id, 10)
+    if (!Number.isFinite(warehouseId)) {
+      toast.error('Select a warehouse before saving.')
+      return
+    }
+
+    const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
+    if (!supplierId || !Number.isFinite(supplierId)) {
+      toast.error('Select a supplier before saving.')
+      return
+    }
+
+    const selectedFlow = OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.id === selectedOperationalFlowId)
+    if (!selectedFlow?.code) {
+      toast.error('Select an operational supply profile before saving.')
+      return
+    }
+
+      const mappedLines = operationalSupplyLines
+      .map((line) => {
+        const qty = Number.parseFloat(line.qty)
+        const unitPrice = Number.parseFloat(line.unit_price)
+        const amountPaid = Number.parseFloat(line.amount_paid)
+        return {
+          ...line,
+          qty_number: Number.isFinite(qty) ? qty : NaN,
+          unit_price_number: Number.isFinite(unitPrice) ? unitPrice : null,
+          amount_paid_number: Number.isFinite(amountPaid) ? amountPaid : 0,
+        }
+      })
+      .filter(
+        (line) =>
+          Boolean(line.product_id) &&
+          Boolean(line.unit_id) &&
+          operationalMappedProductIdSet.has(line.product_id) &&
+          Number.isFinite(line.qty_number) &&
+          line.qty_number > 0
+      )
+
+    if (mappedLines.length === 0) {
+      toast.error('Add at least one valid operational supply line before saving.')
+      return
+    }
+
+    const invalidPriceLine = mappedLines.find((line) => !Number.isFinite(line.unit_price_number) || (line.unit_price_number ?? 0) <= 0)
+    if (invalidPriceLine) {
+      toast.error('Unit price is required for every operational line and must be greater than zero.')
+      return
+    }
+
+    const nowISO = new Date().toISOString()
+    const receivedAtISO = formData.received_at ? new Date(formData.received_at).toISOString() : nowISO
+    let insertedSupplyId: number | null = null
+
+    setIsSubmitting(true)
+    try {
+      const { data: flowRow, error: flowError } = await supabase
+        .from('operational_supply_flows')
+        .select('id')
+        .eq('code', selectedFlow.code)
+        .eq('is_active', true)
+        .maybeSingle()
+
+      if (flowError) {
+        throw flowError
+      }
+      if (!flowRow?.id) {
+        throw new Error('Selected operational flow is not configured in the database.')
+      }
+
+      if (editingSupplyId) {
+        const { error: updateSupplyError } = await supabase
+          .from('supplies')
+          .update({
+            category_code: 'SERVICE',
+            warehouse_id: warehouseId,
+            supplier_id: supplierId,
+            reference: operationalDeliveryReference.trim() || null,
+            received_at: receivedAtISO,
+            received_by: profileId ?? null,
+            doc_status: formData.doc_status,
+            quality_status: 'PASSED',
+            transport_reference: operationalDeliveryReference.trim() || null,
+            notes: operationalRemarks.trim() || null,
+            updated_at: nowISO,
+          })
+          .eq('id', editingSupplyId)
+        if (updateSupplyError) {
+          throw updateSupplyError
+        }
+        insertedSupplyId = editingSupplyId
+      } else {
+        const { data: insertedSupply, error: insertSupplyError } = await supabase
+          .from('supplies')
+          .insert({
+            category_code: 'SERVICE',
+            doc_no: formData.doc_no || computeNextDocNumber(),
+            warehouse_id: warehouseId,
+            supplier_id: supplierId,
+            reference: operationalDeliveryReference.trim() || null,
+            received_at: receivedAtISO,
+            expected_at: null,
+            received_by: profileId ?? null,
+            doc_status: formData.doc_status,
+            quality_status: 'PASSED',
+            transport_reference: operationalDeliveryReference.trim() || null,
+            pallets_received: null,
+            notes: operationalRemarks.trim() || null,
+            created_at: nowISO,
+            updated_at: nowISO,
+          })
+          .select('id')
+          .single()
+
+        if (insertSupplyError) {
+          throw insertSupplyError
+        }
+        insertedSupplyId = Number(insertedSupply.id)
+      }
+
+      // Replace operational line items so edit reflects exact current form state.
+      const { error: deleteLinesError } = await supabase
+        .from('supply_lines')
+        .delete()
+        .eq('supply_id', insertedSupplyId)
+      if (deleteLinesError) {
+        throw deleteLinesError
+      }
+
+      const supplyLineRows = mappedLines.map((line) => ({
+        supply_id: insertedSupplyId,
+        product_id: parseInt(line.product_id, 10),
+        unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
+        ordered_qty: line.qty_number,
+        received_qty: line.qty_number,
+        accepted_qty: line.qty_number,
+        rejected_qty: 0,
+        variance_reason: null,
+        unit_price: line.unit_price_number,
+      }))
+
+      const { error: linesError } = await supabase.from('supply_lines').insert(supplyLineRows)
+      if (linesError) {
+        throw linesError
+      }
+
+      const { error: opEntryError } = await supabase
+        .from('operational_supply_entries')
+        .upsert(
+          {
+            supply_id: insertedSupplyId,
+            flow_id: Number(flowRow.id),
+            delivery_reference: operationalDeliveryReference.trim(),
+            received_condition: operationalCondition,
+            remarks: operationalRemarks.trim() || null,
+            updated_at: nowISO,
+          },
+          { onConflict: 'supply_id' }
+        )
+      if (opEntryError) {
+        throw opEntryError
+      }
+
+      if (!editingSupplyId) {
+        for (const [index, line] of mappedLines.entries()) {
+          if (line.amount_paid_number > 0) {
+            const { error: paymentError } = await supabase.from('supply_payments').insert({
+              supply_id: insertedSupplyId,
+              amount: line.amount_paid_number,
+              paid_at: receivedAtISO,
+              reference: `Operational line ${index + 1}`,
+            })
+            if (paymentError) {
+              console.warn('Could not save amount paid for operational line:', index + 1, paymentError)
+              toast.warning('Operational supply saved but some line payments could not be recorded. You can add them from the Payments page.')
+            }
+          }
+        }
+      }
+
+      toast.success(editingSupplyId ? 'Operational supply updated successfully.' : 'Operational supply captured successfully.')
+      closeModal()
+      loadSuppliesData()
+      navigate(`/supplies/operational/${insertedSupplyId}`, { replace: true })
+    } catch (error) {
+      if (!editingSupplyId && insertedSupplyId) {
+        await supabase.from('supplies').delete().eq('id', insertedSupplyId)
+      }
+      console.error('Error capturing operational supply', error)
+      const errorMessage = error instanceof Error ? error.message : 'Unable to capture operational supply.'
+      toast.error(errorMessage)
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleFormSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1293,6 +1711,11 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     }
 
     if (!validateStep(currentStep)) {
+      return
+    }
+
+    if (isOperationalFlow) {
+      await handleSaveOperationalSupply()
       return
     }
 
@@ -1430,8 +1853,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
         const existingBatchRows = (existingBatchesData ?? []) as Array<{ id: number; supply_line_id: number | null }>
         const existingBatchIds = existingBatchRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id))
         const existingBatchIdSet = new Set(existingBatchIds)
-        const existingBatchById = new Map(existingBatchRows.map((row) => [row.id, row]))
-
         const lockedBatchIds = new Set<number>()
         if (existingBatchIds.length > 0) {
           const { data: linkedRuns, error: linkedRunsError } = await supabase
@@ -1461,6 +1882,16 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             accepted_qty: batch.accepted_qty?.trim() ?? '',
           }))
           .filter((batch) => batch.product_id && batch.unit_id && batch.qty)
+
+        const invalidEditablePriceLine = editableValidLines.find((line) => {
+          const unitPrice = Number.parseFloat(line.unit_price?.trim() ?? '')
+          return !Number.isFinite(unitPrice) || unitPrice <= 0
+        })
+        if (invalidEditablePriceLine) {
+          toast.error('Unit price is required for every editable batch and must be greater than zero.')
+          setIsSubmitting(false)
+          return
+        }
 
         const rowsToDelete = existingBatchRows.filter(
           (row) =>
@@ -1858,6 +2289,16 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       const newSupplyId = insertedSupply.id
 
       let insertedLines: { id: number }[] = []
+      const invalidCreatePriceLine = validLines.find((line) => {
+        const unitPrice = Number.parseFloat(line.unit_price?.trim() ?? '')
+        return !Number.isFinite(unitPrice) || unitPrice <= 0
+      })
+      if (invalidCreatePriceLine) {
+        toast.error('Unit price is required for every batch and must be greater than zero.')
+        setIsSubmitting(false)
+        return
+      }
+
       if (validLines.length > 0) {
         const supplyLineRows = validLines.map((line) => {
           const quantity = Number.parseFloat(line.qty) || 0
@@ -2286,8 +2727,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
         console.log('Supplier sign-off saved successfully:', signOffData)
       }
 
-      for (let i = 0; i < formData.supply_batches.length; i++) {
-        const batch = formData.supply_batches[i]
+      for (const [index, batch] of formData.supply_batches.entries()) {
         const amountPaidRaw = batch.amount_paid?.trim()
         const amountPaid = amountPaidRaw && Number.isFinite(Number(amountPaidRaw)) ? Number(amountPaidRaw) : 0
         if (amountPaid > 0) {
@@ -2295,10 +2735,10 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             supply_id: newSupplyId,
             amount: amountPaid,
             paid_at: receivedAtISO,
-            reference: `Batch ${i + 1}`,
+            reference: `Batch ${index + 1}`,
           })
           if (paymentError) {
-            console.warn('Could not save amount paid for supply batch:', i + 1, paymentError)
+            console.warn('Could not save amount paid for supply batch:', index + 1, paymentError)
             toast.warning('Supply saved but some batch payments could not be recorded. You can add them from the Payments page.')
           }
         }
@@ -2409,6 +2849,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           { data: qualityChecksData },
           { data: qualityItemsData },
           { data: signOffData },
+          { data: operationalEntryData },
         ] = await Promise.all([
           supabase.from('supplies').select('*').eq('id', supplyId).single(),
           supabase.from('supply_lines').select('*').eq('supply_id', supplyId),
@@ -2420,6 +2861,11 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId).order('id', { ascending: false }).limit(1),
           supabase.from('supply_quality_check_items').select('*'),
           supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId).maybeSingle(),
+          supabase
+            .from('operational_supply_entries')
+            .select('id, flow_id, delivery_reference, received_condition, remarks, flow:operational_supply_flows(code)')
+            .eq('supply_id', supplyId)
+            .maybeSingle(),
         ])
         if (supplyError || !supplyData) throw supplyError ?? new Error('Supply not found')
         if (linesError) throw linesError
@@ -2474,6 +2920,67 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           (i: { quality_check_id?: number }) => qualityCheck && i.quality_check_id === (qualityCheck as { id: number }).id,
         ) as { parameter_id: number; score: number | null; remarks: string | null; results: string | null }[]
         const signOff = signOffData as Record<string, unknown> | null
+        const supplyCategoryCode = String(supply.category_code ?? 'PRODUCT').toUpperCase()
+
+        if (supplyCategoryCode === 'SERVICE') {
+          const operationalEntry = operationalEntryData as
+            | {
+                flow_id?: number | null
+                delivery_reference?: string | null
+                received_condition?: 'PASS' | 'HOLD' | 'REJECT' | ''
+                remarks?: string | null
+                flow?: { code?: string | null } | Array<{ code?: string | null }> | null
+              }
+            | null
+
+          const flowRef = operationalEntry?.flow
+          const flowCode = Array.isArray(flowRef) ? flowRef[0]?.code : flowRef?.code
+          const matchedFlow = OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.code === flowCode)
+
+          setFormData({
+            category_code: 'SERVICE',
+            doc_no: String(supply.doc_no ?? ''),
+            warehouse_id: String(supply.warehouse_id ?? ''),
+            supplier_id: String(supply.supplier_id ?? ''),
+            received_at: supply.received_at ? toLocalDateTimeInput(new Date(supply.received_at as string)) : toLocalDateTimeInput(),
+            received_by: currentUserName,
+            doc_status: String(supply.doc_status ?? STATUS_OPTIONS[0]),
+            supply_batches: [
+              {
+                batch_id: null,
+                supply_line_id: null,
+                lot_no: '',
+                is_locked: false,
+                product_id: '',
+                unit_id: '',
+                qty: '',
+                accepted_qty: '0',
+                rejected_qty: '0',
+                unit_price: '',
+                amount_paid: '',
+              },
+            ],
+          })
+
+          setSelectedOperationalFlowId(matchedFlow?.id ?? '')
+          setOperationalDeliveryReference(String(operationalEntry?.delivery_reference ?? ''))
+          setOperationalCondition((operationalEntry?.received_condition as 'PASS' | 'HOLD' | 'REJECT' | '') ?? '')
+          setOperationalRemarks(String(operationalEntry?.remarks ?? ''))
+          setOperationalSupplyLines(
+            lines.length > 0
+              ? lines.map((line) => ({
+                  product_id: String(line.product_id ?? ''),
+                  unit_id: line.unit_id != null ? String(line.unit_id) : '',
+                  qty: String(line.received_qty ?? line.ordered_qty ?? ''),
+                  unit_price: line.unit_price != null ? String(line.unit_price) : '',
+                  amount_paid: '',
+                  notes: String(line.variance_reason ?? ''),
+                }))
+              : [createEmptyOperationalSupplyLine()]
+          )
+          setEditLoadDone(true)
+          return
+        }
 
         const getDoc = (code: string) => docs.find((d) => d.document_type_code === code)
         setFormData({
@@ -2554,9 +3061,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           invoiceFile: null,
         })
         setVehicleInspection({
-          vehicleClean: (vehicle?.vehicle_clean as string) ?? '',
-          noForeignObjects: (vehicle?.no_foreign_objects as string) ?? '',
-          noPestInfestation: (vehicle?.no_pest_infestation as string) ?? '',
+          vehicleClean: toYesNoNa(vehicle?.vehicle_clean),
+          noForeignObjects: toYesNoNa(vehicle?.no_foreign_objects),
+          noPestInfestation: toYesNoNa(vehicle?.no_pest_infestation),
           remarks: (vehicle?.remarks as string) ?? '',
         })
         const paramByCode: Record<string, string> = {
@@ -2577,11 +3084,11 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           }
         })
         setPackagingQuality({
-          inaccurateLabelling: packagingMap.inaccurateLabelling ?? '',
-          visibleDamage: packagingMap.visibleDamage ?? '',
+          inaccurateLabelling: toYesNoNa(packagingMap.inaccurateLabelling),
+          visibleDamage: toYesNoNa(packagingMap.visibleDamage),
           specifiedQuantity: packagingMap.specifiedQuantity ?? '',
-          odor: packagingMap.odor ?? '',
-          strengthIntegrity: packagingMap.strengthIntegrity ?? '',
+          odor: toYesNoNa(packagingMap.odor),
+          strengthIntegrity: toStrengthIntegrity(packagingMap.strengthIntegrity),
         })
         const entries: QualityEntries = {}
         qualityItems.forEach((item) => {
@@ -2594,7 +3101,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             }
           }
         })
-        setQualityEntries((prev) => ({ ...createInitialQualityEntries(qualityParameters), ...entries }))
+        setQualityEntries({ ...createInitialQualityEntries(qualityParameters), ...entries })
         setSupplierSignOff({
           signatureType: signOff?.signature_type === 'E_SIGNATURE' ? 'E_SIGNATURE' : signOff?.signature_type === 'UPLOADED_DOCUMENT' ? 'UPLOADED_DOCUMENT' : '',
           signatureData: (signOff?.signature_data as string) ?? null,
@@ -2622,6 +3129,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   const closeModal = () => {
     const shouldReturnToDetail = Boolean(routeSupplyId && location.pathname.endsWith('/edit'))
     const returnSupplyId = routeSupplyId
+    const backgroundPath = (
+      location.state as { backgroundLocation?: { pathname?: string } } | null
+    )?.backgroundLocation?.pathname
     setIsModalOpen(false)
     setEditingSupplyId(null)
     setEditLoadDone(false)
@@ -2655,9 +3165,18 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       signedByName: '',
       remarks: '',
     })
+    setSelectedOperationalFlowId('')
+    setOperationalDeliveryReference('')
+    setOperationalCondition('')
+    setOperationalRemarks('')
+    setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
     setCurrentStep(0)
     if (shouldReturnToDetail && returnSupplyId) {
-      navigate(`/supplies/${returnSupplyId}`, { replace: true })
+      const returnPath =
+        backgroundPath && backgroundPath.startsWith('/supplies/operational/')
+          ? `/supplies/operational/${returnSupplyId}`
+          : `/supplies/${returnSupplyId}`
+      navigate(returnPath, { replace: true })
     }
   }
 
@@ -2712,7 +3231,12 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           { full_name: String(profile.full_name ?? ''), email: String(profile.email ?? '') },
         ]),
     )
-    navigate(`/supplies/${supply.id}`, {
+    const detailPath =
+      String(supply.category_code ?? '').toUpperCase() === 'SERVICE'
+        ? `/supplies/operational/${supply.id}`
+        : `/supplies/${supply.id}`
+
+    navigate(detailPath, {
       state: {
         supply,
         supplyLines: lines,
@@ -2770,26 +3294,128 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       signedByName: '',
       remarks: '',
     })
+    setSelectedOperationalFlowId('')
+    setOperationalDeliveryReference('')
+    setOperationalCondition('')
+    setOperationalRemarks('')
+    setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
     setCurrentStep(0)
     setIsModalOpen(true)
   }, [getInitialFormData, warehouses, qualityParameters])
 
   const modalSteps = useMemo(() => {
+    if (isOperationalFlow) {
+      return OPERATIONAL_STEPS.map((label, index) => ({ label, stepIndex: index }))
+    }
     if (!isEditingSupply) {
       return STEPS.map((label, index) => ({ label, stepIndex: index }))
     }
     return STEPS.slice(1, 7).map((label, index) => ({ label, stepIndex: index + 1 }))
-  }, [isEditingSupply])
+  }, [isEditingSupply, isOperationalFlow])
   const minimumModalStepIndex = isEditingSupply ? 1 : 0
   const lastModalStepIndex =
     modalSteps.length > 0 ? modalSteps[modalSteps.length - 1]!.stepIndex : minimumModalStepIndex
   const isLastStep = currentStep === lastModalStepIndex
+  const isOperationalLineStepBlocked = useMemo(() => {
+    if (!isOperationalFlow || currentStep !== 3) return false
+    if (loadingOperationalMappedProducts || operationalMappedProducts.length === 0) return true
+    return !operationalSupplyLines.some((line) => {
+      const qty = Number.parseFloat(line.qty)
+      const unitPrice = Number.parseFloat(line.unit_price)
+      return (
+        Boolean(line.product_id) &&
+        Boolean(line.unit_id) &&
+        operationalMappedProductIdSet.has(line.product_id) &&
+        Number.isFinite(qty) &&
+        qty > 0 &&
+        Number.isFinite(unitPrice) &&
+        unitPrice > 0
+      )
+    })
+  }, [
+    currentStep,
+    isOperationalFlow,
+    loadingOperationalMappedProducts,
+    operationalMappedProductIdSet,
+    operationalMappedProducts.length,
+    operationalSupplyLines,
+  ])
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
 
   const sectionCardClass =
     'rounded-xl border border-olive-light/40 bg-olive-light/10 p-5 sm:p-6 dark:border-slate-700 dark:bg-slate-900/40'
+
+  useEffect(() => {
+    if (!isOperationalFlow || !selectedOperationalFlow?.code) {
+      setOperationalMappedProducts([])
+      setLoadingOperationalMappedProducts(false)
+      return
+    }
+
+    let cancelled = false
+    setLoadingOperationalMappedProducts(true)
+
+    supabase
+      .from('operational_supply_flows')
+      .select('id')
+      .eq('code', selectedOperationalFlow.code)
+      .eq('is_active', true)
+      .maybeSingle()
+      .then(async ({ data: flowRow, error: flowError }) => {
+        if (cancelled) return
+        if (flowError || !flowRow?.id) {
+          setOperationalMappedProducts([])
+          setLoadingOperationalMappedProducts(false)
+          return
+        }
+
+        const { data: mappingRows, error: mappingError } = await supabase
+          .from('operational_supply_flow_products')
+          .select('product_id, product:products(id, name, sku, product_type)')
+          .eq('flow_id', flowRow.id)
+
+        if (cancelled) return
+        if (mappingError) {
+          setOperationalMappedProducts([])
+          setLoadingOperationalMappedProducts(false)
+          return
+        }
+
+        const mappedProducts: Product[] = (mappingRows ?? [])
+          .map((row) => {
+            const rel = (row as { product?: unknown }).product
+            if (Array.isArray(rel)) {
+              return rel[0] ?? null
+            }
+            return rel ?? null
+          })
+          .filter(
+            (
+              product
+            ): product is { id: number; name: string; sku?: string; product_type?: string | null } =>
+              !!product &&
+              typeof product === 'object' &&
+              Number.isFinite((product as { id?: unknown }).id) &&
+              String((product as { product_type?: unknown }).product_type ?? '')
+                .toUpperCase() === 'OP'
+          )
+          .map((product) => ({
+            id: Number(product.id),
+            name: product.name,
+            sku: product.sku,
+            product_type: 'OP',
+          }))
+
+        setOperationalMappedProducts(mappedProducts)
+        setLoadingOperationalMappedProducts(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isOperationalFlow, selectedOperationalFlow?.code])
 
   useEffect(() => {
     if (suppliersError) {
@@ -3173,7 +3799,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                     }`}
                   >
                     <Package className="h-4 w-4" />
-                    Product Suppliers
+                    Product Supplies
                   </button>
                   <button
                     type="button"
@@ -3185,7 +3811,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                     }`}
                   >
                     <Briefcase className="h-4 w-4" />
-                    Operational Suppliers
+                    Operational Supplies
                   </button>
                 </nav>
               </div>
@@ -3432,7 +4058,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                       Category is locked during edit to keep data consistency.
                     </p>
                     <div className="mt-4 inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1.5 text-sm font-medium text-text-dark">
-                      {formData.category_code === 'SERVICE' ? 'Operational Supplier' : 'Product Supplier'}
+                      {formData.category_code === 'SERVICE' ? 'Operational supply' : 'Product supply'}
                     </div>
                   </section>
                 )}
@@ -3440,9 +4066,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                 {currentStep === 0 && !isEditingSupply && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
-                      <h3 className="text-lg font-semibold text-text-dark">Supplier category</h3>
+                      <h3 className="text-lg font-semibold text-text-dark">Supply category</h3>
                       <p className="text-sm text-text-dark/70">
-                        Select the supplier category to start the correct supply workflow.
+                        Select the supply category to start the correct supply workflow.
                       </p>
                     </div>
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -3459,11 +4085,18 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                                 : 'border-olive-light/40 bg-white hover:border-olive-light/70'
                             }`}
                             onClick={() =>
-                              setFormData((previous) => ({
-                                ...previous,
-                                category_code: option.code,
-                                supplier_id: '',
-                              }))
+                              {
+                                setFormData((previous) => ({
+                                  ...previous,
+                                  category_code: option.code,
+                                  supplier_id: '',
+                                }))
+                                setSelectedOperationalFlowId('')
+                                setOperationalDeliveryReference('')
+                                setOperationalCondition('')
+                                setOperationalRemarks('')
+                                setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
+                              }
                             }
                             disabled={isSubmitting}
                           >
@@ -3476,15 +4109,44 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                         )
                       })}
                     </div>
-                    {formData.category_code === 'SERVICE' && (
-                      <p className="mt-4 text-sm font-medium text-text-dark/80">
-                        Operational supplier form is not available yet. Please select Product Supplier for now.
-                      </p>
-                    )}
                   </section>
                 )}
 
-                {currentStep === 1 && (
+                {currentStep === 1 && isOperationalFlow && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6">
+                      <h3 className="text-lg font-semibold text-text-dark">Operational supply profile</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Select the operational supply flow template for database capture.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      {OPERATIONAL_SUPPLY_FLOWS.map((flow) => {
+                        const active = selectedOperationalFlowId === flow.id
+                        return (
+                          <button
+                            key={flow.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedOperationalFlowId(flow.id)
+                              setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
+                            }}
+                            className={`rounded-xl border p-4 text-left transition ${
+                              active
+                                ? 'border-olive bg-olive-light/30 shadow-sm'
+                                : 'border-olive-light/40 bg-white hover:border-olive-light/70'
+                            }`}
+                          >
+                            <p className="text-base font-semibold text-text-dark">{flow.supply_name}</p>
+                            <p className="mt-2 text-xs text-text-dark/70">{flow.receiving_note}</p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 1 && !isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -3576,7 +4238,104 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   </section>
                 )}
 
-                {currentStep === 2 && (
+                {currentStep === 2 && isOperationalFlow && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6">
+                      <h3 className="text-lg font-semibold text-text-dark">Receiving checklist</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Capture receiving details for operational supplies before confirmation.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-12">
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="warehouse_id_operational">Warehouse *</Label>
+                        <select
+                          id="warehouse_id_operational"
+                          required
+                          className={baseFieldClass}
+                          value={formData.warehouse_id}
+                          onChange={(event) => handleInputChange('warehouse_id', event.target.value)}
+                          disabled={isSubmitting || warehouses.length === 0}
+                        >
+                          <option value="">Select warehouse</option>
+                          {warehouses.map((warehouse) => (
+                            <option key={warehouse.id} value={warehouse.id}>
+                              {String(warehouse.name)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="supplier_id_operational">Supplier *</Label>
+                        <SearchableSelect
+                          id="supplier_id_operational"
+                          options={supplierSelectOptions}
+                          value={formData.supplier_id}
+                          onChange={(value) => handleInputChange('supplier_id', value)}
+                          placeholder={suppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
+                          disabled={isSubmitting}
+                          required
+                          emptyMessage="No suppliers found"
+                        />
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="received_at_operational">Received at *</Label>
+                        <Input
+                          id="received_at_operational"
+                          type="datetime-local"
+                          required
+                          value={formData.received_at}
+                          onChange={(event) => handleInputChange('received_at', event.target.value)}
+                          className={baseFieldClass}
+                        />
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="operational_delivery_reference">Delivery reference *</Label>
+                        <Input
+                          id="operational_delivery_reference"
+                          value={operationalDeliveryReference}
+                          onChange={(event) => setOperationalDeliveryReference(event.target.value)}
+                          placeholder="Delivery note / invoice / GRN reference"
+                          className={baseFieldClass}
+                        />
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="operational_condition">Received condition *</Label>
+                        <select
+                          id="operational_condition"
+                          value={operationalCondition}
+                          onChange={(event) =>
+                            setOperationalCondition(event.target.value as 'PASS' | 'HOLD' | 'REJECT' | '')
+                          }
+                          className={baseFieldClass}
+                        >
+                          <option value="">Select condition</option>
+                          <option value="PASS">Pass</option>
+                          <option value="HOLD">Hold</option>
+                          <option value="REJECT">Reject</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-2 lg:col-span-6">
+                        <Label htmlFor="operational_remarks">Remarks</Label>
+                        <Input
+                          id="operational_remarks"
+                          value={operationalRemarks}
+                          onChange={(event) => setOperationalRemarks(event.target.value)}
+                          placeholder="Optional receiving remarks"
+                          className={baseFieldClass}
+                        />
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 2 && !isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -3626,7 +4385,228 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   </section>
                 )}
 
-                {currentStep === 3 && (
+                {currentStep === 3 && isOperationalFlow && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6">
+                      <h3 className="text-lg font-semibold text-text-dark">Operational supply lines</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Add the products and quantities for this operational delivery.
+                      </p>
+                    </div>
+                    {loadingOperationalMappedProducts ? (
+                      <div className="mb-4 rounded-lg border border-olive-light/40 bg-white px-3 py-2 text-sm text-text-dark/70">
+                        Loading mapped operational products...
+                      </div>
+                    ) : operationalMappedProducts.length === 0 ? (
+                      <div className="mb-4 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800">
+                        No products mapped for this operational flow.
+                      </div>
+                    ) : null}
+                    <div className="space-y-4">
+                      {operationalSupplyLines.map((line, index) => (
+                        <div key={`operational-line-${index}`} className="rounded-xl border border-olive-light/40 bg-white p-4">
+                          <div className="mb-3 flex items-center justify-between">
+                            <p className="text-sm font-semibold text-text-dark">Line {index + 1}</p>
+                            {operationalSupplyLines.length > 1 ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => removeOperationalSupplyLine(index)}
+                                disabled={isSubmitting}
+                                className="text-red-600 hover:text-red-700"
+                              >
+                                Remove
+                              </Button>
+                            ) : null}
+                          </div>
+                          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+                            <div className="space-y-2 lg:col-span-5">
+                              <Label htmlFor={`operational_line_product_${index}`}>Product *</Label>
+                              <SearchableSelect
+                                id={`operational_line_product_${index}`}
+                                options={operationalMappedProductOptions}
+                                value={line.product_id}
+                                onChange={(value) => updateOperationalSupplyLine(index, 'product_id', value)}
+                                placeholder="Select supplied product"
+                                disabled={isSubmitting || loadingOperationalMappedProducts || operationalMappedProducts.length === 0}
+                                emptyMessage="No products mapped for this operational flow."
+                              />
+                            </div>
+                            <div className="space-y-2 lg:col-span-3">
+                              <Label htmlFor={`operational_line_unit_${index}`}>Unit *</Label>
+                              <select
+                                id={`operational_line_unit_${index}`}
+                                className={baseFieldClass}
+                                value={line.unit_id}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'unit_id', event.target.value)}
+                                disabled={isSubmitting}
+                              >
+                                <option value="">Select unit</option>
+                                {units.map((unit) => (
+                                  <option key={unit.id} value={unit.id}>
+                                    {String(unit.name)}
+                                    {unit.symbol ? ` (${String(unit.symbol)})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-2 lg:col-span-4">
+                              <Label htmlFor={`operational_line_qty_${index}`}>Quantity *</Label>
+                              <Input
+                                id={`operational_line_qty_${index}`}
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className={baseFieldClass}
+                                value={line.qty}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'qty', event.target.value)}
+                                placeholder="e.g. 120"
+                                disabled={isSubmitting}
+                              />
+                            </div>
+                            <div className="space-y-2 lg:col-span-4">
+                              <Label htmlFor={`operational_line_unit_price_${index}`}>
+                                Unit price {getUnitPriceSuffix(line.unit_id) || '/unit'} *
+                              </Label>
+                              <Input
+                                id={`operational_line_unit_price_${index}`}
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className={baseFieldClass}
+                                value={line.unit_price}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'unit_price', event.target.value)}
+                                placeholder="e.g. 12.50"
+                                disabled={isSubmitting}
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2 lg:col-span-4">
+                              <Label htmlFor={`operational_line_amount_paid_${index}`}>Amount paid (optional)</Label>
+                              <Input
+                                id={`operational_line_amount_paid_${index}`}
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className={baseFieldClass}
+                                value={line.amount_paid}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'amount_paid', event.target.value)}
+                                placeholder="e.g. 0.00"
+                                disabled={isSubmitting}
+                              />
+                            </div>
+                            <div className="space-y-2 lg:col-span-12">
+                              <Label htmlFor={`operational_line_notes_${index}`}>Line notes</Label>
+                              <Input
+                                id={`operational_line_notes_${index}`}
+                                className={baseFieldClass}
+                                value={line.notes}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'notes', event.target.value)}
+                                placeholder="Optional notes for this line"
+                                disabled={isSubmitting}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={addOperationalSupplyLine}
+                        disabled={isSubmitting || loadingOperationalMappedProducts || operationalMappedProducts.length === 0}
+                      >
+                        Add line
+                      </Button>
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 4 && isOperationalFlow && (
+                  <section className={sectionCardClass}>
+                    <div className="mb-6">
+                      <h3 className="text-lg font-semibold text-text-dark">Operational flow review</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Confirm details before saving this operational supply.
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-olive-light/40 bg-white p-4">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Supplier</p>
+                          <p className="text-sm font-medium text-text-dark">
+                            {supplierLabelMap.get(parseInt(formData.supplier_id, 10)) || 'Not set'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Operational supply</p>
+                          <p className="text-sm font-medium text-text-dark">{selectedOperationalFlow?.supply_name || 'Not set'}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Warehouse</p>
+                          <p className="text-sm font-medium text-text-dark">
+                            {warehouseLabelMap.get(parseInt(formData.warehouse_id, 10)) || 'Not set'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Condition</p>
+                          <p className="text-sm font-medium text-text-dark">{operationalCondition || 'Not set'}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Delivery reference</p>
+                          <p className="text-sm font-medium text-text-dark">{operationalDeliveryReference || 'Not set'}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Received at</p>
+                          <p className="text-sm font-medium text-text-dark">{formatDateTime(formData.received_at)}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-olive-light/40 bg-white p-4">
+                      <p className="text-sm font-semibold text-text-dark">Operational supply lines</p>
+                      <div className="mt-3 space-y-2">
+                        {operationalSupplyLines.map((line, index) => {
+                          const product = products.find((entry) => String(entry.id) === line.product_id)
+                          const unit = units.find((entry) => String(entry.id) === line.unit_id)
+                          return (
+                            <div key={`review-line-${index}`} className="flex flex-col gap-1 rounded-lg border border-olive-light/30 bg-olive-light/10 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="text-sm text-text-dark">
+                                {product?.name || 'Unknown product'} {product?.sku ? `(${product.sku})` : ''}
+                              </div>
+                              <div className="text-sm font-medium text-text-dark sm:text-right">
+                                <div>
+                                  {line.qty || '0'} {unit?.symbol || unit?.name || ''}
+                                </div>
+                                <div className="text-xs font-normal text-text-dark/70">
+                                  Unit price: {line.unit_price || '—'} | Amount paid: {line.amount_paid || '—'}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-4">
+                      {['Schedule', 'Receive', 'Inspect', 'Release'].map((stage, idx) => (
+                        <div key={stage} className="rounded-xl border border-olive-light/40 bg-olive-light/10 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Stage {idx + 1}</p>
+                          <p className="mt-1 text-sm font-medium text-text-dark">{stage}</p>
+                          <p className="mt-1 text-xs text-text-dark/70">
+                            {idx === 1 && selectedOperationalFlow ? selectedOperationalFlow.receiving_note : 'Operational supply handling checkpoint.'}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 3 && !isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
@@ -3905,7 +4885,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
 
                             <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-6">
-                                <Label htmlFor={`unit_price_${index}`}>Unit price (optional)</Label>
+                                <Label htmlFor={`unit_price_${index}`}>
+                                  Unit price {getUnitPriceSuffix(batch.unit_id) || '/unit'} *
+                                </Label>
                                 <Input
                                   id={`unit_price_${index}`}
                                   type="number"
@@ -3918,9 +4900,10 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                                   placeholder="e.g. 12.50"
                                   className={baseFieldClass}
                                   disabled={isSubmitting || batch.is_locked}
+                                  required
                                 />
                                 <p className="text-xs text-text-dark/60 dark:text-slate-400">
-                                  Price per unit for this line; used for payment tracking.
+                                  Price per selected unit for this line; used for payment tracking.
                                 </p>
                               </div>
                               <div className="space-y-2 lg:col-span-6">
@@ -4049,12 +5032,12 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   <Button
                     type="submit"
                     className="bg-olive hover:bg-olive-dark disabled:cursor-not-allowed disabled:bg-olive-light/60"
-                    disabled={isSubmitting || (!isEditingSupply && currentStep === 0 && formData.category_code === 'SERVICE')}
+                    disabled={isSubmitting || isOperationalLineStepBlocked}
                   >
                     {isSubmitting
                       ? 'Saving…'
-                      : !isEditingSupply && currentStep === 0 && formData.category_code === 'SERVICE'
-                      ? 'Operational Form Coming Soon'
+                      : isOperationalFlow && isLastStep
+                      ? 'Finish Flow'
                       : isLastStep
                       ? isEditingSupply
                         ? 'Save Changes'

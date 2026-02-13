@@ -105,15 +105,36 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
         throw new Error('Step run ID is required')
       }
 
-      const { error: insertError } = await supabase
+      const { data: insertedOutput, error: insertError } = await supabase
         .from('process_sorting_outputs')
         .insert({
           process_step_run_id: stepRunId,
           ...data,
         })
+        .select(`
+          *,
+          product:products(id, name, sku)
+        `)
+        .single()
 
       if (insertError) {
         throw insertError
+      }
+
+      if (insertedOutput) {
+        const formattedOutput = {
+          ...(insertedOutput as any),
+          product: (insertedOutput as any).product
+            ? {
+                id: (insertedOutput as any).product.id,
+                name: (insertedOutput as any).product.name,
+                sku: (insertedOutput as any).product.sku,
+              }
+            : undefined,
+        } as ProcessSortingOutput
+
+        setOutputs((prev) => [formattedOutput, ...prev])
+        return
       }
 
       await fetchData()
@@ -131,13 +152,36 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
         remarks?: string | null
       }
     ) => {
-      const { error: updateError } = await supabase
+      const { data: updatedOutput, error: updateError } = await supabase
         .from('process_sorting_outputs')
         .update(data)
         .eq('id', outputId)
+        .select(`
+          *,
+          product:products(id, name, sku)
+        `)
+        .single()
 
       if (updateError) {
         throw updateError
+      }
+
+      if (updatedOutput) {
+        const formattedOutput = {
+          ...(updatedOutput as any),
+          product: (updatedOutput as any).product
+            ? {
+                id: (updatedOutput as any).product.id,
+                name: (updatedOutput as any).product.name,
+                sku: (updatedOutput as any).product.sku,
+              }
+            : undefined,
+        } as ProcessSortingOutput
+
+        setOutputs((prev) =>
+          prev.map((output) => (output.id === outputId ? formattedOutput : output))
+        )
+        return
       }
 
       await fetchData()
@@ -156,19 +200,27 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
         throw deleteError
       }
 
-      await fetchData()
+      setOutputs((prev) => prev.filter((output) => output.id !== outputId))
+      setWaste((prev) => prev.filter((wasteRow) => wasteRow.sorting_run_id !== outputId))
     },
-    [fetchData]
+    []
   )
 
   const addWaste = useCallback(
     async (wasteData: { sorting_run_id: number; waste_type: string; quantity_kg: number }) => {
-      const { error: insertError } = await supabase
+      const { data: insertedWaste, error: insertError } = await supabase
         .from('process_sorting_waste')
         .insert(wasteData)
+        .select('*')
+        .single()
 
       if (insertError) {
         throw insertError
+      }
+
+      if (insertedWaste) {
+        setWaste((prev) => [insertedWaste as ProcessSortingWaste, ...prev])
+        return
       }
 
       await fetchData()
@@ -187,9 +239,9 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
         throw deleteError
       }
 
-      await fetchData()
+      setWaste((prev) => prev.filter((row) => row.id !== wasteId))
     },
-    [fetchData]
+    []
   )
 
   useEffect(() => {

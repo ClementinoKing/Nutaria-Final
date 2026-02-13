@@ -111,21 +111,25 @@ export function MetalDetectionStep({
     }
     if (!sessionFormData.start_time) return
     if (sessionSaveTimeoutRef.current) clearTimeout(sessionSaveTimeoutRef.current)
-    sessionSaveTimeoutRef.current = setTimeout(async () => {
+    sessionSaveTimeoutRef.current = setTimeout(() => {
       sessionSaveTimeoutRef.current = null
-      setSaving(true)
-      try {
-        await saveSession({
-          start_time: toISOString(sessionFormData.start_time)!,
-          end_time: sessionFormData.end_time ? toISOString(sessionFormData.end_time) : null,
-        })
-      } catch (error) {
+      saveSession({
+        start_time: toISOString(sessionFormData.start_time)!,
+        end_time: sessionFormData.end_time ? toISOString(sessionFormData.end_time) : null,
+      }).catch((error) => {
         console.error('Error saving session:', error)
         toast.error('Failed to save session')
-      } finally {
-        setSaving(false)
+      })
+    }, 10000)
+    return () => {
+      if (sessionSaveTimeoutRef.current) {
+        clearTimeout(sessionSaveTimeoutRef.current)
+        sessionSaveTimeoutRef.current = null
       }
-    }, 300)
+    }
+  }, [sessionFormData.start_time, sessionFormData.end_time])
+
+  useEffect(() => {
     return () => {
       if (sessionSaveTimeoutRef.current) {
         clearTimeout(sessionSaveTimeoutRef.current)
@@ -142,7 +146,7 @@ export function MetalDetectionStep({
         }
       }
     }
-  }, [sessionFormData.start_time, sessionFormData.end_time])
+  }, [saveSession])
 
   const handleRejectionSubmit = async (e: FormEvent) => {
     e.preventDefault()

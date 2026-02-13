@@ -1062,10 +1062,15 @@ function ProcessDetail() {
       <PageLayout
         title="Loading process…"
         activeItem="settings"
-        actions={
-          <Button variant="outline" onClick={() => navigate(-1)} className="border-olive-light/40 text-olive hover:text-olive-dark">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
+        leadingActions={
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => navigate(-1)}
+            className="border-olive-light/40 text-olive hover:text-olive-dark"
+            aria-label="Back"
+          >
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         }
         contentClassName="px-4 sm:px-6 lg:px-10 py-8"
@@ -1102,16 +1107,21 @@ function ProcessDetail() {
     <PageLayout
       title={`${process.name}`}
       activeItem="settings"
+      leadingActions={
+        <Button
+          size="icon"
+          variant="outline"
+          onClick={() => navigate(-1)}
+          className="border-olive-light/40 text-olive hover:text-olive-dark"
+          aria-label="Back"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       actions={
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => navigate(-1)} className="border-olive-light/40 text-olive hover:text-olive-dark">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
-          <Button onClick={handleOpenEditModal} className="bg-olive hover:bg-olive-dark text-white">
-            Edit Process
-          </Button>
-        </div>
+        <Button onClick={handleOpenEditModal} className="bg-olive hover:bg-olive-dark text-white">
+          Edit Process
+        </Button>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-6"
     >
@@ -1819,5 +1829,3 @@ function ProcessDetail() {
 }
 
 export default ProcessDetail
-
-

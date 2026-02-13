@@ -17,6 +17,8 @@ interface RemainderRow {
   packet_unit_code: string | null
   pack_count: number | null
   remainder_kg: number
+  used_kg: number
+  available_remainder_kg: number
   quantity_kg: number
   packed_at: string | null
 }
@@ -41,6 +43,9 @@ function RemaindersPage() {
           pack_count,
           remainder_kg,
           created_at,
+          usages:process_packaging_remainder_usages!process_packaging_remainder_usages_source_pack_entry_id_fkey(
+            quantity_kg
+          ),
           sorting_output:process_sorting_outputs(
             product:products(id, name, sku)
           ),
@@ -75,6 +80,12 @@ function RemaindersPage() {
         const processInfo = lotRun?.processes ?? null
         const batch = lotRun?.supply_batches ?? null
         const product = row.sorting_output?.product ?? null
+        const usageRows = Array.isArray(row.usages) ? row.usages : []
+        const usedKg = usageRows.reduce((sum: number, usage: { quantity_kg?: number | null }) => {
+          return sum + (Number(usage.quantity_kg) || 0)
+        }, 0)
+        const sourceRemainderKg = Number(row.remainder_kg) || 0
+        const availableRemainderKg = Math.max(0, sourceRemainderKg - usedKg)
 
         return {
           id: String(row.id),
@@ -85,7 +96,9 @@ function RemaindersPage() {
           product_sku: product?.sku ?? '',
           packet_unit_code: row.packet_unit_code ?? row.pack_identifier ?? null,
           pack_count: row.pack_count ?? null,
-          remainder_kg: Number(row.remainder_kg) || 0,
+          remainder_kg: sourceRemainderKg,
+          used_kg: usedKg,
+          available_remainder_kg: availableRemainderKg,
           quantity_kg: Number(row.quantity_kg) || 0,
           packed_at: row.created_at ?? null,
         }
@@ -104,7 +117,7 @@ function RemaindersPage() {
     load()
   }, [load])
 
-  const totalRemainderKg = useMemo(() => rows.reduce((sum, r) => sum + r.remainder_kg, 0), [rows])
+  const totalRemainderKg = useMemo(() => rows.reduce((sum, r) => sum + r.available_remainder_kg, 0), [rows])
   const affectedProcesses = useMemo(
     () => new Set(rows.map((r) => `${r.process_code}::${r.process_name}`)).size,
     [rows]
@@ -163,10 +176,22 @@ function RemaindersPage() {
         mobileRender: (r: RemainderRow) => <div className="text-right text-text-dark/80">{r.pack_count ?? '—'}</div>,
       },
       {
-        key: 'remainder',
-        header: 'Remainder (kg)',
-        render: (r: RemainderRow) => <div className="font-medium text-orange-700">{r.remainder_kg.toFixed(2)}</div>,
-        mobileRender: (r: RemainderRow) => <div className="text-right font-medium text-orange-700">{r.remainder_kg.toFixed(2)}</div>,
+        key: 'source_remainder',
+        header: 'Source Remainder (kg)',
+        render: (r: RemainderRow) => <div className="text-text-dark/80">{r.remainder_kg.toFixed(2)}</div>,
+        mobileRender: (r: RemainderRow) => <div className="text-right text-text-dark/80">{r.remainder_kg.toFixed(2)}</div>,
+      },
+      {
+        key: 'used_remainder',
+        header: 'Used (kg)',
+        render: (r: RemainderRow) => <div className="text-text-dark/80">{r.used_kg.toFixed(2)}</div>,
+        mobileRender: (r: RemainderRow) => <div className="text-right text-text-dark/80">{r.used_kg.toFixed(2)}</div>,
+      },
+      {
+        key: 'available_remainder',
+        header: 'Available (kg)',
+        render: (r: RemainderRow) => <div className="font-medium text-orange-700">{r.available_remainder_kg.toFixed(2)}</div>,
+        mobileRender: (r: RemainderRow) => <div className="text-right font-medium text-orange-700">{r.available_remainder_kg.toFixed(2)}</div>,
       },
       {
         key: 'date',

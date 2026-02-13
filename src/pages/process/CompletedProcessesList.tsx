@@ -9,7 +9,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 interface RunRow {
   id: number
-  lot_no: string
+  lot_summary: string
   product_name: string
   process_name: string
   process_code: string
@@ -36,6 +36,14 @@ function CompletedProcessesList() {
             lot_no,
             products: product_id (name, sku)
           ),
+          process_lot_run_batches (
+            id,
+            is_primary,
+            supply_batches:supply_batch_id (
+              lot_no,
+              products:product_id (name, sku)
+            )
+          ),
           processes: process_id (id, code, name)
         `)
         .eq('status', 'COMPLETED')
@@ -53,16 +61,35 @@ function CompletedProcessesList() {
         started_at: string | null
         completed_at: string | null
         supply_batches: { lot_no: string; products: { name: string; sku: string | null } | null } | { lot_no: string; products: { name: string; sku: string | null } | null }[] | null
+        process_lot_run_batches:
+          | Array<{
+              id: number
+              is_primary: boolean
+              supply_batches:
+                | { lot_no: string; products: { name: string; sku: string | null } | null }
+                | { lot_no: string; products: { name: string; sku: string | null } | null }[]
+                | null
+            }>
+          | null
         processes: { id: number; code: string; name: string } | { id: number; code: string; name: string }[] | null
       }>
 
       const rows: RunRow[] = list.map((run) => {
         const batch = Array.isArray(run.supply_batches) ? run.supply_batches[0] : run.supply_batches
+        const linkedLots = (run.process_lot_run_batches || [])
+          .map((row) => (Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches))
+          .filter((row): row is { lot_no: string; products: { name: string; sku: string | null } | null } => !!row)
         const process = Array.isArray(run.processes) ? run.processes[0] : run.processes
+        const primaryLinked = linkedLots[0]
+        const lotSummary =
+          linkedLots.length > 1
+            ? `${primaryLinked?.lot_no ?? batch?.lot_no ?? '—'} +${linkedLots.length - 1}`
+            : (primaryLinked?.lot_no ?? batch?.lot_no ?? '—')
+        const productName = primaryLinked?.products?.name ?? batch?.products?.name ?? '—'
         return {
           id: run.id,
-          lot_no: batch?.lot_no ?? '—',
-          product_name: batch?.products?.name ?? '—',
+          lot_summary: lotSummary,
+          product_name: productName,
           process_name: process?.name ?? '—',
           process_code: process?.code ?? '—',
           started_at: run.started_at ?? null,
@@ -92,12 +119,12 @@ function CompletedProcessesList() {
   const columns = [
     {
       key: 'lot',
-      header: 'Lot',
+      header: 'Lots',
       render: (r: RunRow) => (
-        <span className="font-medium text-text-dark">{r.lot_no}</span>
+        <span className="font-medium text-text-dark">{r.lot_summary}</span>
       ),
       mobileRender: (r: RunRow) => (
-        <span className="font-medium text-text-dark">{r.lot_no}</span>
+        <span className="font-medium text-text-dark">{r.lot_summary}</span>
       ),
     },
     {

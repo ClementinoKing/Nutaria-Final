@@ -104,34 +104,6 @@ export function DryingStep({
     }
   }, [dryingRun])
 
-  const performSave = async () => {
-    const moistureIn = formData.moisture_in ? parseFloat(formData.moisture_in) : null
-    const moistureOut = formData.moisture_out ? parseFloat(formData.moisture_out) : null
-    if (moistureIn !== null && moistureOut !== null && moistureOut > moistureIn) {
-      toast.error('Moisture out cannot exceed moisture in')
-      return
-    }
-    setSaving(true)
-    try {
-      await saveDryingRun({
-        dryer_temperature_c: formData.dryer_temperature_c ? parseFloat(formData.dryer_temperature_c) : null,
-        time_in: formData.time_in ? toISOString(formData.time_in) : null,
-        time_out: formData.time_out ? toISOString(formData.time_out) : null,
-        moisture_in: moistureIn,
-        moisture_out: moistureOut,
-        crates_clean: formData.crates_clean ? (formData.crates_clean as 'Yes' | 'No' | 'NA') : null,
-        insect_infestation: formData.insect_infestation ? (formData.insect_infestation as 'Yes' | 'No' | 'NA') : null,
-        dryer_hygiene_clean: formData.dryer_hygiene_clean ? (formData.dryer_hygiene_clean as 'Yes' | 'No' | 'NA') : null,
-        remarks: formData.remarks.trim() || null,
-      })
-    } catch (error) {
-      console.error('Error saving drying data:', error)
-      toast.error('Failed to save drying data')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const formDataRef = useRef(formData)
   formDataRef.current = formData
 
@@ -164,13 +136,12 @@ export function DryingStep({
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null
-      performSave()
-    }, 300)
+      flushSave()
+    }, 10000)
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
         saveTimeoutRef.current = null
-        flushSave()
       }
     }
   }, [
@@ -184,6 +155,16 @@ export function DryingStep({
     formData.dryer_hygiene_clean,
     formData.remarks,
   ])
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+        flushSave()
+      }
+    }
+  }, [flushSave])
 
   const handleWasteSubmit = async (e: FormEvent) => {
     e.preventDefault()

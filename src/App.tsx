@@ -22,13 +22,16 @@ const WasteDetailsPage = lazy(() => import('./pages/inventory/WasteDetailsPage')
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
+const OperationalSupplyDetail = lazy(() => import('./pages/supplies/OperationalSupplyDetail'))
 const Payments = lazy(() => import('./pages/payments/Payments'))
+const PaymentDetail = lazy(() => import('./pages/payments/PaymentDetail'))
 const Reports = lazy(() => import('./pages/reports/Reports'))
 const ProcessView = lazy(() => import('./pages/process/ProcessView'))
 const Processes = lazy(() => import('./pages/process/Processes'))
 const ProcessDetail = lazy(() => import('./pages/process/ProcessDetail'))
 const ProcessSteps = lazy(() => import('./pages/process/ProcessSteps'))
 const ProcessStepsProgress = lazy(() => import('./pages/process/ProcessStepsProgress'))
+const LegacyProcessStepsRedirect = lazy(() => import('./pages/process/LegacyProcessStepsRedirect'))
 const CompletedProcessesList = lazy(() => import('./pages/process/CompletedProcessesList'))
 const CompletedProcessDetail = lazy(() => import('./pages/process/CompletedProcessDetail'))
 const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
@@ -234,6 +237,14 @@ function App() {
           }
         />
         <Route
+          path="/supplies/operational/:supplyId"
+          element={
+            <ProtectedRoute>
+              <OperationalSupplyDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/supplies/:supplyId"
           element={
             <ProtectedRoute>
@@ -254,6 +265,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Payments />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/payments/:supplyId"
+          element={
+            <ProtectedRoute>
+              <PaymentDetail />
             </ProtectedRoute>
           }
         />
@@ -338,10 +357,18 @@ function App() {
           }
         />
         <Route
-          path="/process/process-steps/:lotId"
+          path="/process/process-steps/run/:lotRunId"
           element={
             <ProtectedRoute>
               <ProcessStepsProgress />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/process-steps/:lotId"
+          element={
+            <ProtectedRoute>
+              <LegacyProcessStepsRedirect />
             </ProtectedRoute>
           }
         />
