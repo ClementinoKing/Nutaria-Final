@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
-import { Package, Layers, Box, Scale, Trash2 } from 'lucide-react'
+import { Package, Layers, Box, Scale, Trash2, Briefcase } from 'lucide-react'
 
 const SEGMENTS = [
   {
@@ -43,6 +43,14 @@ const SEGMENTS = [
     path: '/inventory/stock-levels/waste',
     icon: Trash2,
     className: 'border-rose-200/70 hover:border-rose-400/80 hover:bg-rose-50/60',
+  },
+  {
+    key: 'operational-supplies',
+    title: 'Operational Supplies',
+    description: 'Calculated operational inventory levels by product and warehouse.',
+    path: '/inventory/stock-levels/operational-supplies',
+    icon: Briefcase,
+    className: 'border-sky-200/70 hover:border-sky-400/80 hover:bg-sky-50/60',
   },
 ] as const
 

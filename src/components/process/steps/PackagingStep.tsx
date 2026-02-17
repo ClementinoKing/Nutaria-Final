@@ -51,7 +51,13 @@ interface PackagingUnitOption {
   unit_type: 'PACKET' | 'BOX'
   packaging_type: 'DOY' | 'VACUUM' | 'POLY' | 'BOX' | null
   net_weight_kg: number | null
+  operational_product_id?: number | null
   is_active: boolean
+}
+
+interface SupplyLineStockRow {
+  product_id: number | null
+  accepted_qty: number | null
 }
 
 interface BoxPackRuleOption {
@@ -251,7 +257,6 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
   const [sortedWips, setSortedWips] = useState<SortedWipRow[]>([])
   const [finishedProducts, setFinishedProducts] = useState<FinishedProductOption[]>([])
-  const selectedWipProductIdRef = useRef<number | null>(null)
   const [packagingUnits, setPackagingUnits] = useState<PackagingUnitOption[]>([])
   const [boxPackRules, setBoxPackRules] = useState<BoxPackRuleOption[]>([])
   const [loadingWips, setLoadingWips] = useState(false)
@@ -272,6 +277,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     packet_unit_code: '',
     quantity_kg: '',
   })
+  const selectedWipProductIdForFilter = useMemo(() => {
+    const selectedSortingOutputId = Number(packEntryForm.sorting_output_id) || 0
+    if (!selectedSortingOutputId) return null
+    const selectedWip = sortedWips.find((row) => row.id === selectedSortingOutputId)
+    return selectedWip?.product_id ?? null
+  }, [packEntryForm.sorting_output_id, sortedWips])
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<
     { type: 'weightCheck'; id: number } |
@@ -301,6 +312,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [storageUnitsAutoPrefillEnabled, setStorageUnitsAutoPrefillEnabled] = useState(true)
   const [editingStorageAllocationId, setEditingStorageAllocationId] = useState<number | null>(null)
   const [userProfilesByAuthId, setUserProfilesByAuthId] = useState<Record<string, string>>({})
+  const [runWarehouseId, setRunWarehouseId] = useState<number | null>(null)
+  const [opAcceptedByProductId, setOpAcceptedByProductId] = useState<Record<number, number>>({})
+  const [opConsumedByProductId, setOpConsumedByProductId] = useState<Record<number, number>>({})
+  const [opStockLoading, setOpStockLoading] = useState(false)
 
   const loadSortedWips = useCallback(async () => {
     const lotRunId = stepRun.process_lot_run_id
@@ -390,7 +405,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         return
       }
 
-      const lotProductId = selectedWipProductIdRef.current
+      const lotProductId = selectedWipProductIdForFilter
 
       const mapped = (data as Array<{
         id: number
@@ -408,7 +423,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     } catch {
       setFinishedProducts([])
     }
-  }, [])
+  }, [selectedWipProductIdForFilter])
 
   const loadPackagingSettings = useCallback(async () => {
     try {
@@ -461,6 +476,275 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
   }, [])
 
+  const loadRunWarehouseId = useCallback(async () => {
+    const lotRunId = stepRun.process_lot_run_id
+    if (!lotRunId) {
+      setRunWarehouseId(null)
+      return null
+    }
+
+    try {
+      const supplyBatchIds = new Set<number>()
+      const { data: runBatchesData } = await supabase
+        .from('process_lot_run_batches')
+        .select('supply_batch_id')
+        .eq('process_lot_run_id', lotRunId)
+
+      ;((runBatchesData ?? []) as Array<{ supply_batch_id: number | null }>).forEach((row) => {
+        if (row.supply_batch_id) supplyBatchIds.add(row.supply_batch_id)
+      })
+
+      if (supplyBatchIds.size === 0) {
+        const { data: lotRunData } = await supabase
+          .from('process_lot_runs')
+          .select('supply_batch_id')
+          .eq('id', lotRunId)
+          .maybeSingle()
+        const fallbackSupplyBatchId = (lotRunData as { supply_batch_id?: number | null } | null)?.supply_batch_id
+        if (fallbackSupplyBatchId) supplyBatchIds.add(fallbackSupplyBatchId)
+      }
+
+      if (supplyBatchIds.size === 0) {
+        setRunWarehouseId(null)
+        return null
+      }
+
+      const { data: supplyBatchData } = await supabase
+        .from('supply_batches')
+        .select('id, supply_id')
+        .in('id', Array.from(supplyBatchIds))
+      const supplyIds = Array.from(
+        new Set(
+          ((supplyBatchData ?? []) as Array<{ supply_id?: number | null }>)
+            .map((row) => row.supply_id)
+            .filter((value): value is number => typeof value === 'number')
+        )
+      )
+
+      if (supplyIds.length === 0) {
+        setRunWarehouseId(null)
+        return null
+      }
+
+      const { data: supplyData } = await supabase
+        .from('supplies')
+        .select('id, warehouse_id')
+        .in('id', supplyIds)
+      const warehouseId =
+        ((supplyData ?? []) as Array<{ warehouse_id?: number | null }>)
+          .map((row) => row.warehouse_id)
+          .find((value): value is number => typeof value === 'number') ?? null
+
+      setRunWarehouseId(warehouseId)
+      return warehouseId
+    } catch (error) {
+      console.error('Failed to resolve packaging run warehouse:', error)
+      setRunWarehouseId(null)
+      return null
+    }
+  }, [stepRun.process_lot_run_id])
+
+  const loadOperationalPackagingStockSnapshot = useCallback(
+    async (warehouseIdInput?: number | null): Promise<{ accepted: Record<number, number>; consumed: Record<number, number> }> => {
+      const warehouseId = warehouseIdInput ?? runWarehouseId
+      if (!warehouseId) {
+        setOpAcceptedByProductId({})
+        setOpConsumedByProductId({})
+        return { accepted: {}, consumed: {} }
+      }
+
+      setOpStockLoading(true)
+      try {
+        const packetOperationalProductByCode = new Map<string, number>()
+        packagingUnits
+          .filter((unit) => normalizeUnitType(unit.unit_type) === 'PACKET')
+          .forEach((unit) => {
+            const productId = Number(unit.operational_product_id) || 0
+            if (!productId) return
+            const codeKey = normalizeUnitCode(unit.code)
+            if (codeKey) packetOperationalProductByCode.set(codeKey, productId)
+            const nameKey = normalizeUnitCode(unit.name)
+            if (nameKey) packetOperationalProductByCode.set(nameKey, productId)
+          })
+
+        const acceptedByProductId: Record<number, number> = {}
+        const consumedByProductId: Record<number, number> = {}
+
+        const { data: serviceSuppliesData } = await supabase
+          .from('supplies')
+          .select('id')
+          .eq('category_code', 'SERVICE')
+          .eq('warehouse_id', warehouseId)
+
+        const serviceSupplyIds = ((serviceSuppliesData ?? []) as Array<{ id: number }>).map((row) => row.id)
+        if (serviceSupplyIds.length > 0) {
+          const { data: supplyLineData } = await supabase
+            .from('supply_lines')
+            .select('product_id, accepted_qty')
+            .in('supply_id', serviceSupplyIds)
+
+          ;((supplyLineData ?? []) as SupplyLineStockRow[]).forEach((line) => {
+            const productId = Number(line.product_id) || 0
+            if (!productId) return
+            const accepted = Number(line.accepted_qty) || 0
+            if (accepted <= 0) return
+            acceptedByProductId[productId] = (acceptedByProductId[productId] || 0) + accepted
+          })
+        }
+
+        const { data: packEntriesData } = await supabase
+          .from('process_packaging_pack_entries')
+          .select('packaging_run_id, packet_unit_code, pack_identifier, pack_count, quantity_kg, pack_size_kg')
+
+        const packagingRunIds = Array.from(
+          new Set(
+            ((packEntriesData ?? []) as Array<{ packaging_run_id?: number | null }>)
+              .map((row) => Number(row.packaging_run_id) || 0)
+              .filter((value) => value > 0)
+          )
+        )
+
+        if (packagingRunIds.length > 0) {
+          const packagingRunsResult = await supabase
+            .from('process_packaging_runs')
+            .select('id, process_step_run_id')
+            .in('id', packagingRunIds)
+
+          const packagingRuns = (packagingRunsResult.data ?? []) as Array<{ id: number; process_step_run_id: number | null }>
+          const stepRunIds = Array.from(
+            new Set(packagingRuns.map((row) => Number(row.process_step_run_id) || 0).filter((value) => value > 0))
+          )
+          const stepRunsResult =
+            stepRunIds.length > 0
+              ? await supabase
+                  .from('process_step_runs')
+                  .select('id, process_lot_run_id')
+                  .in('id', stepRunIds)
+              : { data: [] }
+          const stepRuns = (stepRunsResult.data ?? []) as Array<{ id: number; process_lot_run_id: number | null }>
+          const stepRunToLotRunId = new Map(stepRuns.map((row) => [row.id, row.process_lot_run_id]))
+          const lotRunIds = Array.from(
+            new Set(
+              packagingRuns
+                .map((row) => {
+                  const stepRunId = Number(row.process_step_run_id) || 0
+                  return Number(stepRunToLotRunId.get(stepRunId)) || 0
+                })
+                .filter((value) => value > 0)
+            )
+          )
+
+          const lotRunWarehouseIdMap = new Map<number, number>()
+          if (lotRunIds.length > 0) {
+            const [lotRunsResult, runBatchesResult] = await Promise.all([
+              supabase
+                .from('process_lot_runs')
+                .select('id, supply_batch_id')
+                .in('id', lotRunIds),
+              supabase
+                .from('process_lot_run_batches')
+                .select('process_lot_run_id, supply_batch_id')
+                .in('process_lot_run_id', lotRunIds),
+            ])
+
+            const lotRunSupplyBatchIdsMap = new Map<number, Set<number>>()
+            ;((lotRunsResult.data ?? []) as Array<{ id: number; supply_batch_id: number | null }>).forEach((row) => {
+              if (!lotRunSupplyBatchIdsMap.has(row.id)) lotRunSupplyBatchIdsMap.set(row.id, new Set<number>())
+              if (row.supply_batch_id) lotRunSupplyBatchIdsMap.get(row.id)!.add(row.supply_batch_id)
+            })
+            ;((runBatchesResult.data ?? []) as Array<{ process_lot_run_id: number; supply_batch_id: number | null }>).forEach((row) => {
+              if (!lotRunSupplyBatchIdsMap.has(row.process_lot_run_id)) lotRunSupplyBatchIdsMap.set(row.process_lot_run_id, new Set<number>())
+              if (row.supply_batch_id) lotRunSupplyBatchIdsMap.get(row.process_lot_run_id)!.add(row.supply_batch_id)
+            })
+
+            const allSupplyBatchIds = Array.from(
+              new Set(Array.from(lotRunSupplyBatchIdsMap.values()).flatMap((set) => Array.from(set)))
+            )
+            if (allSupplyBatchIds.length > 0) {
+              const { data: supplyBatchesData } = await supabase
+                .from('supply_batches')
+                .select('id, supply_id')
+                .in('id', allSupplyBatchIds)
+              const supplyIds = Array.from(
+                new Set(
+                  ((supplyBatchesData ?? []) as Array<{ supply_id: number | null }>)
+                    .map((row) => row.supply_id)
+                    .filter((value): value is number => typeof value === 'number')
+                )
+              )
+              const supplyBatchToSupplyId = new Map(
+                ((supplyBatchesData ?? []) as Array<{ id: number; supply_id: number | null }>).map((row) => [row.id, row.supply_id])
+              )
+
+              const supplyToWarehouseId = new Map<number, number>()
+              if (supplyIds.length > 0) {
+                const { data: suppliesData } = await supabase
+                  .from('supplies')
+                  .select('id, warehouse_id')
+                  .in('id', supplyIds)
+                ;((suppliesData ?? []) as Array<{ id: number; warehouse_id: number | null }>).forEach((row) => {
+                  if (row.warehouse_id) supplyToWarehouseId.set(row.id, row.warehouse_id)
+                })
+              }
+
+              lotRunSupplyBatchIdsMap.forEach((batchIds, lotRunId) => {
+                const lotWarehouseId =
+                  Array.from(batchIds)
+                    .map((batchId) => supplyBatchToSupplyId.get(batchId) ?? null)
+                    .map((supplyId) => (supplyId ? supplyToWarehouseId.get(supplyId) ?? null : null))
+                    .find((value): value is number => typeof value === 'number') ?? null
+                if (lotWarehouseId) lotRunWarehouseIdMap.set(lotRunId, lotWarehouseId)
+              })
+            }
+          }
+
+          const packagingRunToStepRunId = new Map(packagingRuns.map((row) => [row.id, Number(row.process_step_run_id) || 0]))
+          ;((packEntriesData ?? []) as Array<{
+            packaging_run_id: number | null
+            packet_unit_code: string | null
+            pack_identifier: string | null
+            pack_count: number | null
+            quantity_kg: number | null
+            pack_size_kg: number | null
+          }>).forEach((entry) => {
+            const packagingRunId = Number(entry.packaging_run_id) || 0
+            if (!packagingRunId) return
+
+            const stepRunId = packagingRunToStepRunId.get(packagingRunId) || 0
+            const lotRunId = Number(stepRunToLotRunId.get(stepRunId)) || 0
+            if (!lotRunId) return
+            if (lotRunWarehouseIdMap.get(lotRunId) !== warehouseId) return
+
+            const packetKey = normalizeUnitCode(entry.packet_unit_code ?? entry.pack_identifier)
+            if (!packetKey) return
+            const operationalProductId = packetOperationalProductByCode.get(packetKey)
+            if (!operationalProductId) return
+
+            const storedPackCount = Number(entry.pack_count) || 0
+            const quantityKg = Number(entry.quantity_kg) || 0
+            const packSizeKg = Number(entry.pack_size_kg) || 0
+            const derivedPackCount = storedPackCount > 0 ? storedPackCount : packSizeKg > 0 ? Math.floor(quantityKg / packSizeKg) : 0
+            if (derivedPackCount <= 0) return
+
+            consumedByProductId[operationalProductId] = (consumedByProductId[operationalProductId] || 0) + derivedPackCount
+          })
+        }
+
+        setOpAcceptedByProductId(acceptedByProductId)
+        setOpConsumedByProductId(consumedByProductId)
+        return { accepted: acceptedByProductId, consumed: consumedByProductId }
+      } catch (error) {
+        console.error('Failed to load OP packaging stock snapshot:', error)
+        setOpAcceptedByProductId({})
+        setOpConsumedByProductId({})
+        return { accepted: {}, consumed: {} }
+      } finally {
+        setOpStockLoading(false)
+      }
+    },
+    [runWarehouseId, packagingUnits]
+  )
+
   useEffect(() => {
     loadSortedWips()
   }, [loadSortedWips])
@@ -472,6 +756,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   useEffect(() => {
     loadPackagingSettings()
   }, [loadPackagingSettings])
+
+  useEffect(() => {
+    loadRunWarehouseId().catch(() => {
+      setRunWarehouseId(null)
+    })
+  }, [loadRunWarehouseId])
 
   useEffect(() => {
     const loadCheckerProfiles = async () => {
@@ -582,6 +872,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const autoCreateAttemptedRef = useRef(false)
   const lastCheckerIdsRef = useRef('')
   const remaindersModalRef = useRef<HTMLDivElement | null>(null)
+  const packAvailabilityOverflowToastShownRef = useRef(false)
   const usedWeightCheckNumbers = useMemo(
     () => new Set(weightChecks.map((check) => check.check_no)),
     [weightChecks]
@@ -932,9 +1223,50 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     () => sortedWips.find((w) => String(w.id) === packEntryForm.sorting_output_id) ?? null,
     [sortedWips, packEntryForm.sorting_output_id]
   )
+  const selectedPacketUnitForPackEntry = useMemo(
+    () => activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code) ?? null,
+    [activePacketUnits, packEntryForm.packet_unit_code]
+  )
+  const getAvailablePacksForPacketUnit = useCallback(
+    (
+      packetUnit: PackagingUnitOption | null,
+      acceptedByProductId = opAcceptedByProductId,
+      consumedByProductId = opConsumedByProductId
+    ): number => {
+      if (!packetUnit) return 0
+      const operationalProductId = Number(packetUnit.operational_product_id) || 0
+      if (!operationalProductId) return 0
+      const accepted = Number(acceptedByProductId[operationalProductId]) || 0
+      const consumed = Number(consumedByProductId[operationalProductId]) || 0
+      return Math.max(0, Math.floor(accepted - consumed))
+    },
+    [opAcceptedByProductId, opConsumedByProductId]
+  )
+  const selectedPacketUnitAvailablePacks = useMemo(
+    () => getAvailablePacksForPacketUnit(selectedPacketUnitForPackEntry),
+    [getAvailablePacksForPacketUnit, selectedPacketUnitForPackEntry]
+  )
+  const autoSelectedFinishedProduct = useMemo(
+    () => (finishedProducts.length > 0 ? finishedProducts[0] ?? null : null),
+    [finishedProducts]
+  )
   useEffect(() => {
-    selectedWipProductIdRef.current = selectedWipForPackEntry?.product_id ?? null
-  }, [selectedWipForPackEntry])
+    setPackEntryForm((prev) => {
+      if (!selectedWipForPackEntry) {
+        if (!prev.product_id) return prev
+        return { ...prev, product_id: '' }
+      }
+      const nextProductId = autoSelectedFinishedProduct ? String(autoSelectedFinishedProduct.id) : ''
+      if (prev.product_id === nextProductId) return prev
+      return { ...prev, product_id: nextProductId }
+    })
+  }, [selectedWipForPackEntry, autoSelectedFinishedProduct])
+  useEffect(() => {
+    if (!showPackEntryForm || !packEntryForm.packet_unit_code || !runWarehouseId) return
+    loadOperationalPackagingStockSnapshot().catch((error) => {
+      console.error('Failed to refresh OP stock after packet unit selection:', error)
+    })
+  }, [showPackEntryForm, packEntryForm.packet_unit_code, packEntries.length, runWarehouseId, loadOperationalPackagingStockSnapshot])
   const selectedWipUsedKg = useMemo(() => {
     if (!selectedWipForPackEntry) return 0
     return packEntries
@@ -1432,8 +1764,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     e.preventDefault()
     const sortingOutputId = parseInt(packEntryForm.sorting_output_id, 10)
     const productId = packEntryForm.product_id ? parseInt(packEntryForm.product_id, 10) : null
-    const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
+    const selectedPacketUnit = selectedPacketUnitForPackEntry
     const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
+    const operationalProductId = Number(selectedPacketUnit?.operational_product_id) || 0
     const quantityKg = parseFloat(packEntryForm.quantity_kg)
     const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
     const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
@@ -1470,6 +1803,26 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       toast.error(`Quantity cannot exceed remaining ${remainingKg.toFixed(2)} kg for this WIP`)
       return
     }
+    if (!runWarehouseId) {
+      toast.error('Unable to determine run warehouse for OP stock validation.')
+      return
+    }
+    if (!operationalProductId) {
+      toast.error('Selected packet unit has no operational product mapping. Update Packaging Settings first.')
+      return
+    }
+
+    const requiredPacks = Math.max(0, Math.floor(quantityKg / selectedPackSizeKg))
+    const snapshot = await loadOperationalPackagingStockSnapshot(runWarehouseId)
+    const availablePacks = getAvailablePacksForPacketUnit(selectedPacketUnit, snapshot.accepted, snapshot.consumed)
+    if (requiredPacks > availablePacks) {
+      const shortage = requiredPacks - availablePacks
+      toast.error(
+        `Not enough operational packs in stock for ${selectedPacketUnit.code}. Required: ${requiredPacks}, available: ${availablePacks}, shortage: ${shortage}.`
+      )
+      return
+    }
+
     setSaving(true)
     try {
       const createdPackEntry = await addPackEntry({
@@ -1887,29 +2240,31 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                   </div>
                   <div className="space-y-2">
                     <Label>Finished product being packed *</Label>
-                    <SearchableSelect
-                      options={finishedProducts.map((p) => ({
-                        value: String(p.id),
-                        label: `${p.name}${p.sku ? ` (${p.sku})` : ''}`,
-                      }))}
-                      value={packEntryForm.product_id}
-                      onChange={(value) => setPackEntryForm({ ...packEntryForm, product_id: value })}
-                      placeholder="Select finished product"
-                      required
+                    <Input
+                      type="text"
+                      readOnly
+                      value={
+                        autoSelectedFinishedProduct
+                          ? `${autoSelectedFinishedProduct.name}${autoSelectedFinishedProduct.sku ? ` (${autoSelectedFinishedProduct.sku})` : ''}`
+                          : selectedWipForPackEntry
+                          ? 'No finished product mapped from composition'
+                          : 'Select WIP first'
+                      }
                       disabled={saving || externalLoading}
-                      emptyMessage="No finished products found"
                     />
                   </div>
                   <div className="space-y-2">
                     <Label>Packet unit *</Label>
                     <select
                       value={packEntryForm.packet_unit_code}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const nextPacketUnitCode = e.target.value
+                        packAvailabilityOverflowToastShownRef.current = false
                         setPackEntryForm({
                           ...packEntryForm,
-                          packet_unit_code: e.target.value,
+                          packet_unit_code: nextPacketUnitCode,
                         })
-                      }
+                      }}
                       required
                       disabled={saving || externalLoading}
                       className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1921,6 +2276,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         </option>
                       ))}
                     </select>
+                    {packEntryForm.packet_unit_code ? (
+                      <p className="text-xs text-text-dark/70">
+                        {opStockLoading
+                          ? 'Checking OP pack stock...'
+                          : !selectedPacketUnitForPackEntry?.operational_product_id
+                          ? 'This packet unit is not mapped to an operational product.'
+                          : `Available packs: ${selectedPacketUnitAvailablePacks}`}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <Label>Quantity (kg) *</Label>
@@ -1932,6 +2296,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       onChange={e => {
                         const rawValue = e.target.value
                         if (!selectedWipForPackEntry || rawValue === '') {
+                          packAvailabilityOverflowToastShownRef.current = false
                           setPackEntryForm({ ...packEntryForm, quantity_kg: rawValue })
                           return
                         }
@@ -1941,6 +2306,25 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                           toast.error(`Quantity cannot exceed ${remainingKg.toFixed(2)} kg for this WIP (including added remainder)`)
                           setPackEntryForm({ ...packEntryForm, quantity_kg: String(remainingKg) })
                           return
+                        }
+                        if (selectedPacketUnitForPackEntry) {
+                          const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry.net_weight_kg) || 0
+                          const requiredPacks =
+                            selectedPackSizeKg > 0 && Number.isFinite(numericValue) && numericValue > 0
+                              ? Math.floor(numericValue / selectedPackSizeKg)
+                              : 0
+                          if (requiredPacks > selectedPacketUnitAvailablePacks) {
+                            if (!packAvailabilityOverflowToastShownRef.current) {
+                              toast.error(
+                                `Packs required (${requiredPacks}) cannot exceed available packs (${selectedPacketUnitAvailablePacks}).`
+                              )
+                              packAvailabilityOverflowToastShownRef.current = true
+                            }
+                          } else {
+                            packAvailabilityOverflowToastShownRef.current = false
+                          }
+                        } else {
+                          packAvailabilityOverflowToastShownRef.current = false
                         }
                         setPackEntryForm({ ...packEntryForm, quantity_kg: rawValue })
                       }}
@@ -1954,8 +2338,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       type="text"
                       readOnly
                       value={(() => {
-                        const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
-                        const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
+                        const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry?.net_weight_kg) || 0
                         const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
                         if (selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
                         return Math.floor(quantityKg / selectedPackSizeKg).toString()
@@ -1969,8 +2352,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       type="text"
                       readOnly
                       value={(() => {
-                        const selectedPacketUnit = activePacketUnits.find((unit) => unit.code === packEntryForm.packet_unit_code)
-                        const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
+                        const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry?.net_weight_kg) || 0
                         const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
                         if (selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
                         const packCount = Math.floor(quantityKg / selectedPackSizeKg)

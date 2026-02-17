@@ -119,13 +119,6 @@ interface UserProfile {
   [key: string]: unknown
 }
 
-interface OperationalSupplyFlow {
-  id: string
-  code: string
-  supply_name: string
-  receiving_note: string
-}
-
 interface OperationalSupplyLine {
   product_id: string
   unit_id: string
@@ -301,49 +294,9 @@ const STEPS = [
 
 const OPERATIONAL_STEPS = [
   'Supply category',
-  'Operational profile',
   'Receiving checklist',
   'Operational supply lines',
   'Review',
-]
-
-const OPERATIONAL_SUPPLY_FLOWS: OperationalSupplyFlow[] = [
-  {
-    id: 'nitrogen_gas',
-    code: 'AIR_PRODUCTS_NITROGEN_GAS',
-    supply_name: 'Nitrogen gas',
-    receiving_note: 'Confirm cylinder count, pressure status, and safety labels before receiving.',
-  },
-  {
-    id: 'vacuum_bags',
-    code: 'BAG_IN_A_BOX_VACUUM_BAGS',
-    supply_name: 'Vacuum bags',
-    receiving_note: 'Check seal integrity, micron spec, and box condition before acceptance.',
-  },
-  {
-    id: 'poly_bags',
-    code: 'WANG_ON_FIBRE_POLY_BAGS',
-    supply_name: 'Poly bags',
-    receiving_note: 'Check bag gauge, print quality, and contamination-free packing.',
-  },
-  {
-    id: 'pallets',
-    code: 'UPCRAFT_SOLUTIONS_PALLETS',
-    supply_name: 'Pallets',
-    receiving_note: 'Inspect pallet strength, dimensions, and broken-board count.',
-  },
-  {
-    id: 'pallet_wrap',
-    code: 'GREEK_DISTRIBUTORS_PALLET_WRAP',
-    supply_name: 'Pallet wrap',
-    receiving_note: 'Confirm roll width/thickness and verify no tears or deformation.',
-  },
-  {
-    id: 'chemicals',
-    code: 'DELUXE_CHEMICALS_PROCESSING_AND_CLEANING_CHEMICALS',
-    supply_name: 'Processing and cleaning chemicals',
-    receiving_note: 'Validate SDS availability, batch/expiry, and hazard label compliance.',
-  },
 ]
 
 const CATEGORY_OPTIONS: CategoryOption[] = [
@@ -444,9 +397,10 @@ function sanitiseAcceptedQuantityInput(value: string | number | null | undefined
 
 interface SuppliesProps {
   modalOnly?: boolean
+  initialTab?: 'product' | 'operational'
 }
 
-function Supplies({ modalOnly = false }: SuppliesProps) {
+function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { supplyId: routeSupplyId } = useParams<{ supplyId?: string }>()
@@ -511,7 +465,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   type SupplyTabId = 'product' | 'operational'
-  const [activeSupplyTab, setActiveSupplyTab] = useState<SupplyTabId>('product')
+  const [activeSupplyTab, setActiveSupplyTab] = useState<SupplyTabId>(initialTab)
   const [receivedFrom, setReceivedFrom] = useState('')
   const [receivedTo, setReceivedTo] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
@@ -560,7 +514,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   ])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
-  const [selectedOperationalFlowId, setSelectedOperationalFlowId] = useState('')
   const [operationalDeliveryReference, setOperationalDeliveryReference] = useState('')
   const [operationalCondition, setOperationalCondition] = useState<'PASS' | 'HOLD' | 'REJECT' | ''>('')
   const [operationalRemarks, setOperationalRemarks] = useState('')
@@ -568,8 +521,11 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     createEmptyOperationalSupplyLine(),
   ])
   const [operationalMappedProducts, setOperationalMappedProducts] = useState<Product[]>([])
-  const [loadingOperationalMappedProducts, setLoadingOperationalMappedProducts] = useState(false)
   const isEditingSupply = editingSupplyId != null
+
+  useEffect(() => {
+    setActiveSupplyTab(initialTab)
+  }, [initialTab])
 
   const computeNextDocNumber = useCallback(() => {
     const now = new Date()
@@ -624,10 +580,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
 
   const [formData, setFormData] = useState<FormData>(() => getInitialFormData())
   const isOperationalFlow = formData.category_code === 'SERVICE'
-  const selectedOperationalFlow = useMemo(
-    () => OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.id === selectedOperationalFlowId) ?? null,
-    [selectedOperationalFlowId]
-  )
   const operationalMappedProductOptions = useMemo(
     () =>
       operationalMappedProducts.map((product) => ({
@@ -1256,11 +1208,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           toast.error('Select a supply category before continuing.')
           return false
         }
-        if (step === 1 && !selectedOperationalFlowId) {
-          toast.error('Select an operational supply profile before continuing.')
-          return false
-        }
-        if (step === 2) {
+        if (step === 1) {
           if (!formData.warehouse_id || !formData.supplier_id || !formData.received_at) {
             toast.error('Complete receiving details before continuing.')
             return false
@@ -1274,13 +1222,13 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             return false
           }
         }
-        if (step === 3) {
+        if (step === 2) {
           if (operationalSupplyLines.length === 0) {
             toast.error('Add at least one operational supply line before continuing.')
             return false
           }
           if (operationalMappedProducts.length === 0) {
-            toast.error('No products mapped for this operational flow.')
+            toast.error('No operational products found. Create OP products first.')
             return false
           }
           const invalidLine = operationalSupplyLines.find((line) => {
@@ -1297,7 +1245,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             )
           })
           if (invalidLine) {
-            toast.error('Each operational line must use a mapped OP product, unit, quantity, and unit price greater than zero.')
+            toast.error('Each operational line must include an OP product, unit, quantity, and unit price greater than zero.')
             return false
           }
         }
@@ -1471,7 +1419,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       packagingQuality,
       qualityEntries,
       qualityParameters,
-      selectedOperationalFlowId,
       supplierSignOff,
       supplyDocuments,
       vehicleInspection,
@@ -1509,13 +1456,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       return
     }
 
-    const selectedFlow = OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.id === selectedOperationalFlowId)
-    if (!selectedFlow?.code) {
-      toast.error('Select an operational supply profile before saving.')
-      return
-    }
-
-      const mappedLines = operationalSupplyLines
+    const mappedLines = operationalSupplyLines
       .map((line) => {
         const qty = Number.parseFloat(line.qty)
         const unitPrice = Number.parseFloat(line.unit_price)
@@ -1553,20 +1494,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
 
     setIsSubmitting(true)
     try {
-      const { data: flowRow, error: flowError } = await supabase
-        .from('operational_supply_flows')
-        .select('id')
-        .eq('code', selectedFlow.code)
-        .eq('is_active', true)
-        .maybeSingle()
-
-      if (flowError) {
-        throw flowError
-      }
-      if (!flowRow?.id) {
-        throw new Error('Selected operational flow is not configured in the database.')
-      }
-
       if (editingSupplyId) {
         const { error: updateSupplyError } = await supabase
           .from('supplies')
@@ -1648,7 +1575,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
         .upsert(
           {
             supply_id: insertedSupplyId,
-            flow_id: Number(flowRow.id),
             delivery_reference: operationalDeliveryReference.trim(),
             received_condition: operationalCondition,
             remarks: operationalRemarks.trim() || null,
@@ -2863,7 +2789,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
           supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId).maybeSingle(),
           supabase
             .from('operational_supply_entries')
-            .select('id, flow_id, delivery_reference, received_condition, remarks, flow:operational_supply_flows(code)')
+            .select('id, delivery_reference, received_condition, remarks')
             .eq('supply_id', supplyId)
             .maybeSingle(),
         ])
@@ -2925,17 +2851,11 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
         if (supplyCategoryCode === 'SERVICE') {
           const operationalEntry = operationalEntryData as
             | {
-                flow_id?: number | null
                 delivery_reference?: string | null
                 received_condition?: 'PASS' | 'HOLD' | 'REJECT' | ''
                 remarks?: string | null
-                flow?: { code?: string | null } | Array<{ code?: string | null }> | null
               }
             | null
-
-          const flowRef = operationalEntry?.flow
-          const flowCode = Array.isArray(flowRef) ? flowRef[0]?.code : flowRef?.code
-          const matchedFlow = OPERATIONAL_SUPPLY_FLOWS.find((flow) => flow.code === flowCode)
 
           setFormData({
             category_code: 'SERVICE',
@@ -2962,7 +2882,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
             ],
           })
 
-          setSelectedOperationalFlowId(matchedFlow?.id ?? '')
           setOperationalDeliveryReference(String(operationalEntry?.delivery_reference ?? ''))
           setOperationalCondition((operationalEntry?.received_condition as 'PASS' | 'HOLD' | 'REJECT' | '') ?? '')
           setOperationalRemarks(String(operationalEntry?.remarks ?? ''))
@@ -3165,7 +3084,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       signedByName: '',
       remarks: '',
     })
-    setSelectedOperationalFlowId('')
     setOperationalDeliveryReference('')
     setOperationalCondition('')
     setOperationalRemarks('')
@@ -3294,7 +3212,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
       signedByName: '',
       remarks: '',
     })
-    setSelectedOperationalFlowId('')
     setOperationalDeliveryReference('')
     setOperationalCondition('')
     setOperationalRemarks('')
@@ -3317,8 +3234,8 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     modalSteps.length > 0 ? modalSteps[modalSteps.length - 1]!.stepIndex : minimumModalStepIndex
   const isLastStep = currentStep === lastModalStepIndex
   const isOperationalLineStepBlocked = useMemo(() => {
-    if (!isOperationalFlow || currentStep !== 3) return false
-    if (loadingOperationalMappedProducts || operationalMappedProducts.length === 0) return true
+    if (!isOperationalFlow || currentStep !== 2) return false
+    if (operationalMappedProducts.length === 0) return true
     return !operationalSupplyLines.some((line) => {
       const qty = Number.parseFloat(line.qty)
       const unitPrice = Number.parseFloat(line.unit_price)
@@ -3335,7 +3252,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
   }, [
     currentStep,
     isOperationalFlow,
-    loadingOperationalMappedProducts,
     operationalMappedProductIdSet,
     operationalMappedProducts.length,
     operationalSupplyLines,
@@ -3348,74 +3264,20 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
     'rounded-xl border border-olive-light/40 bg-olive-light/10 p-5 sm:p-6 dark:border-slate-700 dark:bg-slate-900/40'
 
   useEffect(() => {
-    if (!isOperationalFlow || !selectedOperationalFlow?.code) {
+    if (!isOperationalFlow) {
       setOperationalMappedProducts([])
-      setLoadingOperationalMappedProducts(false)
       return
     }
-
-    let cancelled = false
-    setLoadingOperationalMappedProducts(true)
-
-    supabase
-      .from('operational_supply_flows')
-      .select('id')
-      .eq('code', selectedOperationalFlow.code)
-      .eq('is_active', true)
-      .maybeSingle()
-      .then(async ({ data: flowRow, error: flowError }) => {
-        if (cancelled) return
-        if (flowError || !flowRow?.id) {
-          setOperationalMappedProducts([])
-          setLoadingOperationalMappedProducts(false)
-          return
-        }
-
-        const { data: mappingRows, error: mappingError } = await supabase
-          .from('operational_supply_flow_products')
-          .select('product_id, product:products(id, name, sku, product_type)')
-          .eq('flow_id', flowRow.id)
-
-        if (cancelled) return
-        if (mappingError) {
-          setOperationalMappedProducts([])
-          setLoadingOperationalMappedProducts(false)
-          return
-        }
-
-        const mappedProducts: Product[] = (mappingRows ?? [])
-          .map((row) => {
-            const rel = (row as { product?: unknown }).product
-            if (Array.isArray(rel)) {
-              return rel[0] ?? null
-            }
-            return rel ?? null
-          })
-          .filter(
-            (
-              product
-            ): product is { id: number; name: string; sku?: string; product_type?: string | null } =>
-              !!product &&
-              typeof product === 'object' &&
-              Number.isFinite((product as { id?: unknown }).id) &&
-              String((product as { product_type?: unknown }).product_type ?? '')
-                .toUpperCase() === 'OP'
-          )
-          .map((product) => ({
-            id: Number(product.id),
-            name: product.name,
-            sku: product.sku,
-            product_type: 'OP',
-          }))
-
-        setOperationalMappedProducts(mappedProducts)
-        setLoadingOperationalMappedProducts(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [isOperationalFlow, selectedOperationalFlow?.code])
+    const opProducts = products
+      .filter((product) => String(product.product_type ?? '').toUpperCase() === 'OP')
+      .map((product) => ({
+        id: Number(product.id),
+        name: String(product.name ?? ''),
+        sku: String(product.sku ?? ''),
+        product_type: 'OP',
+      }))
+    setOperationalMappedProducts(opProducts)
+  }, [isOperationalFlow, products])
 
   useEffect(() => {
     if (suppliersError) {
@@ -4091,7 +3953,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                                   category_code: option.code,
                                   supplier_id: '',
                                 }))
-                                setSelectedOperationalFlowId('')
                                 setOperationalDeliveryReference('')
                                 setOperationalCondition('')
                                 setOperationalRemarks('')
@@ -4105,40 +3966,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                               <p className="text-base font-semibold text-text-dark">{option.name}</p>
                             </div>
                             <p className="mt-2 text-sm text-text-dark/70">{option.description}</p>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </section>
-                )}
-
-                {currentStep === 1 && isOperationalFlow && (
-                  <section className={sectionCardClass}>
-                    <div className="mb-6">
-                      <h3 className="text-lg font-semibold text-text-dark">Operational supply profile</h3>
-                      <p className="text-sm text-text-dark/70">
-                        Select the operational supply flow template for database capture.
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                      {OPERATIONAL_SUPPLY_FLOWS.map((flow) => {
-                        const active = selectedOperationalFlowId === flow.id
-                        return (
-                          <button
-                            key={flow.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedOperationalFlowId(flow.id)
-                              setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
-                            }}
-                            className={`rounded-xl border p-4 text-left transition ${
-                              active
-                                ? 'border-olive bg-olive-light/30 shadow-sm'
-                                : 'border-olive-light/40 bg-white hover:border-olive-light/70'
-                            }`}
-                          >
-                            <p className="text-base font-semibold text-text-dark">{flow.supply_name}</p>
-                            <p className="mt-2 text-xs text-text-dark/70">{flow.receiving_note}</p>
                           </button>
                         )
                       })}
@@ -4238,7 +4065,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   </section>
                 )}
 
-                {currentStep === 2 && isOperationalFlow && (
+                {currentStep === 1 && isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Receiving checklist</h3>
@@ -4385,7 +4212,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   </section>
                 )}
 
-                {currentStep === 3 && isOperationalFlow && (
+                {currentStep === 2 && isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Operational supply lines</h3>
@@ -4393,13 +4220,9 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                         Add the products and quantities for this operational delivery.
                       </p>
                     </div>
-                    {loadingOperationalMappedProducts ? (
-                      <div className="mb-4 rounded-lg border border-olive-light/40 bg-white px-3 py-2 text-sm text-text-dark/70">
-                        Loading mapped operational products...
-                      </div>
-                    ) : operationalMappedProducts.length === 0 ? (
+                    {operationalMappedProducts.length === 0 ? (
                       <div className="mb-4 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800">
-                        No products mapped for this operational flow.
+                        No operational products found. Create OP products first.
                       </div>
                     ) : null}
                     <div className="space-y-4">
@@ -4429,8 +4252,8 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                                 value={line.product_id}
                                 onChange={(value) => updateOperationalSupplyLine(index, 'product_id', value)}
                                 placeholder="Select supplied product"
-                                disabled={isSubmitting || loadingOperationalMappedProducts || operationalMappedProducts.length === 0}
-                                emptyMessage="No products mapped for this operational flow."
+                                disabled={isSubmitting || operationalMappedProducts.length === 0}
+                                emptyMessage="No operational products found."
                               />
                             </div>
                             <div className="space-y-2 lg:col-span-3">
@@ -4517,7 +4340,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                         variant="outline"
                         size="sm"
                         onClick={addOperationalSupplyLine}
-                        disabled={isSubmitting || loadingOperationalMappedProducts || operationalMappedProducts.length === 0}
+                        disabled={isSubmitting || operationalMappedProducts.length === 0}
                       >
                         Add line
                       </Button>
@@ -4525,10 +4348,10 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                   </section>
                 )}
 
-                {currentStep === 4 && isOperationalFlow && (
+                {currentStep === 3 && isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
-                      <h3 className="text-lg font-semibold text-text-dark">Operational flow review</h3>
+                      <h3 className="text-lg font-semibold text-text-dark">Operational supply review</h3>
                       <p className="text-sm text-text-dark/70">
                         Confirm details before saving this operational supply.
                       </p>
@@ -4541,10 +4364,6 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                           <p className="text-sm font-medium text-text-dark">
                             {supplierLabelMap.get(parseInt(formData.supplier_id, 10)) || 'Not set'}
                           </p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Operational supply</p>
-                          <p className="text-sm font-medium text-text-dark">{selectedOperationalFlow?.supply_name || 'Not set'}</p>
                         </div>
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Warehouse</p>
@@ -4598,7 +4417,7 @@ function Supplies({ modalOnly = false }: SuppliesProps) {
                           <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Stage {idx + 1}</p>
                           <p className="mt-1 text-sm font-medium text-text-dark">{stage}</p>
                           <p className="mt-1 text-xs text-text-dark/70">
-                            {idx === 1 && selectedOperationalFlow ? selectedOperationalFlow.receiving_note : 'Operational supply handling checkpoint.'}
+                            Operational supply handling checkpoint.
                           </p>
                         </div>
                       ))}

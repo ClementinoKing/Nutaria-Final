@@ -185,19 +185,26 @@ function ProcessSteps() {
   useEffect(() => {
     loadActiveSession().catch(() => undefined)
     loadProcessingRuns().catch(() => undefined)
+  }, [loadProcessingRuns])
+
+  useEffect(() => {
+    if (!activeMetalSession) return
     const intervalId = window.setInterval(() => {
       setNowMs(Date.now())
     }, 1000)
-    const refreshId = window.setInterval(() => {
-      loadActiveSession().catch(() => undefined)
-      loadProcessingRuns().catch(() => undefined)
-    }, 15000)
-
     return () => {
       window.clearInterval(intervalId)
+    }
+  }, [activeMetalSession])
+
+  useEffect(() => {
+    const refreshId = window.setInterval(() => {
+      loadActiveSession().catch(() => undefined)
+    }, 15000)
+    return () => {
       window.clearInterval(refreshId)
     }
-  }, [loadProcessingRuns])
+  }, [])
 
   const handleDeleteRun = async (runId: number) => {
     const confirmed = window.confirm('Delete this process run? Linked lots will be set back to UNPROCESSED.')

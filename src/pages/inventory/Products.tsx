@@ -70,7 +70,6 @@ interface ProductFormData {
   notes: string
   product_type: string
   component_ids: number[]
-  operational_flow_ids: number[]
 }
 
 interface FormErrors {
@@ -78,15 +77,6 @@ interface FormErrors {
   status?: string
   product_type?: string
   components?: string
-  operational_flows?: string
-}
-
-interface OperationalSupplyFlow {
-  id: number
-  code: string
-  supply_name: string
-  receiving_note: string | null
-  is_active: boolean
 }
 
 interface BulkEditFormData {
@@ -134,7 +124,6 @@ function createEmptyProductForm(existingProducts: Product[] = []): ProductFormDa
     notes: '',
     product_type: 'RAW',
     component_ids: [],
-    operational_flow_ids: [],
   }
 }
 
@@ -231,9 +220,6 @@ function Products() {
   const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
   const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditFormData>(createEmptyBulkEditForm())
-  const [operationalFlows, setOperationalFlows] = useState<OperationalSupplyFlow[]>([])
-  const [loadingOperationalFlows, setLoadingOperationalFlows] = useState(true)
-  const [operationalFlowSearch, setOperationalFlowSearch] = useState('')
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -314,48 +300,6 @@ function Products() {
     setLoadingUnits(false)
   }, [])
 
-  const fetchOperationalFlows = useCallback(async () => {
-    setLoadingOperationalFlows(true)
-    const primary = await supabase
-      .from('operational_supply_flows')
-      .select('id, code, supply_name, receiving_note, is_active')
-      .eq('is_active', true)
-      .order('supply_name', { ascending: true })
-
-    if (!primary.error) {
-      setOperationalFlows(Array.isArray(primary.data) ? (primary.data as OperationalSupplyFlow[]) : [])
-      setLoadingOperationalFlows(false)
-      return
-    }
-
-    // Backward compatibility for environments that still use supplier_name.
-    const legacy = await supabase
-      .from('operational_supply_flows')
-      .select('id, code, supplier_name, receiving_note, is_active')
-      .eq('is_active', true)
-      .order('supplier_name', { ascending: true })
-
-    if (legacy.error) {
-      console.warn('Failed to load operational supply flows', primary.error, legacy.error)
-      setOperationalFlows([])
-      setLoadingOperationalFlows(false)
-      return
-    }
-
-    const mapped = Array.isArray(legacy.data)
-      ? legacy.data.map((row) => ({
-          id: Number((row as { id: unknown }).id),
-          code: String((row as { code: unknown }).code ?? ''),
-          supply_name: String((row as { supplier_name?: unknown }).supplier_name ?? ''),
-          receiving_note: ((row as { receiving_note?: unknown }).receiving_note as string | null | undefined) ?? null,
-          is_active: Boolean((row as { is_active?: unknown }).is_active),
-        }))
-      : []
-
-    setOperationalFlows(mapped)
-    setLoadingOperationalFlows(false)
-  }, [])
-
   useEffect(() => {
     fetchProducts()
   }, [fetchProducts])
@@ -363,10 +307,6 @@ function Products() {
   useEffect(() => {
     fetchUnits()
   }, [fetchUnits])
-
-  useEffect(() => {
-    fetchOperationalFlows()
-  }, [fetchOperationalFlows])
 
   useEffect(() => {
     setPage(1)
@@ -458,24 +398,6 @@ function Products() {
       return (a.name || '').localeCompare(b.name || '')
     })
   }, [bulkComponentSearch, wipProductOptions, bulkEditForm.wip_component_ids])
-  const filteredOperationalFlows = useMemo(() => {
-    const query = operationalFlowSearch.trim().toLowerCase()
-    const selected = new Set(formData.operational_flow_ids)
-    const filtered = operationalFlows.filter((flow) => {
-      if (!query) return true
-      return (
-        flow.supply_name.toLowerCase().includes(query) ||
-        flow.code.toLowerCase().includes(query)
-      )
-    })
-
-    return filtered.sort((a, b) => {
-      const aSel = selected.has(a.id) ? 1 : 0
-      const bSel = selected.has(b.id) ? 1 : 0
-      if (aSel !== bSel) return bSel - aSel
-      return a.supply_name.localeCompare(b.supply_name)
-    })
-  }, [operationalFlowSearch, operationalFlows, formData.operational_flow_ids])
   const editingProductId = useMemo(() => (editingProduct?.id ? editingProduct.id : null), [editingProduct])
 
   const statusOptions = useMemo(() => {
@@ -622,7 +544,6 @@ function Products() {
     setFormData(createEmptyProductForm(products))
     setFormErrors({})
     setComponentSearch('')
-    setOperationalFlowSearch('')
     setModalMode('create')
     setEditingProduct(null)
     setIsModalOpen(true)
@@ -638,7 +559,6 @@ function Products() {
     setEditingProduct(null)
     setFormData(createEmptyProductForm(products))
     setComponentSearch('')
-    setOperationalFlowSearch('')
   }
 
   const handleOpenEditModal = useCallback((product: Product) => {
@@ -671,30 +591,12 @@ function Products() {
         product.product_components
           ?.map((row) => row?.component_product?.id)
           .filter((id): id is number => typeof id === 'number') ?? [],
-      operational_flow_ids: [],
     })
     setFormErrors({})
     setComponentSearch('')
-    setOperationalFlowSearch('')
     setModalMode('edit')
     setEditingProduct(product)
     setIsModalOpen(true)
-    supabase
-      .from('operational_supply_flow_products')
-      .select('flow_id')
-      .eq('product_id', product.id)
-      .then(({ data, error: mappingError }) => {
-        if (mappingError) {
-          console.warn('Failed to load operational flow mappings for product', mappingError)
-          return
-        }
-        const ids = Array.isArray(data)
-          ? data
-              .map((row) => Number(row.flow_id))
-              .filter((id): id is number => Number.isFinite(id))
-          : []
-        setFormData((previous) => ({ ...previous, operational_flow_ids: ids }))
-      })
   }, [])
 
   const performDeleteProduct = useCallback(
@@ -896,30 +798,6 @@ function Products() {
     }
   }
 
-  const saveProductOperationalFlowMappings = async (
-    productId: number,
-    operationalFlowIds: number[]
-  ) => {
-    await supabase
-      .from('operational_supply_flow_products')
-      .delete()
-      .eq('product_id', productId)
-
-    if (operationalFlowIds.length === 0) {
-      return
-    }
-
-    const rows = operationalFlowIds.map((flowId) => ({
-      flow_id: flowId,
-      product_id: productId,
-    }))
-
-    const { error } = await supabase.from('operational_supply_flow_products').insert(rows)
-    if (error) {
-      throw error
-    }
-  }
-
   const validateForm = (): boolean => {
     const errors: FormErrors = {}
 
@@ -946,10 +824,6 @@ function Products() {
     if (type === 'FINISHED' && formData.component_ids.length === 0) {
       errors.components = 'Select at least one WIP for finished products.'
     }
-    if (type === 'OP' && formData.operational_flow_ids.length === 0) {
-      errors.operational_flows = 'Select at least one operational flow for operational products.'
-    }
-
     setFormErrors(errors)
     return Object.keys(errors).length === 0
   }
@@ -979,11 +853,6 @@ function Products() {
         productTypeVal === 'RAW' || productTypeVal === 'OP'
           ? []
           : formData.component_ids.filter((id) => allowedComponentIds.has(id))
-      const availableFlowIds = new Set(operationalFlows.map((flow) => flow.id))
-      const sanitizedOperationalFlowIds =
-        productTypeVal === 'OP'
-          ? formData.operational_flow_ids.filter((id) => availableFlowIds.has(id))
-          : []
       const internalSku = isEditing
         ? (editingProduct?.sku ?? generateSku(products))
         : generateSku(products)
@@ -1015,10 +884,6 @@ function Products() {
         }
 
         await saveProductComponents((data as Product).id, sanitizedComponentIds, productTypeVal)
-        await saveProductOperationalFlowMappings(
-          (data as Product).id,
-          sanitizedOperationalFlowIds
-        )
 
         toast.success('Product updated successfully.')
         await fetchProducts()
@@ -1037,10 +902,6 @@ function Products() {
 
         if (data) {
           await saveProductComponents((data as Product).id, sanitizedComponentIds, productTypeVal)
-          await saveProductOperationalFlowMappings(
-            (data as Product).id,
-            sanitizedOperationalFlowIds
-          )
         }
 
         toast.success('Product added successfully.')
@@ -1052,7 +913,6 @@ function Products() {
       setEditingProduct(null)
       setFormData(createEmptyProductForm())
       setFormErrors({})
-      setOperationalFlowSearch('')
       setComponentSearch('')
     } catch (submitError) {
       const errorMessage =
@@ -1672,9 +1532,6 @@ function Products() {
                         if (nextType === 'RAW' || nextType === 'OP') {
                           setFormData((prev) => ({ ...prev, component_ids: [] }))
                         }
-                        if (nextType !== 'OP') {
-                          setFormData((prev) => ({ ...prev, operational_flow_ids: [] }))
-                        }
                       }}
                       className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
                       disabled={isSubmitting}
@@ -1796,62 +1653,6 @@ function Products() {
                   </div>
                 )}
               </div>
-              ) : null}
-
-              {formData.product_type.toUpperCase() === 'OP' ? (
-                <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
-                  <div className="mb-4">
-                    <h3 className="text-sm font-semibold text-text-dark">Operational Flow Mapping</h3>
-                    <p className="text-xs text-text-dark/60">
-                      Map this operational product to one or more operational supply flows.
-                    </p>
-                  </div>
-                  <div className="space-y-3">
-                    <Input
-                      value={operationalFlowSearch}
-                      onChange={(event) => setOperationalFlowSearch(event.target.value)}
-                      placeholder="Search flows by supply name or code"
-                      disabled={isSubmitting || loadingOperationalFlows}
-                    />
-                    <div className="grid max-h-64 gap-2 overflow-y-auto rounded-md border border-olive-light/40 bg-white p-2">
-                      {loadingOperationalFlows ? (
-                        <div className="text-xs text-text-dark/60">Loading operational flows…</div>
-                      ) : filteredOperationalFlows.length === 0 ? (
-                        <div className="text-xs text-text-dark/60">No operational flows found.</div>
-                      ) : (
-                        filteredOperationalFlows.map((flow) => (
-                          <label
-                            key={flow.id}
-                            className="flex items-start gap-2 rounded-md border border-olive-light/30 bg-olive-light/5 px-2 py-2 text-sm"
-                          >
-                            <input
-                              type="checkbox"
-                              className="mt-0.5 h-4 w-4 rounded border-olive-light/60"
-                              checked={formData.operational_flow_ids.includes(flow.id)}
-                              onChange={(event) => {
-                                const checked = event.target.checked
-                                setFormData((previous) => {
-                                  const next = new Set(previous.operational_flow_ids)
-                                  if (checked) next.add(flow.id)
-                                  else next.delete(flow.id)
-                                  return { ...previous, operational_flow_ids: Array.from(next) }
-                                })
-                              }}
-                              disabled={isSubmitting}
-                            />
-                            <span className="flex-1">
-                              <span className="block font-medium text-text-dark">{flow.supply_name}</span>
-                              <span className="block text-xs text-text-dark/60">{flow.code}</span>
-                            </span>
-                          </label>
-                        ))
-                      )}
-                    </div>
-                    {formErrors.operational_flows ? (
-                      <p className="text-sm text-red-600">{formErrors.operational_flows}</p>
-                    ) : null}
-                  </div>
-                </div>
               ) : null}
 
               <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">

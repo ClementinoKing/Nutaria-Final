@@ -27,20 +27,11 @@ interface SupplyLineRow {
   accepted_qty: number
 }
 
-interface OperationalFlowRef {
-  id: number
-  code: string
-  supply_name: string
-  receiving_note: string | null
-}
-
 interface OperationalEntry {
   id: number
-  flow_id: number
   delivery_reference: string
   received_condition: 'PASS' | 'HOLD' | 'REJECT'
   remarks: string | null
-  flow: OperationalFlowRef | OperationalFlowRef[] | null
 }
 
 interface SupplyRecord {
@@ -137,9 +128,7 @@ function OperationalSupplyDetail() {
           .maybeSingle(),
         supabase
           .from('operational_supply_entries')
-          .select(
-            'id, flow_id, delivery_reference, received_condition, remarks, flow:operational_supply_flows(id, code, supply_name, receiving_note)'
-          )
+          .select('id, delivery_reference, received_condition, remarks')
           .eq('supply_id', supplyIdNumber)
           .maybeSingle(),
         supabase
@@ -217,11 +206,6 @@ function OperationalSupplyDetail() {
     }
   }, [location.state, supplyIdNumber])
 
-  const flow = useMemo(() => {
-    if (!operationalEntry?.flow) return null
-    return Array.isArray(operationalEntry.flow) ? operationalEntry.flow[0] ?? null : operationalEntry.flow
-  }, [operationalEntry])
-
   const rows = useMemo<SupplyLineRow[]>(
     () =>
       supplyLines.map((line) => {
@@ -269,7 +253,13 @@ function OperationalSupplyDetail() {
       title="Operational Supply Detail"
       activeItem="supplies"
       leadingActions={
-        <Button type="button" size="icon" variant="outline" onClick={() => navigate('/supplies')} aria-label="Back to Supplies">
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          onClick={() => navigate('/inventory/stock-levels/operational-supplies')}
+          aria-label="Back to Operational Supplies"
+        >
           <ArrowLeft className="h-4 w-4" />
         </Button>
       }
@@ -298,8 +288,8 @@ function OperationalSupplyDetail() {
         </Card>
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
-            <CardDescription>Flow</CardDescription>
-            <CardTitle className="text-xl text-text-dark">{flow?.supply_name ?? '—'}</CardTitle>
+            <CardDescription>Status</CardDescription>
+            <CardTitle className="text-xl text-text-dark">{supply.doc_status ?? '—'}</CardTitle>
           </CardHeader>
         </Card>
         <Card className="border-olive-light/30">
@@ -340,10 +330,6 @@ function OperationalSupplyDetail() {
           <div>
             <p className="text-xs uppercase tracking-wide text-text-dark/60">Delivery Reference</p>
             <p className="font-medium text-text-dark">{operationalEntry?.delivery_reference || '—'}</p>
-          </div>
-          <div className="sm:col-span-2">
-            <p className="text-xs uppercase tracking-wide text-text-dark/60">Receiving Note</p>
-            <p className="font-medium text-text-dark">{flow?.receiving_note || '—'}</p>
           </div>
           <div className="sm:col-span-2">
             <p className="text-xs uppercase tracking-wide text-text-dark/60">Remarks</p>

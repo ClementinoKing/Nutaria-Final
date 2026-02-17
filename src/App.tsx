@@ -19,6 +19,7 @@ const AllocationDetailsPage = lazy(() => import('./pages/inventory/AllocationDet
 const RemaindersPage = lazy(() => import('./pages/inventory/RemaindersPage'))
 const WastePage = lazy(() => import('./pages/inventory/WastePage'))
 const WasteDetailsPage = lazy(() => import('./pages/inventory/WasteDetailsPage'))
+const OperationalSuppliesStockPage = lazy(() => import('./pages/inventory/OperationalSuppliesStockPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
@@ -221,6 +222,14 @@ function App() {
           }
         />
         <Route
+          path="/inventory/stock-levels/operational-supplies"
+          element={
+            <ProtectedRoute>
+              <OperationalSuppliesStockPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/inventory/stock-movements"
           element={
             <ProtectedRoute>
@@ -233,6 +242,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Supplies />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/supplies/operational"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/inventory/stock-levels/operational-supplies" replace />
             </ProtectedRoute>
           }
         />

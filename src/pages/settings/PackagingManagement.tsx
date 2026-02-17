@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,6 +8,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
+import { supabase } from '@/lib/supabaseClient'
 import {
   usePackagingSettings,
   type BoxPackRule,
@@ -27,6 +28,7 @@ interface UnitFormData {
   length_mm: string
   width_mm: string
   height_mm: string
+  operational_product_id: string
 }
 
 interface RuleFormData {
@@ -40,6 +42,13 @@ interface UnitFormErrors {
   name?: string
   packaging_type?: string
   net_weight_kg?: string
+  operational_product_id?: string
+}
+
+interface OperationalProductOption {
+  id: number
+  name: string
+  sku: string | null
 }
 
 interface RuleFormErrors {
@@ -57,6 +66,7 @@ const defaultUnitForm: UnitFormData = {
   length_mm: '',
   width_mm: '',
   height_mm: '',
+  operational_product_id: '',
 }
 
 const defaultRuleForm: RuleFormData = {
@@ -104,6 +114,7 @@ function PackagingManagement() {
   const [isUnitModalOpen, setIsUnitModalOpen] = useState(false)
   const [isRuleModalOpen, setIsRuleModalOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [operationalProducts, setOperationalProducts] = useState<OperationalProductOption[]>([])
 
   const [unitForm, setUnitForm] = useState<UnitFormData>(defaultUnitForm)
   const [ruleForm, setRuleForm] = useState<RuleFormData>(defaultRuleForm)
@@ -160,6 +171,7 @@ function PackagingManagement() {
       length_mm: unit.length_mm === null ? '' : String(unit.length_mm),
       width_mm: unit.width_mm === null ? '' : String(unit.width_mm),
       height_mm: unit.height_mm === null ? '' : String(unit.height_mm),
+      operational_product_id: unit.operational_product_id === null ? '' : String(unit.operational_product_id),
     })
     setUnitFormErrors({})
     setIsUnitModalOpen(true)
@@ -193,6 +205,7 @@ function PackagingManagement() {
           unit_type: nextType,
           packaging_type: nextType === 'BOX' ? 'BOX' : previous.packaging_type === 'BOX' ? '' : previous.packaging_type,
           net_weight_kg: nextType === 'BOX' ? '' : previous.net_weight_kg,
+          operational_product_id: nextType === 'BOX' ? '' : previous.operational_product_id,
         }
       }
       return { ...previous, [name]: value }
@@ -216,6 +229,9 @@ function PackagingManagement() {
       const netWeight = parseNumericInput(unitForm.net_weight_kg)
       if (netWeight === null || netWeight <= 0) {
         nextErrors.net_weight_kg = 'Net weight must be greater than 0.'
+      }
+      if (!unitForm.operational_product_id) {
+        nextErrors.operational_product_id = 'Select an operational product for this packet unit.'
       }
     }
 
@@ -248,8 +264,26 @@ function PackagingManagement() {
       length_mm: parseNumericInput(unitForm.length_mm, true),
       width_mm: parseNumericInput(unitForm.width_mm, true),
       height_mm: parseNumericInput(unitForm.height_mm, true),
+      operational_product_id: isBox ? null : Number.parseInt(unitForm.operational_product_id, 10) || null,
     }
   }
+
+  useEffect(() => {
+    let mounted = true
+    const loadOperationalProducts = async () => {
+      const { data, error: productsError } = await supabase
+        .from('products')
+        .select('id, name, sku')
+        .eq('product_type', 'OP')
+        .order('name', { ascending: true })
+      if (productsError || !mounted) return
+      setOperationalProducts((data ?? []) as OperationalProductOption[])
+    }
+    loadOperationalProducts()
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   const mapRuleFormToPayload = (): BoxPackRuleInput => ({
     box_unit_id: Number.parseInt(ruleForm.box_unit_id, 10),
@@ -728,6 +762,29 @@ function PackagingManagement() {
                     <p className="mt-1 text-sm text-red-600">{unitFormErrors.net_weight_kg}</p>
                   ) : null}
                 </div>
+              </div>
+
+              <div>
+                <Label htmlFor="pu-operational-product">Operational Product {unitForm.unit_type === 'PACKET' ? '*' : ''}</Label>
+                <select
+                  id="pu-operational-product"
+                  name="operational_product_id"
+                  value={unitForm.operational_product_id}
+                  onChange={handleUnitFieldChange}
+                  className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive disabled:bg-gray-100"
+                  disabled={isSubmitting || unitForm.unit_type === 'BOX'}
+                >
+                  <option value="">{unitForm.unit_type === 'PACKET' ? 'Select operational product' : 'Not required for box units'}</option>
+                  {operationalProducts.map((product) => (
+                    <option key={product.id} value={product.id}>
+                      {product.name}
+                      {product.sku ? ` (${product.sku})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {unitFormErrors.operational_product_id ? (
+                  <p className="mt-1 text-sm text-red-600">{unitFormErrors.operational_product_id}</p>
+                ) : null}
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3">

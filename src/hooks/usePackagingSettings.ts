@@ -15,6 +15,7 @@ export interface PackagingUnit {
   length_mm: number | null
   width_mm: number | null
   height_mm: number | null
+  operational_product_id: number | null
   is_active: boolean
   created_at: string | null
 }
@@ -58,6 +59,7 @@ export interface PackagingUnitInput {
   length_mm: number | null
   width_mm: number | null
   height_mm: number | null
+  operational_product_id: number | null
 }
 
 export interface BoxPackRuleInput {
@@ -157,6 +159,7 @@ export function usePackagingSettings(): UsePackagingSettingsReturn {
         p_length_mm: payload.length_mm,
         p_width_mm: payload.width_mm,
         p_height_mm: payload.height_mm,
+        p_operational_product_id: payload.operational_product_id,
       })
       if (createError) return { error: createError }
       return fetchAll()
@@ -176,6 +179,7 @@ export function usePackagingSettings(): UsePackagingSettingsReturn {
         p_length_mm: payload.length_mm,
         p_width_mm: payload.width_mm,
         p_height_mm: payload.height_mm,
+        p_operational_product_id: payload.operational_product_id,
       })
       if (updateError) return { error: updateError }
       return fetchAll()
