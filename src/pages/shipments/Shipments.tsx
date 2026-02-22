@@ -6,6 +6,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Plus, Edit, Trash2, Package as PackageIcon, X, ChevronLeft, ChevronRight, FileText, Truck, Package, MessageSquare } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
@@ -386,6 +387,16 @@ function Shipments() {
   const packEntryMap = useMemo(() => {
     return new Map(packedEntries.map((entry) => [entry.id, entry]))
   }, [packedEntries])
+  const allocationSelectOptions = useMemo(
+    () =>
+      packedEntries.map((entry) => ({
+        value: String(entry.id),
+        label: `${entry.product_name}${entry.product_sku ? ` (${entry.product_sku})` : ''} · ${entry.storage_type} · ${entry.available_units} units${
+          entry.lot_no ? ` · Lot ${entry.lot_no}` : ''
+        }`,
+      })),
+    [packedEntries]
+  )
 
   const allocationTotals = useMemo(() => {
     const byEntry = new Map<number, number>()
@@ -975,6 +986,11 @@ function Shipments() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
+    if (formStep < TOTAL_STEPS) {
+      toast.error('Use Next to continue. Only Save Shipment can submit.')
+      return
+    }
+
     // Validate required fields
     if (!formData.customer_id || !formData.warehouse_id) {
       toast.error('Customer and Warehouse are required')
@@ -1299,6 +1315,7 @@ function Shipments() {
                 </p>
               </div>
               <Button
+                type="button"
                 variant="ghost"
                 size="icon"
                 onClick={() => {
@@ -1491,9 +1508,9 @@ function Shipments() {
 
                 {formStep === 3 && (
                   <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
-                    <h3 className="text-lg font-semibold text-text-dark">Stored Packed Products</h3>
+                    <h3 className="text-lg font-semibold text-text-dark">Dispatch From Storage Allocations</h3>
                     <p className="text-sm text-text-dark/70">
-                      Select finalized packaging storage allocations and ship whole units.
+                      Select packed storage allocations and dispatch whole units from available stock.
                     </p>
                     {loadingPackedEntries && (
                       <p className="mt-2 text-sm text-text-dark/60">Loading packed entries…</p>
@@ -1502,6 +1519,26 @@ function Shipments() {
                       <p className="mt-2 text-sm text-amber-700">
                         No storage allocations available. Add storage allocations in the packaging step first.
                       </p>
+                    )}
+                    {!loadingPackedEntries && packedEntries.length > 0 && (
+                      <div className="mt-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Dispatchable stock</p>
+                        <div className="mt-2 max-h-40 space-y-1 overflow-y-auto pr-1 text-xs text-text-dark/80">
+                          {packedEntries.map((entry) => (
+                            <div key={`dispatchable-${entry.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded border border-olive-light/30 bg-white px-2 py-1">
+                              <span>
+                                {entry.product_name}
+                                {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.storage_type}
+                                {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
+                              </span>
+                              <span className="font-medium text-olive">
+                                {entry.available_units} units
+                                {entry.unit_quantity_kg > 0 ? ` · ${entry.unit_quantity_kg.toFixed(2)} kg/unit` : ''}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
                     <div className="mt-4 space-y-4">
                       {formData.allocations.map((allocation) => {
@@ -1531,33 +1568,37 @@ function Shipments() {
                           >
                             <div className="space-y-2 sm:col-span-2">
                               <Label htmlFor={`allocation-entry-${allocation.id}`}>Storage allocation *</Label>
-                              <select
+                              <SearchableSelect
                                 id={`allocation-entry-${allocation.id}`}
+                                options={[{ value: '', label: 'Select allocation to dispatch' }, ...allocationSelectOptions]}
                                 value={allocation.pack_entry_id}
-                                onChange={(e) => handleAllocationChange(allocation.id, 'pack_entry_id', e.target.value)}
+                                onChange={(value) => handleAllocationChange(allocation.id, 'pack_entry_id', value)}
+                                placeholder="Select allocation to dispatch"
                                 required
-                                className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                <option value="">Select pack entry</option>
-                                {packedEntries.map((entry) => (
-                                  <option key={entry.id} value={entry.id}>
-                                    {entry.product_name}
-                                    {entry.product_sku ? ` (${entry.product_sku})` : ''} · {entry.storage_type}
-                                    {entry.pack_size_kg ? ` (${entry.pack_size_kg} kg/pack)` : ''} · {entry.available_units} units available
-                                    {entry.lot_no ? ` · Lot ${entry.lot_no}` : ''}
-                                  </option>
-                                ))}
-                              </select>
+                                disabled={loadingPackedEntries || packedEntries.length === 0}
+                                emptyMessage="No storage allocations available."
+                              />
                               {selectedEntry && (
                                 <p className="text-xs text-text-dark/60">
                                   Available: {availableUnits} units · {selectedEntry.packs_per_unit} packs/unit · Unit size:{' '}
                                   {selectedEntry.unit_quantity_kg > 0 ? `${selectedEntry.unit_quantity_kg.toFixed(2)} kg` : (packSize > 0 ? `${packSize} kg/pack` : selectedEntry.pack_identifier)}
                                 </p>
                               )}
+                              {selectedEntry && (
+                                <div className="flex flex-wrap gap-2 text-[11px]">
+                                  <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-700">Storage: {selectedEntry.storage_type}</span>
+                                  <span className="rounded-full bg-blue-100 px-2 py-1 text-blue-700">
+                                    Pack: {selectedEntry.pack_identifier || '—'}
+                                  </span>
+                                  <span className="rounded-full bg-emerald-100 px-2 py-1 text-emerald-700">
+                                    Available now: {availableUnits} units
+                                  </span>
+                                </div>
+                              )}
                             </div>
                             <div className="space-y-2">
                               <Label htmlFor={`allocation-count-${allocation.id}`}>
-                                Units to ship *
+                                Units to dispatch *
                                 {selectedEntry && (
                                   <span className="ml-1 text-xs font-normal text-text-dark/50">
                                     (max {availableUnits})
@@ -1603,7 +1644,7 @@ function Shipments() {
                         disabled={loadingPackedEntries || packedEntries.length === 0}
                       >
                         <PackageIcon className="mr-2 h-4 w-4" />
-                        Add Storage Allocation
+                        Add Dispatch Line
                       </Button>
                     </div>
                   </section>
@@ -1693,6 +1734,7 @@ function Shipments() {
               </div>
               <div className="flex gap-3">
                 <Button
+                  type="button"
                   variant="outline"
                   onClick={() => {
                     setIsModalOpen(false)
