@@ -18,7 +18,7 @@ interface SupplyRow {
   received_at: string | null
 }
 
-interface SupplyLineRow {
+interface SupplyBatchRow {
   supply_id: number
   product_id: number | null
   unit_id: number | null
@@ -161,13 +161,13 @@ function OperationalSuppliesStockPage() {
         }
 
         const supplyIds = supplies.map((supply) => supply.id)
-        const { data: lineData, error: lineError } = await supabase
-          .from('supply_lines')
+        const { data: batchData, error: batchError } = await supabase
+          .from('supply_batches')
           .select('supply_id, product_id, unit_id, accepted_qty, rejected_qty')
           .in('supply_id', supplyIds)
 
-        if (lineError) {
-          collectedErrors.push(`supply_lines: ${lineError.message}`)
+        if (batchError) {
+          collectedErrors.push(`supply_batches: ${batchError.message}`)
           if (isMounted) {
             setRows([])
             setProductOptions([])
@@ -175,8 +175,8 @@ function OperationalSuppliesStockPage() {
           return
         }
 
-        const lines = (Array.isArray(lineData) ? lineData : []) as SupplyLineRow[]
-        if (lines.length === 0) {
+        const batches = (Array.isArray(batchData) ? batchData : []) as SupplyBatchRow[]
+        if (batches.length === 0) {
           if (isMounted) {
             setRows([])
             setProductOptions([])
@@ -186,7 +186,7 @@ function OperationalSuppliesStockPage() {
 
         const lineProductIds = Array.from(
           new Set(
-            lines
+            batches
               .map((line) => line.product_id)
               .filter((productId): productId is number => productId !== null && productId !== undefined)
           )
@@ -223,7 +223,7 @@ function OperationalSuppliesStockPage() {
 
         const unitIds = Array.from(
           new Set(
-            lines
+            batches
               .map((line) => line.unit_id)
               .filter((unitId): unitId is number => unitId !== null && unitId !== undefined)
           )
@@ -252,7 +252,7 @@ function OperationalSuppliesStockPage() {
         const supplyMap = new Map<number, SupplyRow>(supplies.map((supply) => [supply.id, supply]))
 
         const aggregated = new Map<string, AggregateRecord>()
-        lines.forEach((line) => {
+        batches.forEach((line) => {
           if (!line.product_id || !productMap.has(line.product_id)) {
             return
           }

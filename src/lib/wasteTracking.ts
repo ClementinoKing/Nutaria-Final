@@ -178,6 +178,7 @@ export async function loadWasteTrackingData(options: LoadWasteTrackingOptions = 
     washingWasteRes,
     dryingWasteRes,
     sortingWasteRes,
+    gradingWasteRes,
     packagingWasteRes,
     metalWasteRes,
     metalFoRes,
@@ -192,6 +193,7 @@ export async function loadWasteTrackingData(options: LoadWasteTrackingOptions = 
     sortingOutputIds.length
       ? supabase.from('process_sorting_waste').select('id, sorting_run_id, waste_type, quantity_kg, created_at').in('sorting_run_id', sortingOutputIds)
       : Promise.resolve({ data: [], error: null } as const),
+    supabase.from('process_grading_waste').select('id, process_step_run_id, waste_type, quantity_kg, created_at').in('process_step_run_id', stepRunIds),
     packagingRunIds.length
       ? supabase.from('process_packaging_waste').select('id, packaging_run_id, waste_type, quantity_kg, created_at').in('packaging_run_id', packagingRunIds)
       : Promise.resolve({ data: [], error: null } as const),
@@ -207,6 +209,7 @@ export async function loadWasteTrackingData(options: LoadWasteTrackingOptions = 
   if (washingWasteRes.error) throw washingWasteRes.error
   if (dryingWasteRes.error) throw dryingWasteRes.error
   if (sortingWasteRes.error) throw sortingWasteRes.error
+  if (gradingWasteRes.error) throw gradingWasteRes.error
   if (packagingWasteRes.error) throw packagingWasteRes.error
   if (metalWasteRes.error) throw metalWasteRes.error
   if (metalFoRes.error) throw metalFoRes.error
@@ -264,6 +267,22 @@ export async function loadWasteTrackingData(options: LoadWasteTrackingOptions = 
     if (!resolvedLotRunId) return
     records.push({
       id: `sorting-waste-${row.id}`,
+      lot_run_id: resolvedLotRunId,
+      source: 'SORTING_WASTE',
+      waste_type_or_object: row.waste_type ?? 'Unknown',
+      quantity_kg: toNum(row.quantity_kg),
+      recorded_at: row.created_at ?? null,
+      remarks: null,
+      step_run_id: stepRunId,
+    })
+  })
+
+  ;((gradingWasteRes.data ?? []) as any[]).forEach((row) => {
+    const stepRunId = row.process_step_run_id ?? null
+    const resolvedLotRunId = findLotRunId('process_grading_waste', row.id, stepRunId, stepRunToLotRun)
+    if (!resolvedLotRunId) return
+    records.push({
+      id: `grading-waste-${row.id}`,
       lot_run_id: resolvedLotRunId,
       source: 'SORTING_WASTE',
       waste_type_or_object: row.waste_type ?? 'Unknown',

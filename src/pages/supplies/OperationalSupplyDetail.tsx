@@ -18,11 +18,10 @@ interface UnitLookup {
   symbol: string
 }
 
-interface SupplyLineRow {
+interface SupplyBatchRow {
   id: number
   product: string
   unit: string
-  ordered_qty: number
   received_qty: number
   accepted_qty: number
 }
@@ -72,7 +71,7 @@ function OperationalSupplyDetail() {
   const [error, setError] = useState<string | null>(null)
   const [supply, setSupply] = useState<SupplyRecord | null>(null)
   const [operationalEntry, setOperationalEntry] = useState<OperationalEntry | null>(null)
-  const [supplyLines, setSupplyLines] = useState<Record<string, unknown>[]>([])
+  const [supplyBatches, setSupplyBatches] = useState<Record<string, unknown>[]>([])
   const [supplierLookup, setSupplierLookup] = useState<Record<string, string>>({})
   const [warehouseLookup, setWarehouseLookup] = useState<Record<string, string>>({})
   const [productLookup, setProductLookup] = useState<Record<string, ProductLookup>>({})
@@ -92,7 +91,7 @@ function OperationalSupplyDetail() {
 
     const state = (location.state ?? {}) as Record<string, unknown>
     const stateSupply = state.supply as SupplyRecord | undefined
-    const stateSupplyLines = state.supplyLines as Record<string, unknown>[] | undefined
+    const stateSupplyBatches = state.supplyBatches as Record<string, unknown>[] | undefined
     const stateSupplierLookup = state.supplierLookup as Record<string, string> | undefined
     const stateWarehouseLookup = state.warehouseLookup as Record<string, string> | undefined
     const stateProductLookup = state.productLookup as Record<string, ProductLookup> | undefined
@@ -100,7 +99,7 @@ function OperationalSupplyDetail() {
 
     if (stateSupply?.id === supplyIdNumber) {
       setSupply(stateSupply)
-      setSupplyLines(Array.isArray(stateSupplyLines) ? stateSupplyLines : [])
+      setSupplyBatches(Array.isArray(stateSupplyBatches) ? stateSupplyBatches : [])
       setSupplierLookup(stateSupplierLookup ?? {})
       setWarehouseLookup(stateWarehouseLookup ?? {})
       setProductLookup(stateProductLookup ?? {})
@@ -115,7 +114,7 @@ function OperationalSupplyDetail() {
       const [
         supplyResponse,
         entryResponse,
-        linesResponse,
+        batchesResponse,
         suppliersResponse,
         warehousesResponse,
         productsResponse,
@@ -132,8 +131,8 @@ function OperationalSupplyDetail() {
           .eq('supply_id', supplyIdNumber)
           .maybeSingle(),
         supabase
-          .from('supply_lines')
-          .select('id, product_id, unit_id, ordered_qty, received_qty, accepted_qty')
+          .from('supply_batches')
+          .select('id, product_id, unit_id, received_qty, accepted_qty')
           .eq('supply_id', supplyIdNumber),
         supabase.from('suppliers').select('id, name'),
         supabase.from('warehouses').select('id, name'),
@@ -155,15 +154,15 @@ function OperationalSupplyDetail() {
         return
       }
 
-      if (linesResponse.error) {
-        setError(linesResponse.error.message || 'Failed to load supply lines.')
+      if (batchesResponse.error) {
+        setError(batchesResponse.error.message || 'Failed to load supply batches.')
         setLoading(false)
         return
       }
 
       setSupply(supplyResponse.data as SupplyRecord)
       setOperationalEntry((entryResponse.data as OperationalEntry | null) ?? null)
-      setSupplyLines((linesResponse.data as Record<string, unknown>[]) ?? [])
+      setSupplyBatches((batchesResponse.data as Record<string, unknown>[]) ?? [])
 
       const supplierMap: Record<string, string> = {}
       ;(suppliersResponse.data ?? []).forEach((row) => {
@@ -206,9 +205,9 @@ function OperationalSupplyDetail() {
     }
   }, [location.state, supplyIdNumber])
 
-  const rows = useMemo<SupplyLineRow[]>(
+  const rows = useMemo<SupplyBatchRow[]>(
     () =>
-      supplyLines.map((line) => {
+      supplyBatches.map((line) => {
         const productId = String((line.product_id as number | null) ?? '')
         const unitId = String((line.unit_id as number | null) ?? '')
         const product = productLookup[productId]
@@ -217,12 +216,11 @@ function OperationalSupplyDetail() {
           id: Number(line.id ?? 0),
           product: product ? `${product.name}${product.sku ? ` (${product.sku})` : ''}` : '—',
           unit: unit ? `${unit.name}${unit.symbol ? ` (${unit.symbol})` : ''}` : '—',
-          ordered_qty: Number(line.ordered_qty ?? 0),
           received_qty: Number(line.received_qty ?? 0),
           accepted_qty: Number(line.accepted_qty ?? 0),
         }
       }),
-    [productLookup, supplyLines, unitLookup]
+    [productLookup, supplyBatches, unitLookup]
   )
 
   const totalReceived = useMemo(
@@ -340,7 +338,7 @@ function OperationalSupplyDetail() {
 
       <Card className="mt-6 border-olive-light/30">
         <CardHeader>
-          <CardTitle className="text-text-dark">Supply Lines</CardTitle>
+          <CardTitle className="text-text-dark">Supply Batches</CardTitle>
           <CardDescription>Operational products captured for this delivery.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -349,17 +347,9 @@ function OperationalSupplyDetail() {
               { key: 'product', header: 'Product', accessor: 'product' },
               { key: 'unit', header: 'Unit', accessor: 'unit' },
               {
-                key: 'ordered_qty',
-                header: 'Ordered',
-                render: (row: SupplyLineRow) => formatNumber(row.ordered_qty),
-                cellClassName: 'text-right',
-                mobileValueClassName: 'text-right',
-                headerClassName: 'text-right',
-              },
-              {
                 key: 'received_qty',
                 header: 'Received',
-                render: (row: SupplyLineRow) => formatNumber(row.received_qty),
+                render: (row: SupplyBatchRow) => formatNumber(row.received_qty),
                 cellClassName: 'text-right',
                 mobileValueClassName: 'text-right',
                 headerClassName: 'text-right',
@@ -367,7 +357,7 @@ function OperationalSupplyDetail() {
               {
                 key: 'accepted_qty',
                 header: 'Accepted',
-                render: (row: SupplyLineRow) => formatNumber(row.accepted_qty),
+                render: (row: SupplyBatchRow) => formatNumber(row.accepted_qty),
                 cellClassName: 'text-right',
                 mobileValueClassName: 'text-right',
                 headerClassName: 'text-right',
@@ -375,7 +365,7 @@ function OperationalSupplyDetail() {
             ]}
             data={rows}
             rowKey="id"
-            emptyMessage="No operational lines captured."
+            emptyMessage="No operational batches captured."
           />
         </CardContent>
       </Card>

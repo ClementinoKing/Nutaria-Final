@@ -35,11 +35,18 @@ import {
   Tag,
   Banknote,
   BarChart3,
+  Scale,
+  ClipboardCheck,
 } from 'lucide-react'
 import { useDailyChecks } from '@/context/DailyChecksContext'
 import { useTheme } from '@/context/ThemeContext'
 import { User } from '@supabase/supabase-js'
 import { LucideIcon } from 'lucide-react'
+import {
+  FEATURE_CARRIERS,
+  FEATURE_CYCLE_COUNTS,
+  FEATURE_INVENTORY_ADJUSTMENTS,
+} from '@/lib/features'
 
 interface NavigationSubItem {
   name: string
@@ -91,6 +98,12 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       submenu: [
         { name: 'Stock Levels', icon: TrendingUp, key: 'stock-levels', path: '/inventory/stock-levels' },
         { name: 'Stock Movements', icon: ArrowRight, key: 'stock-movements', path: '/inventory/stock-movements' },
+        ...(FEATURE_INVENTORY_ADJUSTMENTS
+          ? [{ name: 'Adjustments', icon: Scale, key: 'inventory-adjustments', path: '/inventory/adjustments' }]
+          : []),
+        ...(FEATURE_CYCLE_COUNTS
+          ? [{ name: 'Cycle Counts', icon: ClipboardCheck, key: 'cycle-counts', path: '/inventory/cycle-counts' }]
+          : []),
       ]
     },
     { name: 'Supplies', icon: ArrowDownCircle, key: 'supplies', path: '/supplies' },
@@ -149,6 +162,9 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         { name: 'Quality Parameters', icon: BadgeCheck, key: 'quality-parameters', path: '/settings/quality-parameters' },
         { name: 'Process Step Names', icon: Layers, key: 'process-step-names', path: '/settings/process-step-names' },
         { name: 'Packaging', icon: Package, key: 'packaging', path: '/settings/packaging' },
+        ...(FEATURE_CARRIERS
+          ? [{ name: 'Carriers', icon: Truck, key: 'carriers', path: '/settings/carriers' }]
+          : []),
       ],
     },
     { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
@@ -168,7 +184,12 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     }
   }
 
-  const inventoryPaths = ['/inventory/stock-levels', '/inventory/stock-movements']
+  const inventoryPaths = [
+    '/inventory/stock-levels',
+    '/inventory/stock-movements',
+    ...(FEATURE_INVENTORY_ADJUSTMENTS ? ['/inventory/adjustments'] : []),
+    ...(FEATURE_CYCLE_COUNTS ? ['/inventory/cycle-counts'] : []),
+  ]
   const settingsPaths = [
     '/inventory/units',
     '/inventory/warehouses',
@@ -179,6 +200,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     '/settings/quality-parameters',
     '/settings/process-step-names',
     '/settings/packaging',
+    ...(FEATURE_CARRIERS ? ['/settings/carriers'] : []),
   ]
   const processPaths = ['/process/view', '/process/process-steps']
   const checksPaths = ['/checks/metal-detector', '/checks/daily', '/daily-checks']

@@ -145,6 +145,23 @@ interface Lot {
   } | null
 }
 
+interface GradedWipOutput {
+  id: number
+  process_step_run_id: number
+  product_id: number
+  quantity_kg: number
+  moisture_percent?: number | null
+  washing_moisture_percent?: number | null
+  remarks?: string | null
+  created_at: string
+  product?: {
+    name?: string | null
+    sku?: string | null
+  } | null
+  washing_run_id?: number | null
+  washing_state?: 'PENDING' | 'WASHED' | null
+}
+
 function getLotStatusStyles(status: string | null | undefined): string {
   switch ((status ?? '').toUpperCase()) {
     case 'PROCESSING':
@@ -390,6 +407,20 @@ function ProcessStepsProgress() {
     initialQty: number
     totalWaste: number
   } | null>(null)
+  const [gradedWipOutputs, setGradedWipOutputs] = useState<GradedWipOutput[]>([])
+  const [washingModalOpen, setWashingModalOpen] = useState(false)
+  const [selectedWashingOutput, setSelectedWashingOutput] = useState<GradedWipOutput | null>(null)
+  const [washingCardsVersion, setWashingCardsVersion] = useState(0)
+
+  const openWashingModal = (output: GradedWipOutput) => {
+    setSelectedWashingOutput(output)
+    setWashingModalOpen(true)
+  }
+
+  const closeWashingModal = () => {
+    setWashingModalOpen(false)
+    setSelectedWashingOutput(null)
+  }
 
   // Fetch quality parameters for the active step
   useEffect(() => {
@@ -432,7 +463,8 @@ function ProcessStepsProgress() {
 
   // Fetch available quantity for sorting step so outputs + waste cannot exceed it
   useEffect(() => {
-    const isSortStep = activeStep?.step_code?.toUpperCase() === 'SORT'
+    const stepCode = activeStep?.step_code?.toUpperCase() || ''
+    const isSortStep = stepCode === 'SORT' || stepCode === 'GRAD'
     if (!isSortStep || !lotRunId || !activeStepRun?.id) {
       setSortingAvailableQty(null)
       return
@@ -455,6 +487,88 @@ function ProcessStepsProgress() {
       cancelled = true
     }
   }, [lotRunId, activeStepRun?.id, activeStep?.step_code])
+
+  const refreshWashingCards = useCallback(() => {
+    setWashingCardsVersion((prev) => prev + 1)
+  }, [])
+
+  useEffect(() => {
+    const stepCode = activeStep?.step_code?.toUpperCase() || ''
+    if (stepCode !== 'WASH' || !lotRunId || !activeStepRun || stepRuns.length === 0) {
+      setGradedWipOutputs([])
+      return
+    }
+
+    const gradingStepRunIds = stepRuns
+      .filter((stepRun) => (stepRun.process_step?.step_code ?? '').toUpperCase() === 'GRAD')
+      .map((stepRun) => stepRun.id)
+
+    if (gradingStepRunIds.length === 0) {
+      setGradedWipOutputs([])
+      return
+    }
+
+    let cancelled = false
+    Promise.all([
+      supabase
+        .from('process_grading_outputs')
+        .select('id, process_step_run_id, product_id, quantity_kg, moisture_percent, remarks, created_at, product:products(name, sku)')
+        .in('process_step_run_id', gradingStepRunIds)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('process_washing_runs')
+        .select('id, grading_output_id, washing_state, moisture_percent')
+        .eq('process_step_run_id', activeStepRun.id),
+    ]).then(([gradingOutputsResult, washingRunsResult]) => {
+        if (cancelled) return
+        if (gradingOutputsResult.error || washingRunsResult.error) {
+          console.error('Failed to load graded WIP outputs for washing:', gradingOutputsResult.error ?? washingRunsResult.error)
+          setGradedWipOutputs([])
+          return
+        }
+        const washingRuns = (washingRunsResult.data ?? []) as Array<{
+          id: number
+          grading_output_id: number | null
+          washing_state: 'PENDING' | 'WASHED' | null
+          moisture_percent: number | null
+        }>
+        const washingByOutputId = new Map<number, {
+          id: number
+          washing_state: 'PENDING' | 'WASHED' | null
+          moisture_percent: number | null
+        }>()
+        washingRuns.forEach((row) => {
+          const outputId = Number(row.grading_output_id)
+          if (Number.isFinite(outputId) && outputId > 0) {
+            washingByOutputId.set(outputId, {
+              id: row.id,
+              washing_state: row.washing_state ?? null,
+              moisture_percent: row.moisture_percent ?? null,
+            })
+          }
+        })
+        const outputs = ((gradingOutputsResult.data ?? []) as GradedWipOutput[]).map((output) => {
+          const wash = washingByOutputId.get(output.id)
+          return {
+            ...output,
+            washing_run_id: wash?.id ?? null,
+            washing_state: wash?.washing_state ?? null,
+            washing_moisture_percent: wash?.moisture_percent ?? null,
+          }
+        })
+        setGradedWipOutputs(outputs)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to load graded WIP outputs for washing:', error)
+          setGradedWipOutputs([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeStep?.step_code, activeStepRun?.id, lotRunId, stepRuns, washingCardsVersion])
 
   const allStepsCompleted = stepRuns.length > 0 && stepRuns.every((step) => step.status === 'COMPLETED' || step.status === 'SKIPPED')
   const isLastCompletableStep = useMemo(() => {
@@ -486,7 +600,8 @@ function ProcessStepsProgress() {
     if (symbols.length === 1) return symbols[0] as string
     return symbols[0] ?? 'kg'
   }, [selectedLots])
-  const isSortingStep = (activeStep?.step_code ?? '').toUpperCase() === 'SORT'
+  const activeStepCode = (activeStep?.step_code ?? '').toUpperCase()
+  const isSortingStep = activeStepCode === 'SORT' || activeStepCode === 'GRAD'
 
   const handleBack = () => {
     navigate('/process/process-steps')
@@ -590,9 +705,10 @@ function ProcessStepsProgress() {
   const handleStepStatusChange = async (status: ProcessStepRun['status']) => {
     if (!activeStepRun || !lotRunId || !user?.id) return
 
-    if (status === 'COMPLETED' && activeStep?.step_code?.toUpperCase() === 'SORT') {
+    const stepCode = activeStep?.step_code?.toUpperCase() || ''
+    if (status === 'COMPLETED' && (stepCode === 'SORT' || stepCode === 'GRAD')) {
       if (!selectedLot?.id) {
-        toast.error('Unable to validate sorting quantity. Please refresh and try again.')
+        toast.error(`Unable to validate ${stepCode === 'GRAD' ? 'grading' : 'sorting'} quantity. Please refresh and try again.`)
         return
       }
 
@@ -603,37 +719,61 @@ function ProcessStepsProgress() {
           baseAvailable = recalculated.availableQty
         }
 
-        const [{ data: outputsData, error: outputsError }, { data: reworksData, error: reworksError }] =
-          await Promise.all([
-            supabase
-              .from('process_sorting_outputs')
-              .select('id, quantity_kg')
-              .eq('process_step_run_id', activeStepRun.id),
-            supabase
-              .from('reworked_lots')
-              .select('quantity_kg')
-              .eq('original_supply_batch_id', selectedLot.id),
-          ])
+        const isGradingStep = stepCode === 'GRAD'
+        const outputsTable = isGradingStep ? 'process_grading_outputs' : 'process_sorting_outputs'
+        const wasteTable = isGradingStep ? 'process_grading_waste' : 'process_sorting_waste'
 
-        if (outputsError || reworksError) {
-          toast.error('Failed to validate sorting quantities before completion')
+        const [{ data: outputsData, error: outputsError }, reworksResult] = await Promise.all([
+          supabase
+            .from(outputsTable)
+            .select('id, quantity_kg')
+            .eq('process_step_run_id', activeStepRun.id),
+          isGradingStep
+            ? Promise.resolve({ data: [], error: null })
+            : supabase
+                .from('reworked_lots')
+                .select('quantity_kg')
+                .eq('original_supply_batch_id', selectedLot.id),
+        ])
+
+        if (outputsError || reworksResult.error) {
+          toast.error(`Failed to validate ${isGradingStep ? 'grading' : 'sorting'} quantities before completion`)
           return
         }
 
         const outputRows = outputsData || []
         const outputIds = outputRows.map((row) => row.id)
         const outputTotal = outputRows.reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
-        const reworkTotal = (reworksData || []).reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
+        const reworkTotal = (reworksResult.data || []).reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
 
         let wasteTotal = 0
-        if (outputIds.length > 0) {
+        if (isGradingStep) {
+          const [{ data: wasteByStepRun, error: stepRunWasteError }, wasteByOutputResult] = await Promise.all([
+            supabase
+              .from(wasteTable)
+              .select('id, quantity_kg')
+              .eq('process_step_run_id', activeStepRun.id),
+            outputIds.length > 0
+              ? supabase.from(wasteTable).select('id, quantity_kg').in('sorting_run_id', outputIds)
+              : Promise.resolve({ data: [], error: null }),
+          ])
+
+          if (stepRunWasteError || wasteByOutputResult.error) {
+            toast.error('Failed to validate grading waste before completion')
+            return
+          }
+
+          const mergedWaste = [...(wasteByStepRun || []), ...(wasteByOutputResult.data || [])]
+          const uniqueWasteRows = Array.from(new Map(mergedWaste.map((row) => [row.id, row])).values())
+          wasteTotal = uniqueWasteRows.reduce((sum, row) => sum + (Number(row.quantity_kg) || 0), 0)
+        } else if (outputIds.length > 0) {
           const { data: wasteData, error: wasteError } = await supabase
-            .from('process_sorting_waste')
+            .from(wasteTable)
             .select('quantity_kg')
             .in('sorting_run_id', outputIds)
 
           if (wasteError) {
-            toast.error('Failed to validate sorting waste before completion')
+            toast.error(`Failed to validate ${isGradingStep ? 'grading' : 'sorting'} waste before completion`)
             return
           }
 
@@ -643,7 +783,15 @@ function ProcessStepsProgress() {
         const remaining = Number(baseAvailable) - outputTotal - reworkTotal - wasteTotal
         if (remaining > 0.0001) {
           toast.error(
-            `Sorting is incomplete. Remaining quantity is ${remaining.toFixed(2)} kg. Allocate all kgs to outputs, reworks, or waste before completing this step.`
+            isGradingStep
+              ? `Grading is incomplete. Remaining quantity is ${remaining.toFixed(2)} kg. Allocate all kgs to outputs or waste before completing this step.`
+              : `Sorting is incomplete. Remaining quantity is ${remaining.toFixed(2)} kg. Allocate all kgs to outputs, reworks, or waste before completing this step.`
+          )
+          return
+        }
+        if (remaining < -0.0001) {
+          toast.error(
+            `${isGradingStep ? 'Grading' : 'Sorting'} usage exceeds available quantity by ${Math.abs(remaining).toFixed(2)} kg.`
           )
           return
         }
@@ -1454,15 +1602,64 @@ function ProcessStepsProgress() {
                         {(() => {
                           const stepCode = activeStep.step_code?.toUpperCase() || ''
                           if (stepCode === 'WASH') {
-                            return <WashingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                            if (gradedWipOutputs.length === 0) {
+                              return <WashingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                            }
+
+                            return (
+                              <div className="space-y-4">
+                                <p className="text-sm text-text-dark/70">
+                                  Select a graded WIP output to capture washing data.
+                                </p>
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                  {gradedWipOutputs.map((output) => (
+                                    <div key={output.id} className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+                                      <div className="flex items-start justify-between gap-3">
+                                        <p className="text-sm font-semibold text-text-dark">
+                                          {output.product?.name ?? `WIP Product #${output.product_id}`}
+                                          {output.product?.sku ? ` (${output.product.sku})` : ''}
+                                        </p>
+                                        {output.washing_state === 'WASHED' && (
+                                          <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-800">
+                                            Washed
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="mt-1 text-xs text-text-dark/60">
+                                        Qty: {(Number(output.quantity_kg) || 0).toFixed(2)} {runUnitSymbol}
+                                      </p>
+                                      {(() => {
+                                        const moistureToShow =
+                                          output.washing_moisture_percent != null
+                                            ? output.washing_moisture_percent
+                                            : output.moisture_percent
+                                        if (moistureToShow == null) return null
+                                        return <p className="text-xs text-text-dark/60">Moisture: {Number(moistureToShow).toFixed(2)}%</p>
+                                      })()}
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        className="mt-3 bg-olive hover:bg-olive-dark"
+                                        onClick={() => openWashingModal(output)}
+                                      >
+                                        {output.washing_state === 'WASHED' ? 'Edit' : 'Wash'}
+                                      </Button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )
                           }
                           if (stepCode === 'DRY' || stepCode === 'DRYI') {
                             return <DryingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
-                          if (stepCode === 'SORT') {
+                          if (stepCode === 'SORT' || stepCode === 'GRAD') {
                             return (
                               <SortingStep
                                 stepRun={activeStepRun}
+                                mode={stepCode === 'GRAD' ? 'grading' : 'sorting'}
+                                allowOutputs
+                                allowReworks={stepCode !== 'GRAD'}
                                 loading={saving || loadingStepRuns}
                                 originalSupplyBatchId={selectedLot?.id ?? null}
                                 lotProductName={selectedLot?.products?.name ?? null}
@@ -1505,7 +1702,7 @@ function ProcessStepsProgress() {
                                   <p>step_code: {JSON.stringify(activeStep.step_code)}</p>
                                   <p>step_name: {JSON.stringify(activeStep.step_name)}</p>
                                   <p>step_name_id: {JSON.stringify(activeStep.step_name_id)}</p>
-                                  <p>Available codes: WASH, DRY/DRYI, SORT, METAL/META, PACK</p>
+                                  <p>Available codes: GRAD, WASH, DRY/DRYI, SORT, METAL/META, PACK</p>
                                 </div>
                               )}
                             </div>
@@ -1693,6 +1890,36 @@ function ProcessStepsProgress() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {washingModalOpen && selectedWashingOutput && activeStepRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-olive-light/40 bg-white p-5 shadow-xl">
+            <div className="mb-4 flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-text-dark">WASHING - Step Data Entry</h3>
+                <p className="text-sm text-text-dark/70">
+                  {selectedWashingOutput.product?.name ?? `WIP Product #${selectedWashingOutput.product_id}`}
+                  {selectedWashingOutput.product?.sku ? ` (${selectedWashingOutput.product.sku})` : ''} ·{' '}
+                  {(Number(selectedWashingOutput.quantity_kg) || 0).toFixed(2)} {runUnitSymbol}
+                </p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={closeWashingModal}>
+                Close
+              </Button>
+            </div>
+            <WashingStep
+              stepRun={activeStepRun}
+              gradingOutputId={selectedWashingOutput.id}
+              saveMode="manual"
+              onSaved={() => {
+                refreshWashingCards()
+                closeWashingModal()
+              }}
+              loading={saving || loadingStepRuns}
+            />
+          </div>
+        </div>
+      )}
 
       <AlertDialog open={finishWithNCAlertOpen} onOpenChange={setFinishWithNCAlertOpen}>
         <AlertDialogContent>

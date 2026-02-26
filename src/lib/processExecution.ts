@@ -604,10 +604,77 @@ export async function createProductionBatch(lotRunId: number, supplyBatchId?: nu
     throw new Error(`Supply batch ${resolvedSupplyBatchId} not found`)
   }
 
-  // Get the last completed step to get final quantity
-  // For now, use supply batch current_qty as quantity
-  // TODO: Could calculate from step measurements if available
-  const quantity = supplyBatch.current_qty || 0
+  const deriveFromCompletedSteps = async (): Promise<number | null> => {
+    const { data: stepRuns, error: stepRunsError } = await supabase
+      .from('process_step_runs')
+      .select(`
+        id,
+        completed_at,
+        status,
+        process_step:process_steps(
+          step_name:process_step_names(code)
+        )
+      `)
+      .eq('process_lot_run_id', lotRunId)
+      .eq('status', 'COMPLETED')
+      .order('completed_at', { ascending: false })
+
+    if (stepRunsError || !stepRuns?.length) {
+      return null
+    }
+
+    for (const stepRun of stepRuns as Array<{
+      id: number
+      process_step?: { step_name?: { code?: string | null } | null } | null
+    }>) {
+      const stepCode = String(stepRun.process_step?.step_name?.code ?? '').toUpperCase()
+
+      if (stepCode === 'PACK') {
+        const { data: packagingRun } = await supabase
+          .from('process_packaging_runs')
+          .select('id')
+          .eq('process_step_run_id', stepRun.id)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (packagingRun?.id) {
+          const { data: entries } = await supabase
+            .from('process_packaging_pack_entries')
+            .select('quantity_kg')
+            .eq('packaging_run_id', packagingRun.id)
+
+          const total = (entries ?? []).reduce((sum, entry: { quantity_kg?: number | null }) => sum + (Number(entry.quantity_kg) || 0), 0)
+          if (total > 0) {
+            return total
+          }
+        }
+      }
+
+      if (stepCode === 'SORT' || stepCode === 'GRAD') {
+        const outputsTable = stepCode === 'GRAD' ? 'process_grading_outputs' : 'process_sorting_outputs'
+        const { data: outputs } = await supabase
+          .from(outputsTable)
+          .select('quantity_kg')
+          .eq('process_step_run_id', stepRun.id)
+
+        const total = (outputs ?? []).reduce((sum, output: { quantity_kg?: number | null }) => sum + (Number(output.quantity_kg) || 0), 0)
+        if (total > 0) {
+          return total
+        }
+      }
+    }
+
+    return null
+  }
+
+  const derivedQuantity = await deriveFromCompletedSteps()
+  const quantity = derivedQuantity ?? (supplyBatch.current_qty || 0)
+  if (derivedQuantity == null) {
+    console.warn(
+      `[createProductionBatch] Falling back to supply batch quantity for run ${lotRunId}, lot ${resolvedSupplyBatchId}: ${quantity}`
+    )
+  }
   const unit = (supplyBatch.units as any)?.symbol || ''
 
   const batchCode = await generateProductionBatchCode()
@@ -1020,6 +1087,11 @@ export async function createReworkedLot(
     .select(`
       id,
       process_lot_run_id,
+      process_step:process_step_id (
+        step_name:step_name_id (
+          code
+        )
+      ),
       process_lot_runs:process_lot_run_id (
         id,
         supply_batch_id,
@@ -1040,6 +1112,11 @@ export async function createReworkedLot(
 
   if (stepRunError || !stepRun) {
     throw new Error(`Process step run ${processStepRunId} not found`)
+  }
+
+  const stepCode = String((stepRun as any).process_step?.step_name?.code ?? '').toUpperCase()
+  if (stepCode !== 'SORT') {
+    throw new Error('Reworks are only allowed from sorting steps')
   }
 
   const lotRun = (stepRun as any).process_lot_runs
@@ -1113,16 +1190,16 @@ export async function createReworkedLot(
       if (stepSeq < sortStepSeq) {
         // Calculate waste from this step
         if (stepCode === 'WASH') {
-          const { data: washRun } = await supabase
+          const { data: washRuns } = await supabase
             .from('process_washing_runs')
             .select('id')
             .eq('process_step_run_id', prevStepRun.id)
-            .maybeSingle()
-          if (washRun) {
+          const washRunIds = (washRuns ?? []).map((row: any) => Number(row.id)).filter((id: number) => Number.isFinite(id))
+          if (washRunIds.length > 0) {
             const { data: washWaste } = await supabase
               .from('process_washing_waste')
               .select('quantity_kg')
-              .eq('washing_run_id', washRun.id)
+              .in('washing_run_id', washRunIds)
             if (washWaste) {
               previousWaste += washWaste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
             }

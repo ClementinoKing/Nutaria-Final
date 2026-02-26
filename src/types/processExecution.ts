@@ -191,6 +191,8 @@ export interface StepExecutionFormData {
 export interface ProcessWashingRun {
   id: number
   process_step_run_id: number
+  grading_output_id?: number | null
+  washing_state?: 'PENDING' | 'WASHED' | null
   washing_water_litres: number | null
   oxy_acid_ml: number | null
   moisture_percent: number | null

@@ -101,11 +101,11 @@ function formatDate(value: string | Date | number | null | undefined): string {
 
 interface FetchedDetailData {
   supply: Record<string, unknown>
-  supplyLines: Record<string, unknown>[]
   supplyBatches: Record<string, unknown>[]
   supplyQualityChecks: Record<string, unknown>[]
   supplyQualityItems: Record<string, unknown>[]
   supplyDocuments: Record<string, unknown>[]
+  supplyActivities: Record<string, unknown>[]
   vehicleInspection: Record<string, unknown> | null
   packagingCheck: Record<string, unknown> | null
   packagingItems: Record<string, unknown>[]
@@ -129,11 +129,6 @@ function SupplyDetail() {
   const [detailError, setDetailError] = useState<string | null>(null)
 
   const supply = (navigationState.supply ?? fetchedData?.supply) ?? null
-  const lines = Array.isArray(navigationState.supplyLines)
-    ? navigationState.supplyLines
-    : Array.isArray(fetchedData?.supplyLines)
-      ? fetchedData!.supplyLines
-      : []
   const batches = Array.isArray(navigationState.supplyBatches)
     ? navigationState.supplyBatches
     : Array.isArray(fetchedData?.supplyBatches)
@@ -160,6 +155,11 @@ function SupplyDetail() {
     : Array.isArray(fetchedData?.supplyDocuments)
       ? fetchedData!.supplyDocuments
       : []
+  const supplyActivities = Array.isArray(navigationState.supplyActivities)
+    ? navigationState.supplyActivities
+    : Array.isArray(fetchedData?.supplyActivities)
+      ? fetchedData!.supplyActivities
+      : []
   const vehicleInspection = navigationState.vehicleInspection ?? fetchedData?.vehicleInspection ?? null
   const packagingCheck = navigationState.packagingCheck ?? fetchedData?.packagingCheck ?? null
   const packagingItems = Array.isArray(navigationState.packagingItems)
@@ -184,7 +184,6 @@ function SupplyDetail() {
       try {
         const [
           { data: supplyRow, error: supplyErr },
-          { data: linesData },
           { data: batchesData },
           { data: docsData },
           { data: vehicleData },
@@ -192,6 +191,7 @@ function SupplyDetail() {
           { data: packagingItemsData },
           { data: qualityChecksData },
           { data: qualityItemsData },
+          { data: supplyActivitiesData },
           { data: signOffData },
           { data: suppliersData },
           { data: warehousesData },
@@ -201,7 +201,6 @@ function SupplyDetail() {
           { data: qualityParamsData },
         ] = await Promise.all([
           supabase.from('supplies').select('*').eq('id', supplyId!).single(),
-          supabase.from('supply_lines').select('*').eq('supply_id', supplyId!),
           supabase.from('supply_batches').select('*').eq('supply_id', supplyId!),
           supabase.from('supply_documents').select('*').eq('supply_id', supplyId!),
           supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId!).maybeSingle(),
@@ -209,6 +208,7 @@ function SupplyDetail() {
           supabase.from('supply_packaging_quality_check_items').select('*'),
           supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId!),
           supabase.from('supply_quality_check_items').select('*'),
+          supabase.from('supply_activities').select('*').eq('supply_id', supplyId!).order('timestamp', { ascending: false }),
           supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId!).maybeSingle(),
           supabase.from('suppliers').select('id, name'),
           supabase.from('warehouses').select('id, name'),
@@ -261,11 +261,11 @@ function SupplyDetail() {
 
         setFetchedData({
           supply: supplyObj,
-          supplyLines: (linesData ?? []) as Record<string, unknown>[],
           supplyBatches: (batchesData ?? []) as Record<string, unknown>[],
           supplyQualityChecks: (qualityChecksData ?? []) as Record<string, unknown>[],
           supplyQualityItems: qualityItemsFiltered,
           supplyDocuments: (docsData ?? []) as Record<string, unknown>[],
+          supplyActivities: (supplyActivitiesData ?? []) as Record<string, unknown>[],
           vehicleInspection: vehicleData as Record<string, unknown> | null,
           packagingCheck: packagingCheckRow as Record<string, unknown> | null,
           packagingItems: packagingItemsFiltered,
@@ -672,6 +672,17 @@ function SupplyDetail() {
         pdf.setFont('helvetica', 'normal')
         pdf.setTextColor(textDark[0], textDark[1], textDark[2])
 
+        if (packagingCheck.checked_at) {
+          pageBreak(6)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Checked At:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text(formatDateTime(packagingCheck.checked_at as string | Date | number | null | undefined), margin + 35, y)
+          y += 6
+        }
+
         packagingItems.forEach((item: { [key: string]: unknown }) => {
           pageBreak(8)
           const parameterId = item.parameter_id as number | undefined
@@ -694,6 +705,18 @@ function SupplyDetail() {
           pdf.text(valueLines, margin + 35, y)
           y += valueLines.length * 5 + 1
         })
+
+        if (packagingCheck.remarks) {
+          pageBreak(8)
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Remarks:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          const remarksLines = pdf.splitTextToSize(String(packagingCheck.remarks), pageWidth - margin * 2 - 35)
+          pdf.text(remarksLines, margin + 35, y)
+          y += remarksLines.length * 5 + 1
+        }
       }
 
       /* ================= SECTION 5 ================= */
@@ -711,63 +734,51 @@ function SupplyDetail() {
           y += 8
         }
 
-        qualityEvaluationRows.forEach((row) => {
-          pageBreak(12)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setTextColor(oliveDark[0], oliveDark[1], oliveDark[2])
-          pdf.text(row.name, margin, y)
-          y += 5
+        const tableWidth = pageWidth - margin * 2
+        const colGap = 4
+        const colWidth = (tableWidth - colGap) / 2
+        const cellPadding = 2
+        const lineHeight = 3.8
+
+        const buildCellLines = (row: { name: string; results?: string; score?: number | null; remarks?: string; code?: string | null }) => {
+          const scoreValue = row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : String(row.score)
+          const parts = [
+            `Parameter: ${row.name}`,
+            `Code: ${row.code ?? 'N/A'}`,
+            `Score: ${scoreValue}`,
+            `Results: ${row.results?.trim() ? row.results.trim() : 'Not recorded'}`,
+            `Remarks: ${row.remarks?.trim() ? row.remarks.trim() : 'Not recorded'}`,
+          ]
+          return pdf.splitTextToSize(parts.join(' | '), colWidth - cellPadding * 2)
+        }
+
+        for (let index = 0; index < qualityEvaluationRows.length; index += 2) {
+          const left = qualityEvaluationRows[index]
+          const right = qualityEvaluationRows[index + 1]
+          const leftLines = buildCellLines(left)
+          const rightLines = right ? buildCellLines(right) : ['']
+          const rowHeight = Math.max(leftLines.length, rightLines.length) * lineHeight + cellPadding * 2
+
+          pageBreak(rowHeight + 2)
+
+          pdf.setDrawColor(210, 216, 202)
+          pdf.setFillColor(255, 255, 255)
+          pdf.rect(margin, y, colWidth, rowHeight, 'FD')
+          pdf.rect(margin + colWidth + colGap, y, colWidth, rowHeight, 'FD')
 
           pdf.setFont('helvetica', 'normal')
-          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
           pdf.setFontSize(8)
-          if (row.results) {
-            pdf.text(`Results: ${row.results}`, margin + 5, y)
-            y += 5
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text(leftLines, margin + cellPadding, y + cellPadding + lineHeight - 0.5)
+          if (right) {
+            pdf.text(rightLines, margin + colWidth + colGap + cellPadding, y + cellPadding + lineHeight - 0.5)
           }
-          pdf.text(`Score: ${row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : row.score}`, margin + 5, y)
-          y += 5
-          if (row.remarks?.trim()) {
-            const remarksText = `Remarks: ${row.remarks.trim()}`
-            const remarksLines = pdf.splitTextToSize(remarksText, pageWidth - margin * 2 - 10)
-            pdf.text(remarksLines, margin + 5, y)
-            y += remarksLines.length * 4
-          }
-          y += 3
-        })
+
+          y += rowHeight + 2
+        }
       }
 
       /* ================= SECTION 6 ================= */
-      if (lines.length > 0) {
-        section(sectionNum++, 'Line Items')
-        pdf.setFontSize(8)
-
-        lines.forEach((l: SupplyLineItem) => {
-          pageBreak(18)
-          const name = getProductMeta(l.product_id)?.name?.trim() ?? l.product_name ?? 'Product'
-          const sku = getProductMeta(l.product_id)?.sku?.trim() ?? l.product_sku ?? 'No SKU'
-
-          pdf.setFont('helvetica', 'bold')
-          pdf.text(name, margin, y)
-          y += 4
-
-          pdf.setFont('helvetica', 'normal')
-          pdf.text(`SKU: ${sku}`, margin + 4, y)
-          y += 4
-          pdf.text(`Ordered: ${formatQuantityWithUnit(l.ordered_qty ?? l.qty ?? 0, l.unit_id)}`, margin + 4, y)
-          y += 4
-          pdf.text(`Received: ${formatQuantityWithUnit(l.received_qty ?? 0, l.unit_id)}`, margin + 4, y)
-          y += 4
-          pdf.text(`Accepted: ${formatQuantityWithUnit(l.accepted_qty ?? 0, l.unit_id)}`, margin + 4, y)
-          if (l.variance_reason) {
-            y += 4
-            pdf.text(`Variance: ${l.variance_reason}`, margin + 4, y)
-          }
-          y += 6
-        })
-      }
-
-      /* ================= SECTION 7 ================= */
       if (batches.length > 0) {
         section(sectionNum++, 'Batches')
         pdf.setFontSize(8)
@@ -788,6 +799,38 @@ function SupplyDetail() {
           y += 4
           pdf.text(`Quality Status: ${batch.quality_status ?? 'PENDING'}`, margin + 5, y)
           y += 5
+        })
+      }
+
+      /* ================= SECTION 7 ================= */
+      if (supplyActivities.length > 0) {
+        section(sectionNum++, 'Activity Timeline')
+        pdf.setFontSize(8)
+        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+
+        supplyActivities.forEach((activity: { [key: string]: unknown }, index: number) => {
+          const activityType = String(activity.type ?? 'Activity')
+          const activityTime = formatDateTime(activity.timestamp as string | Date | number | null | undefined)
+          const activityDesc = String(activity.description ?? 'No description')
+          const activityActor =
+            resolveProfileName(activity.actor as string | number | null | undefined) ??
+            String(activity.actor ?? 'System')
+
+          const detailLines = pdf.splitTextToSize(
+            `${activityDesc} | By: ${activityActor}`,
+            pageWidth - margin * 2 - 6
+          )
+          const blockHeight = 6 + detailLines.length * 4 + 5
+          pageBreak(blockHeight + 2)
+
+          pdf.setDrawColor(220, 225, 215)
+          pdf.rect(margin, y, pageWidth - margin * 2, blockHeight)
+          pdf.setFont('helvetica', 'bold')
+          pdf.text(`${index + 1}. ${activityType}`, margin + 3, y + 5)
+          pdf.setFont('helvetica', 'normal')
+          pdf.text(activityTime, pageWidth - margin - 3, y + 5, { align: 'right' })
+          pdf.text(detailLines, margin + 3, y + 10)
+          y += blockHeight + 2
         })
       }
 
@@ -1028,96 +1071,9 @@ function SupplyDetail() {
       .join(' · ')
   }
 
-  const totalOrderedSummary = summariseQuantityByUnit(lines, 'ordered_qty')
-  const totalReceivedSummary = summariseQuantityByUnit(lines, 'received_qty')
-  const totalAcceptedSummary = summariseQuantityByUnit(lines, 'accepted_qty')
-  const totalRejectedSummary = summariseQuantityByUnit(lines, 'rejected_qty')
-
-  const lineColumns = [
-    {
-      key: 'product',
-      header: 'Product',
-      render: (line: SupplyLineItem) => (
-        <div>
-          <div className="font-medium text-text-dark">
-            {(getProductMeta(line.product_id)?.name?.trim() ??
-              line.product_name ??
-              line.product?.name ??
-              line.item_name ??
-              line.name ??
-              'Product')}
-          </div>
-          <div className="text-xs text-text-dark/60">
-            {(getProductMeta(line.product_id)?.sku?.trim() ??
-              line.product_sku ??
-              line.product?.sku ??
-              line.sku ??
-              'No SKU')}
-          </div>
-        </div>
-      ),
-      mobileRender: (line: SupplyLineItem) => (
-        <div className="text-right">
-          <div className="font-medium text-text-dark">
-            {getProductMeta(line.product_id)?.name?.trim() ??
-              line.product_name ??
-              line.product?.name ??
-              line.item_name ??
-              line.name ??
-              'Product'}
-          </div>
-          <div className="text-xs text-text-dark/60">
-            {getProductMeta(line.product_id)?.sku?.trim() ??
-              line.product_sku ??
-              line.product?.sku ??
-              line.sku ??
-              'No SKU'}
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'quantities',
-      header: 'Qty (Ordered / Received / Accepted)',
-      render: (line: SupplyLineItem) => (
-        <div className="text-right">
-          <p className="font-medium text-text-dark">
-            {formatQuantityWithUnit(
-              line.ordered_qty ?? line.qty ?? line.received_qty ?? 0,
-              line.unit_id,
-            )}
-          </p>
-          <p className="text-xs text-text-dark/60">
-            {`${formatQuantityWithUnit(line.received_qty ?? 0, line.unit_id)} received · ${formatQuantityWithUnit(line.accepted_qty ?? 0, line.unit_id)} accepted`}
-          </p>
-        </div>
-      ),
-      mobileRender: (line: SupplyLineItem) => (
-        <div className="text-right">
-          <p className="font-medium text-text-dark">
-            {formatQuantityWithUnit(
-              line.ordered_qty ?? line.qty ?? line.received_qty ?? 0,
-              line.unit_id,
-            )}
-          </p>
-          <p className="text-xs text-text-dark/60">
-            {`${formatQuantityWithUnit(line.received_qty ?? 0, line.unit_id)} received · ${formatQuantityWithUnit(line.accepted_qty ?? 0, line.unit_id)} accepted`}
-          </p>
-        </div>
-      ),
-      headerClassName: 'text-right',
-      cellClassName: 'text-right text-sm text-text-dark',
-      mobileValueClassName: 'text-right text-sm text-text-dark',
-    },
-    {
-      key: 'variance',
-      header: 'Variance / Notes',
-      render: (line: SupplyLineItem) => String(line.variance_reason || 'On plan'),
-      mobileRender: (line: SupplyLineItem) => String(line.variance_reason || 'On plan'),
-      cellClassName: 'text-sm text-text-dark/80',
-      mobileValueClassName: 'text-right text-sm text-text-dark/80',
-    },
-  ]
+  const totalReceivedSummary = summariseQuantityByUnit(batches as { [key: string]: unknown }[], 'received_qty')
+  const totalAcceptedSummary = summariseQuantityByUnit(batches as { [key: string]: unknown }[], 'accepted_qty')
+  const totalRejectedSummary = summariseQuantityByUnit(batches as { [key: string]: unknown }[], 'rejected_qty')
 
   const batchColumns = [
     {
@@ -1224,7 +1180,6 @@ function SupplyDetail() {
   ]
 
   const quantityFacts = [
-    { label: 'Ordered', value: totalOrderedSummary },
     { label: 'Received', value: totalReceivedSummary },
     { label: 'Accepted', value: totalAcceptedSummary },
     { label: 'Rejected', value: totalRejectedSummary },
@@ -1357,24 +1312,6 @@ function SupplyDetail() {
 
         <Card className="border-olive-light/30 bg-white">
           <CardHeader>
-            <CardTitle className="text-text-dark">Line items</CardTitle>
-            <CardDescription>Quantities received versus accepted for each product.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveTable
-              columns={lineColumns}
-              data={lines}
-              rowKey="id"
-              tableClassName=""
-              mobileCardClassName=""
-              getRowClassName={() => ''}
-              onRowClick={() => {}}
-            />
-          </CardContent>
-        </Card>
-
-        <Card className="border-olive-light/30 bg-white">
-          <CardHeader>
             <CardTitle className="text-text-dark">Batches</CardTitle>
             <CardDescription>Traceability details for lots created during receiving.</CardDescription>
           </CardHeader>
@@ -1479,6 +1416,35 @@ function SupplyDetail() {
                   ))}
                 </div>
               </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-olive-light/30 bg-white">
+          <CardHeader>
+            <CardTitle className="text-text-dark">Activity Timeline</CardTitle>
+            <CardDescription>Operational events captured for this supply.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {supplyActivities.length === 0 ? (
+              <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 text-sm text-text-dark/70">
+                No activity has been recorded yet.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {supplyActivities.map((activity: { [key: string]: unknown }, index: number) => (
+                  <div key={String(activity.id ?? `activity-${index}`)} className="rounded-lg border border-olive-light/30 bg-white p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium text-text-dark">{String(activity.type ?? 'Activity')}</p>
+                      <p className="text-xs text-text-dark/60">{formatDateTime(activity.timestamp as string | null | undefined)}</p>
+                    </div>
+                    <p className="mt-1 text-sm text-text-dark/80">{String(activity.description ?? 'No description')}</p>
+                    <p className="mt-1 text-xs text-text-dark/60">
+                      By {resolveProfileName(activity.actor as string | null | undefined) ?? String(activity.actor ?? 'System')}
+                    </p>
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>

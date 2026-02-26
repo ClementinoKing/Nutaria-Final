@@ -48,6 +48,44 @@ function QualityParameters() {
   })
   const [formErrors, setFormErrors] = useState<FormErrors>({})
 
+  const existingCodes = useMemo(
+    () => new Set(qualityParameters.map((p) => (p.code ?? '').toUpperCase()).filter(Boolean)),
+    [qualityParameters]
+  )
+
+  const generateParameterCode = (name: string) => {
+    const cleaned = name
+      .trim()
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!cleaned) return ''
+
+    const words = cleaned.split(' ').filter(Boolean)
+    let base = ''
+    if (words.length >= 2) {
+      // Prefer compact mnemonic codes from initials, e.g. "Mechanical Damage" -> "MD"
+      base = words
+        .map((word) => word[0])
+        .join('')
+        .slice(0, 6)
+        .toUpperCase()
+    } else {
+      // Single-word names use a short leading chunk, e.g. "Moisture" -> "MOIS"
+      base = words[0].slice(0, 4).toUpperCase()
+    }
+
+    if (!base) return ''
+
+    let code = base
+    let counter = 1
+    while (existingCodes.has(code)) {
+      counter += 1
+      code = `${base}${String(counter).padStart(2, '0')}`
+    }
+    return code
+  }
+
   const filteredParameters = useMemo(() => {
     const normalised = searchTerm.trim().toLowerCase()
     if (!normalised) return qualityParameters
@@ -168,7 +206,16 @@ function QualityParameters() {
 
   const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target
-    setFormData((prev) => ({ ...prev, [name]: value }))
+    setFormData((prev) => {
+      if (!isEditMode && name === 'name') {
+        return {
+          ...prev,
+          name: value,
+          code: generateParameterCode(value),
+        }
+      }
+      return { ...prev, [name]: value }
+    })
     // Clear error for this field when user starts typing
     if (formErrors[name as keyof FormErrors]) {
       setFormErrors((prev) => ({ ...prev, [name]: undefined }))
@@ -384,7 +431,7 @@ function QualityParameters() {
                 <p className="text-sm text-text-dark/70">
                   {isEditMode
                     ? 'Update the quality parameter details.'
-                    : 'Define the code and name for the new quality parameter.'}
+                    : 'Define the name for the new quality parameter. Code is auto-generated.'}
                 </p>
               </div>
               <Button
@@ -401,22 +448,6 @@ function QualityParameters() {
 
             <form onSubmit={handleSubmit} className="px-6 py-6 space-y-5">
               <div>
-                <Label htmlFor="qp-code">Code <span className="text-red-500">*</span></Label>
-                <Input
-                  id="qp-code"
-                  name="code"
-                  placeholder="e.g. MECHANICAL_DAMAGE"
-                  value={formData.code}
-                  onChange={handleFormChange}
-                  className="mt-1"
-                  disabled={isSubmitting}
-                />
-                {formErrors.code ? (
-                  <p className="mt-1 text-sm text-red-600">{formErrors.code}</p>
-                ) : null}
-              </div>
-
-              <div>
                 <Label htmlFor="qp-name">Name <span className="text-red-500">*</span></Label>
                 <Input
                   id="qp-name"
@@ -429,6 +460,22 @@ function QualityParameters() {
                 />
                 {formErrors.name ? (
                   <p className="mt-1 text-sm text-red-600">{formErrors.name}</p>
+                ) : null}
+              </div>
+
+              <div>
+                <Label htmlFor="qp-code">Code <span className="text-red-500">*</span></Label>
+                <Input
+                  id="qp-code"
+                  name="code"
+                  placeholder="e.g. MECHANICAL_DAMAGE"
+                  value={formData.code}
+                  onChange={handleFormChange}
+                  className="mt-1"
+                  disabled={isSubmitting || !isEditMode}
+                />
+                {formErrors.code ? (
+                  <p className="mt-1 text-sm text-red-600">{formErrors.code}</p>
                 ) : null}
               </div>
 

@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDryingRun } from '@/hooks/useDryingRun'
+import { supabase } from '@/lib/supabaseClient'
 import type { ProcessStepRun, DryingFormData, DryingWasteFormData } from '@/types/processExecution'
 import {
   AlertDialog,
@@ -52,6 +53,17 @@ function toISOString(value: string | null | undefined): string | null {
   return date.toISOString()
 }
 
+interface WashedWip {
+  id: number
+  product_id: number
+  quantity_kg: number
+  washing_moisture_percent?: number | null
+  product?: {
+    name?: string | null
+    sku?: string | null
+  } | null
+}
+
 export function DryingStep({
   stepRun,
   loading: externalLoading = false,
@@ -84,8 +96,167 @@ export function DryingStep({
   })
 
   const [saving, setSaving] = useState(false)
+  const [washedWips, setWashedWips] = useState<WashedWip[]>([])
+  const [loadingWashedWips, setLoadingWashedWips] = useState(false)
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipNextSaveRef = useRef(true)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadWashedWips = async () => {
+      setLoadingWashedWips(true)
+      try {
+        const { data: stepRunRows, error: stepRunsError } = await supabase
+          .from('process_step_runs')
+          .select('id, process_step_id')
+          .eq('process_lot_run_id', stepRun.process_lot_run_id)
+
+        if (stepRunsError) {
+          throw stepRunsError
+        }
+
+        const normalizedStepRuns = (stepRunRows ?? []) as Array<{ id: number; process_step_id?: number | null }>
+        const processStepIds = Array.from(
+          new Set(
+            normalizedStepRuns
+              .map((row) => Number(row.process_step_id))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ) as number[]
+
+        if (processStepIds.length === 0) {
+          if (!cancelled) setWashedWips([])
+          return
+        }
+
+        const { data: processSteps, error: processStepsError } = await supabase
+          .from('process_steps')
+          .select('id, step_name_id')
+          .in('id', processStepIds)
+
+        if (processStepsError) {
+          throw processStepsError
+        }
+
+        const normalizedProcessSteps = (processSteps ?? []) as Array<{ id: number; step_name_id?: number | null }>
+        const stepNameIds = Array.from(
+          new Set(
+            normalizedProcessSteps
+              .map((row) => Number(row.step_name_id))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ) as number[]
+
+        if (stepNameIds.length === 0) {
+          if (!cancelled) setWashedWips([])
+          return
+        }
+
+        const { data: stepNames, error: stepNamesError } = await supabase
+          .from('process_step_names')
+          .select('id, code')
+          .in('id', stepNameIds)
+
+        if (stepNamesError) {
+          throw stepNamesError
+        }
+
+        const washStepNameIds = new Set(
+          ((stepNames ?? []) as Array<{ id: number; code?: string | null }>)
+            .filter((row) => String(row.code ?? '').toUpperCase() === 'WASH')
+            .map((row) => row.id),
+        )
+
+        const washProcessStepIds = new Set(
+          normalizedProcessSteps
+            .filter((row) => {
+              const stepNameId = Number(row.step_name_id)
+              return Number.isFinite(stepNameId) && washStepNameIds.has(stepNameId)
+            })
+            .map((row) => row.id),
+        )
+
+        const washStepRunIds = normalizedStepRuns
+          .filter((row) => {
+            const processStepId = Number(row.process_step_id)
+            return Number.isFinite(processStepId) && washProcessStepIds.has(processStepId)
+          })
+          .map((row) => row.id)
+
+        if (washStepRunIds.length === 0) {
+          if (!cancelled) setWashedWips([])
+          return
+        }
+
+        const { data: washingRuns, error: washingRunsError } = await supabase
+          .from('process_washing_runs')
+          .select('grading_output_id, moisture_percent')
+          .in('process_step_run_id', washStepRunIds)
+
+        if (washingRunsError) {
+          throw washingRunsError
+        }
+
+        const normalizedWashingRuns = (washingRuns ?? []) as Array<{
+          grading_output_id?: number | null
+          moisture_percent?: number | null
+        }>
+
+        const moistureByOutputId = new Map<number, number | null>()
+        normalizedWashingRuns.forEach((row) => {
+          const outputId = Number(row.grading_output_id)
+          if (Number.isFinite(outputId) && outputId > 0) {
+            moistureByOutputId.set(outputId, row.moisture_percent ?? null)
+          }
+        })
+
+        const gradingOutputIds = Array.from(
+          new Set(
+            normalizedWashingRuns
+              .map((row) => Number(row.grading_output_id))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ) as number[]
+
+        if (gradingOutputIds.length === 0) {
+          if (!cancelled) setWashedWips([])
+          return
+        }
+
+        const { data: outputsData, error: outputsError } = await supabase
+          .from('process_grading_outputs')
+          .select('id, product_id, quantity_kg, product:products(name, sku)')
+          .in('id', gradingOutputIds)
+          .order('created_at', { ascending: false })
+
+        if (outputsError) {
+          throw outputsError
+        }
+
+        if (!cancelled) {
+          const enrichedOutputs = ((outputsData as WashedWip[]) ?? []).map((output) => ({
+            ...output,
+            washing_moisture_percent: moistureByOutputId.get(output.id) ?? null,
+          }))
+          setWashedWips(enrichedOutputs)
+        }
+      } catch (error) {
+        console.error('Error loading washed WIPs for drying:', error)
+        if (!cancelled) {
+          setWashedWips([])
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingWashedWips(false)
+        }
+      }
+    }
+
+    loadWashedWips()
+    return () => {
+      cancelled = true
+    }
+  }, [stepRun.process_lot_run_id])
 
   useEffect(() => {
     if (dryingRun) {
@@ -215,6 +386,35 @@ export function DryingStep({
 
   return (
     <div className="space-y-6">
+      <div className="rounded-lg border border-olive-light/30 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-text-dark">Washed WIPs</h4>
+          <span className="text-xs text-text-dark/60">
+            {washedWips.length} item{washedWips.length === 1 ? '' : 's'} to dry together
+          </span>
+        </div>
+        {loadingWashedWips ? (
+          <p className="text-sm text-text-dark/60">Loading washed WIPs…</p>
+        ) : washedWips.length === 0 ? (
+          <p className="text-sm text-text-dark/60">No washed WIPs found yet. Capture washing first.</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {washedWips.map((wip) => (
+              <div key={wip.id} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-3">
+                <p className="text-sm font-semibold text-text-dark">
+                  {wip.product?.name ?? `WIP Product #${wip.product_id}`}
+                  {wip.product?.sku ? ` (${wip.product.sku})` : ''}
+                </p>
+                <p className="text-xs text-text-dark/60 mt-1">Qty: {(Number(wip.quantity_kg) || 0).toFixed(2)} kg</p>
+                {wip.washing_moisture_percent != null && (
+                  <p className="text-xs text-text-dark/60">Washing moisture: {Number(wip.washing_moisture_percent).toFixed(2)}%</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Available Quantity Info */}
       {availableQuantity && (
         <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">

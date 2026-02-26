@@ -22,6 +22,9 @@ import {
 
 interface SortingStepProps {
   stepRun: ProcessStepRun
+  mode?: 'sorting' | 'grading'
+  allowOutputs?: boolean
+  allowReworks?: boolean
   loading?: boolean
   originalSupplyBatchId?: number | null
   lotProductName?: string | null
@@ -38,6 +41,9 @@ const WASTE_TYPES = ['Lost KG', 'Final Product Waste', 'Dust', 'Floor Sweepings'
 
 export function SortingStep({
   stepRun,
+  mode = 'sorting',
+  allowOutputs = true,
+  allowReworks = true,
   loading: externalLoading = false,
   originalSupplyBatchId = null,
   lotProductName = null,
@@ -48,9 +54,11 @@ export function SortingStep({
   const { outputs, waste, loading, addOutput, updateOutput, deleteOutput, addWaste, deleteWaste } = useSortingRun({
     stepRunId: stepRun.id,
     enabled: true,
+    mode,
   })
 
   const [products, setProducts] = useState<Array<{ id: number; name: string; sku: string | null }>>([])
+  const [availableByProduct, setAvailableByProduct] = useState<Record<number, number>>({})
   const [outputFormData, setOutputFormData] = useState<SortingOutputFormData>({
     product_id: '',
     quantity_kg: '',
@@ -90,34 +98,207 @@ export function SortingStep({
     }>
   >([])
   const [loadingReworks, setLoadingReworks] = useState(false)
+  const processLabel = mode === 'grading' ? 'Grading' : 'Sorting'
 
   useEffect(() => {
-    // Fetch only Work In Progress (WIP) products and filter by composition mapping
-    // (product_components: parent WIP product -> component raw material product).
-    supabase
-      .from('products')
-      .select(
-        `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
-      )
-      .eq('status', 'ACTIVE')
-      .eq('product_type', 'WIP')
-      .order('name', { ascending: true })
-      .then(({ data, error }) => {
-        if (!error && data) {
-          const rows = data as Array<{ id: number; name: string; sku: string | null; product_components?: { component_product_id?: number | null }[] | null }>
-          let filtered = rows
-          if (lotProductId) {
-            // Include only WIP products whose composition includes the lot's raw material.
-            filtered = filtered.filter((row) =>
-              (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
-            )
-          }
-          setProducts(filtered)
+    let cancelled = false
+
+    const loadProducts = async () => {
+      // Sorting step should only allow products actually produced by grading in this run.
+      if (mode === 'sorting') {
+        const lotRunId = Number(stepRun.process_lot_run_id)
+        if (!Number.isFinite(lotRunId) || lotRunId <= 0) {
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
         }
-      })
-  }, [lotProductId])
+
+        const { data: lotStepRuns, error: lotStepRunsError } = await supabase
+          .from('process_step_runs')
+          .select('id, process_step_id')
+          .eq('process_lot_run_id', lotRunId)
+
+        if (lotStepRunsError) {
+          console.error('Error loading process step runs for sorting products:', lotStepRunsError)
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const processStepIds = Array.from(
+          new Set(
+            ((lotStepRuns ?? []) as Array<{ process_step_id?: number | null }>)
+              .map((row) => Number(row.process_step_id))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ) as number[]
+
+        if (processStepIds.length === 0) {
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const { data: processSteps, error: processStepsError } = await supabase
+          .from('process_steps')
+          .select('id, step_name_id')
+          .in('id', processStepIds)
+
+        if (processStepsError) {
+          console.error('Error loading process steps for sorting products:', processStepsError)
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const stepNameIds = Array.from(
+          new Set(
+            ((processSteps ?? []) as Array<{ step_name_id?: number | null }>)
+              .map((row) => Number(row.step_name_id))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ) as number[]
+
+        if (stepNameIds.length === 0) {
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const { data: stepNames, error: stepNamesError } = await supabase
+          .from('process_step_names')
+          .select('id, code')
+          .in('id', stepNameIds)
+
+        if (stepNamesError) {
+          console.error('Error loading step names for sorting products:', stepNamesError)
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const gradingStepNameIds = new Set(
+          ((stepNames ?? []) as Array<{ id: number; code?: string | null }>)
+            .filter((row) => String(row.code ?? '').toUpperCase() === 'GRAD')
+            .map((row) => row.id),
+        )
+
+        const gradingStepIds = new Set(
+          ((processSteps ?? []) as Array<{ id: number; step_name_id?: number | null }>)
+            .filter((row) => {
+              const stepNameId = Number(row.step_name_id)
+              return Number.isFinite(stepNameId) && gradingStepNameIds.has(stepNameId)
+            })
+            .map((row) => row.id),
+        )
+
+        const gradingStepRunIds = ((lotStepRuns ?? []) as Array<{ id: number; process_step_id?: number | null }>)
+          .filter((row) => {
+            const processStepId = Number(row.process_step_id)
+            return Number.isFinite(processStepId) && gradingStepIds.has(processStepId)
+          })
+          .map((row) => row.id)
+
+        if (gradingStepRunIds.length === 0) {
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const { data: gradingOutputs, error: gradingOutputsError } = await supabase
+          .from('process_grading_outputs')
+          .select('product_id, quantity_kg, product:products(id, name, sku)')
+          .in('process_step_run_id', gradingStepRunIds)
+
+        if (gradingOutputsError) {
+          console.error('Error loading grading outputs for sorting products:', gradingOutputsError)
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const uniqueProducts = new Map<number, { id: number; name: string; sku: string | null }>()
+        const quantitiesByProduct = new Map<number, number>()
+        ;((gradingOutputs ?? []) as Array<{
+          product_id?: number | null
+          quantity_kg?: number | null
+          product?: { id?: number; name?: string | null; sku?: string | null } | null
+        }>).forEach((row) => {
+          const productId = Number(row.product_id)
+          if (!Number.isFinite(productId) || productId <= 0) return
+          const qty = Number(row.quantity_kg) || 0
+          quantitiesByProduct.set(productId, (quantitiesByProduct.get(productId) ?? 0) + qty)
+          const name = row.product?.name?.trim() || `Product #${productId}`
+          const sku = row.product?.sku ?? null
+          if (!uniqueProducts.has(productId)) {
+            uniqueProducts.set(productId, { id: productId, name, sku })
+          }
+        })
+
+        if (!cancelled) {
+          setProducts(Array.from(uniqueProducts.values()).sort((a, b) => a.name.localeCompare(b.name)))
+          const nextAvailability: Record<number, number> = {}
+          quantitiesByProduct.forEach((qty, productId) => {
+            nextAvailability[productId] = qty
+          })
+          setAvailableByProduct(nextAvailability)
+        }
+        return
+      }
+
+      // Grading step keeps the original behavior: mapped WIP products by raw material composition.
+      const { data, error } = await supabase
+        .from('products')
+        .select(
+          `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
+        )
+        .eq('status', 'ACTIVE')
+        .eq('product_type', 'WIP')
+        .order('name', { ascending: true })
+
+      if (error || !data) {
+        if (!cancelled) setProducts([])
+        if (!cancelled) setAvailableByProduct({})
+        return
+      }
+
+      const rows = data as Array<{
+        id: number
+        name: string
+        sku: string | null
+        product_components?: { component_product_id?: number | null }[] | null
+      }>
+      let filtered = rows
+      if (lotProductId) {
+        filtered = filtered.filter((row) =>
+          (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
+        )
+      }
+
+      if (!cancelled) {
+        setProducts(filtered.map(({ id, name, sku }) => ({ id, name, sku })))
+        setAvailableByProduct({})
+      }
+    }
+
+    loadProducts().catch((error) => {
+      console.error('Error loading products for sorting/grading step:', error)
+      if (!cancelled) setProducts([])
+      if (!cancelled) setAvailableByProduct({})
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [mode, lotProductId, stepRun.process_lot_run_id])
 
   const fetchReworks = useCallback(async () => {
+    if (!allowReworks) {
+      setReworks([])
+      setLoadingReworks(false)
+      return
+    }
+
     if (!stepRun?.id && !originalSupplyBatchId) {
       setReworks([])
       return
@@ -158,12 +339,13 @@ export function SortingStep({
     } finally {
       setLoadingReworks(false)
     }
-  }, [stepRun?.id, originalSupplyBatchId])
+  }, [stepRun?.id, originalSupplyBatchId, allowReworks])
 
   // Fetch reworks linked to this run/lot
   useEffect(() => {
+    if (!allowReworks) return
     fetchReworks()
-  }, [fetchReworks])
+  }, [fetchReworks, allowReworks])
 
   const handleOutputSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -203,6 +385,13 @@ export function SortingStep({
         setSaving(false)
         return
       }
+      if (mode === 'sorting' && selectedProductAvailableQty !== null && quantity > selectedProductAvailableQty + 1e-6) {
+        toast.error(
+          `Quantity cannot exceed available quantity for selected product. Available: ${selectedProductAvailableQty.toFixed(2)} kg, Attempted: ${quantity.toFixed(2)} kg`
+        )
+        setSaving(false)
+        return
+      }
 
       await updateOutput(editingOutputId, {
         product_id: productId,
@@ -220,6 +409,13 @@ export function SortingStep({
       if (maxTotalOutputs !== null && newTotalOutput > maxTotalOutputs) {
         toast.error(
           `Total outputs cannot exceed available quantity after reworks and waste. Available: ${maxTotalOutputs.toFixed(2)} kg, Attempted: ${newTotalOutput.toFixed(2)} kg`
+        )
+        setSaving(false)
+        return
+      }
+      if (mode === 'sorting' && selectedProductAvailableQty !== null && quantity > selectedProductAvailableQty + 1e-6) {
+        toast.error(
+          `Quantity cannot exceed available quantity for selected product. Available: ${selectedProductAvailableQty.toFixed(2)} kg, Attempted: ${quantity.toFixed(2)} kg`
         )
         setSaving(false)
         return
@@ -259,8 +455,8 @@ export function SortingStep({
       return
     }
 
-    // Find first output to link waste to
-    if (outputs.length === 0) {
+    // Sorting waste is linked to outputs; grading waste is step-run based.
+    if (allowOutputs && outputs.length === 0) {
       toast.error('Please add at least one output before adding waste')
       return
     }
@@ -287,7 +483,8 @@ export function SortingStep({
     setSaving(true)
     try {
       await addWaste({
-        sorting_run_id: outputs[0].id,
+        sorting_run_id: allowOutputs ? outputs[0]?.id : undefined,
+        process_step_run_id: allowOutputs ? undefined : stepRun.id,
         waste_type: wasteFormData.waste_type.trim(),
         quantity_kg: quantity,
       })
@@ -326,6 +523,18 @@ export function SortingStep({
     return products.filter((product) => !selectedProductIds.includes(product.id))
   }, [products, outputs, editingOutputId])
 
+  const selectedProductId = Number.parseInt(outputFormData.product_id || '', 10)
+  const selectedProductAvailableQty = useMemo(() => {
+    if (mode !== 'sorting') return null
+    if (!Number.isFinite(selectedProductId) || selectedProductId <= 0) return null
+    const totalForProduct = availableByProduct[selectedProductId]
+    if (totalForProduct == null) return null
+    const usedByOtherRows = outputs
+      .filter((output) => output.id !== editingOutputId && output.product_id === selectedProductId)
+      .reduce((sum, output) => sum + output.quantity_kg, 0)
+    return Math.max(0, totalForProduct - usedByOtherRows)
+  }, [mode, selectedProductId, availableByProduct, outputs, editingOutputId])
+
   const handleDeleteOutput = (outputId: number) => {
     setDeleteTarget({ type: 'output', id: outputId })
     setDeleteAlertOpen(true)
@@ -359,6 +568,10 @@ export function SortingStep({
   }
 
   const handleReworkSubmit = async (e: FormEvent) => {
+    if (!allowReworks) {
+      return
+    }
+
     e.preventDefault()
 
     const quantityKg = parseFloat(reworkFormData.quantity_kg)
@@ -418,7 +631,7 @@ export function SortingStep({
   }
 
   const totalOutputQuantity = outputs.reduce((sum, o) => sum + o.quantity_kg, 0)
-  const totalReworkQuantity = reworks.reduce((sum, r) => sum + r.quantity_kg, 0)
+  const totalReworkQuantity = allowReworks ? reworks.reduce((sum, r) => sum + r.quantity_kg, 0) : 0
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
   
   // Calculate remaining quantities including existing reworks and waste.
@@ -451,10 +664,14 @@ export function SortingStep({
     maxTotalOutputs !== null && remainingForOutputs !== null
       ? Math.max(0, remainingForOutputs + editingOutputQty)
       : null
+  const maxQtyForSelectedProduct = mode === 'sorting' ? selectedProductAvailableQty : null
+  const maxQtyForEntry =
+    maxQtyForOutput !== null && maxQtyForSelectedProduct !== null
+      ? Math.min(maxQtyForOutput, maxQtyForSelectedProduct)
+      : maxQtyForOutput ?? maxQtyForSelectedProduct ?? null
 
   // Alias for backward compatibility in forms
   const remainingQty = remainingForOutputs // For output form
-  const maxQtyForEntry = maxQtyForOutput // For output form
 
   return (
     <div className="space-y-6">
@@ -468,18 +685,37 @@ export function SortingStep({
                 {availableQuantity.availableQty.toFixed(2)} kg
               </p>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-text-dark/50">Outputs</p>
-              <p className="text-base font-semibold text-text-dark">
-                {totalOutputQuantity.toFixed(2)} kg
-              </p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-text-dark/50">Reworks</p>
-              <p className="text-base font-semibold text-text-dark">
-                {totalReworkQuantity.toFixed(2)} kg
-              </p>
-            </div>
+            {mode === 'sorting' && Object.keys(availableByProduct).length > 0 && (
+              <div className="md:col-span-3">
+                <p className="text-xs uppercase tracking-wide text-text-dark/50">Available Qty Per Product</p>
+                <p className="mt-1 text-sm text-text-dark/80">
+                  {products
+                    .map((product) => {
+                      const qty = availableByProduct[product.id]
+                      if (qty == null) return null
+                      return `${product.name}: ${qty.toFixed(2)} kg`
+                    })
+                    .filter(Boolean)
+                    .join(' • ')}
+                </p>
+              </div>
+            )}
+            {allowOutputs && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-text-dark/50">Outputs</p>
+                <p className="text-base font-semibold text-text-dark">
+                  {totalOutputQuantity.toFixed(2)} kg
+                </p>
+              </div>
+            )}
+            {allowReworks && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-text-dark/50">Reworks</p>
+                <p className="text-base font-semibold text-text-dark">
+                  {totalReworkQuantity.toFixed(2)} kg
+                </p>
+              </div>
+            )}
             <div>
               <p className="text-xs uppercase tracking-wide text-text-dark/50">Waste</p>
               <p className="text-base font-semibold text-text-dark">
@@ -503,18 +739,18 @@ export function SortingStep({
           </div>
           {remainingAfterAll !== null && remainingAfterAll < 0 && (
             <p className="text-xs text-red-600 mt-2">
-              ⚠️ Warning: Total used quantity (outputs + reworks + waste) exceeds available quantity!
+              ⚠️ Warning: Total used quantity ({allowOutputs ? 'outputs + ' : ''}{allowReworks ? 'reworks + ' : ''}waste) exceeds available quantity!
             </p>
           )}
         </div>
       )}
 
       {/* Outputs Section */}
-      <div className="space-y-4">
+      {allowOutputs && <div className="space-y-4">
         <div>
           <div className="flex items-center justify-between">
             <div>
-              <h4 className="text-sm font-semibold text-text-dark">Sorting Outputs</h4>
+              <h4 className="text-sm font-semibold text-text-dark">{processLabel} Outputs</h4>
               <p className="text-xs text-text-dark/60 mt-1">
                 Total Output: {totalOutputQuantity.toFixed(2)} kg
               </p>
@@ -587,10 +823,18 @@ export function SortingStep({
                     availableProducts.map((product) => (
                       <option key={product.id} value={product.id}>
                         {product.name} {product.sku ? `(${product.sku})` : ''}
+                        {mode === 'sorting' && availableByProduct[product.id] != null
+                          ? ` - ${availableByProduct[product.id].toFixed(2)} kg`
+                          : ''}
                       </option>
                     ))
                   )}
                 </select>
+                {mode === 'sorting' && selectedProductAvailableQty !== null && (
+                  <p className="text-xs text-text-dark/60">
+                    Selected product available: {selectedProductAvailableQty.toFixed(2)} kg
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -734,8 +978,10 @@ export function SortingStep({
           </div>
         )}
       </div>
+      }
 
       {/* Rework Section */}
+      {allowReworks && (
       <div className="border-t border-olive-light/20 pt-4 space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -887,6 +1133,7 @@ export function SortingStep({
           )}
         </div>
       </div>
+      )}
 
       {/* Waste & Loss Section */}
       <div className="border-t border-olive-light/20 pt-4 space-y-4">
@@ -902,7 +1149,7 @@ export function SortingStep({
             variant="outline"
             size="sm"
             onClick={() => setShowWasteForm(!showWasteForm)}
-            disabled={saving || externalLoading || outputs.length === 0}
+            disabled={saving || externalLoading || (allowOutputs && outputs.length === 0)}
             className="border-olive-light/30"
           >
             <Plus className="mr-2 h-4 w-4" />
@@ -916,7 +1163,9 @@ export function SortingStep({
             {availableQuantity && (
               <div className="mb-4 rounded-md bg-white border-2 border-olive p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-text-dark">Remaining After Outputs/Reworks/Waste:</span>
+                  <span className="text-sm font-medium text-text-dark">
+                    Remaining After {allowOutputs ? 'Outputs/' : ''}{allowReworks ? 'Reworks/' : ''}Waste:
+                  </span>
                   <span
                     className={`text-lg font-bold ${
                       remainingForWaste !== null && remainingForWaste < 0
@@ -935,7 +1184,7 @@ export function SortingStep({
                   </p>
                 )}
                 <p className="text-xs text-text-dark/60 mt-1">
-                  Waste comes after outputs and reworks
+                  Waste comes after {allowOutputs ? 'outputs' : processLabel.toLowerCase()}{allowReworks ? ' and reworks' : ''}
                 </p>
               </div>
             )}

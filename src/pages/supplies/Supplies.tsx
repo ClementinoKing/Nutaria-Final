@@ -34,7 +34,6 @@ interface QualityEntries {
 
 interface SupplyBatch {
   batch_id?: number | null
-  supply_line_id?: number | null
   lot_no?: string
   is_locked?: boolean
   product_id: string
@@ -72,21 +71,13 @@ interface Supply {
   [key: string]: unknown
 }
 
-interface SupplyLine {
-  id: number
-  supply_id: number
-  product_id: number
-  unit_id: number | null
-  accepted_qty: number
-  unit_price?: number | null
-  [key: string]: unknown
-}
-
 interface SupplyBatchData {
   id: number
   supply_id: number
   current_qty?: number
   received_qty?: number
+  accepted_qty?: number
+  unit_price?: number | null
   quality_status?: string
   [key: string]: unknown
 }
@@ -295,7 +286,7 @@ const STEPS = [
 const OPERATIONAL_STEPS = [
   'Supply category',
   'Receiving checklist',
-  'Operational supply lines',
+  'Operational supply batches',
   'Review',
 ]
 
@@ -408,7 +399,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const { user } = useAuth()
   const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers()
   const [supplies, setSupplies] = useState<Supply[]>([])
-  const [supplyLines, setSupplyLines] = useState<SupplyLine[]>([])
   const [supplyBatches, setSupplyBatches] = useState<SupplyBatchData[]>([])
   const [supplyQualityChecks, setSupplyQualityChecks] = useState<{ [key: string]: unknown }[]>([])
   const [supplyQualityItems, setSupplyQualityItems] = useState<{ [key: string]: unknown }[]>([])
@@ -562,7 +552,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       supply_batches: [
         {
           batch_id: null,
-          supply_line_id: null,
           lot_no: '',
           is_locked: false,
           product_id: '',
@@ -741,14 +730,14 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const totalAcceptedKg = useMemo(
     () =>
       filteredSupplies.reduce((total, supply) => {
-        const lines = supplyLines.filter((line) => line.supply_id === supply.id)
-        const accepted = lines.reduce(
-          (accumulator, line) => accumulator + (Number(line.accepted_qty) || 0),
+        const batches = supplyBatches.filter((batch) => batch.supply_id === supply.id)
+        const accepted = batches.reduce(
+          (accumulator, batch) => accumulator + (Number(batch.accepted_qty) || 0),
           0,
         )
         return total + accepted
       }, 0),
-    [filteredSupplies, supplyLines],
+    [filteredSupplies, supplyBatches],
   )
 
   const pendingQualityKg = useMemo(
@@ -1132,7 +1121,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         ...prev.supply_batches,
         {
           batch_id: null,
-          supply_line_id: null,
           lot_no: '',
           is_locked: false,
           product_id: '',
@@ -1224,7 +1212,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
         if (step === 2) {
           if (operationalSupplyLines.length === 0) {
-            toast.error('Add at least one operational supply line before continuing.')
+            toast.error('Add at least one operational supply batch before continuing.')
             return false
           }
           if (operationalMappedProducts.length === 0) {
@@ -1245,7 +1233,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             )
           })
           if (invalidLine) {
-            toast.error('Each operational line must include an OP product, unit, quantity, and unit price greater than zero.')
+            toast.error('Each operational batch must include an OP product, unit, quantity, and unit price greater than zero.')
             return false
           }
         }
@@ -1478,13 +1466,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       )
 
     if (mappedLines.length === 0) {
-      toast.error('Add at least one valid operational supply line before saving.')
+      toast.error('Add at least one valid operational supply batch before saving.')
       return
     }
 
     const invalidPriceLine = mappedLines.find((line) => !Number.isFinite(line.unit_price_number) || (line.unit_price_number ?? 0) <= 0)
     if (invalidPriceLine) {
-      toast.error('Unit price is required for every operational line and must be greater than zero.')
+      toast.error('Unit price is required for every operational batch and must be greater than zero.')
       return
     }
 
@@ -1544,30 +1532,32 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         insertedSupplyId = Number(insertedSupply.id)
       }
 
-      // Replace operational line items so edit reflects exact current form state.
-      const { error: deleteLinesError } = await supabase
-        .from('supply_lines')
+      // Replace operational batches so edit reflects exact current form state.
+      const { error: deleteBatchesError } = await supabase
+        .from('supply_batches')
         .delete()
         .eq('supply_id', insertedSupplyId)
-      if (deleteLinesError) {
-        throw deleteLinesError
+      if (deleteBatchesError) {
+        throw deleteBatchesError
       }
 
-      const supplyLineRows = mappedLines.map((line) => ({
+      const supplyBatchRows = mappedLines.map((line, index) => ({
         supply_id: insertedSupplyId,
+        lot_no: `LOT-${insertedSupplyId}-${String(index + 1).padStart(3, '0')}`,
         product_id: parseInt(line.product_id, 10),
         unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
-        ordered_qty: line.qty_number,
         received_qty: line.qty_number,
         accepted_qty: line.qty_number,
         rejected_qty: 0,
-        variance_reason: null,
+        current_qty: line.qty_number,
+        quality_status: 'PASSED',
         unit_price: line.unit_price_number,
+        created_at: nowISO,
       }))
 
-      const { error: linesError } = await supabase.from('supply_lines').insert(supplyLineRows)
-      if (linesError) {
-        throw linesError
+      const { error: batchesError } = await supabase.from('supply_batches').insert(supplyBatchRows)
+      if (batchesError) {
+        throw batchesError
       }
 
       const { error: opEntryError } = await supabase
@@ -1593,11 +1583,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               supply_id: insertedSupplyId,
               amount: line.amount_paid_number,
               paid_at: receivedAtISO,
-              reference: `Operational line ${index + 1}`,
+              reference: `Operational batch ${index + 1}`,
             })
             if (paymentError) {
-              console.warn('Could not save amount paid for operational line:', index + 1, paymentError)
-              toast.warning('Operational supply saved but some line payments could not be recorded. You can add them from the Payments page.')
+              console.warn('Could not save amount paid for operational batch:', index + 1, paymentError)
+              toast.warning('Operational supply saved but some batch payments could not be recorded. You can add them from the Payments page.')
             }
           }
         }
@@ -1772,11 +1762,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
         const { data: existingBatchesData, error: existingBatchesError } = await supabase
           .from('supply_batches')
-          .select('id, supply_line_id')
+          .select('id')
           .eq('supply_id', editingSupplyId)
         if (existingBatchesError) throw existingBatchesError
 
-        const existingBatchRows = (existingBatchesData ?? []) as Array<{ id: number; supply_line_id: number | null }>
+        const existingBatchRows = (existingBatchesData ?? []) as Array<{ id: number }>
         const existingBatchIds = existingBatchRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id))
         const existingBatchIdSet = new Set(existingBatchIds)
         const lockedBatchIds = new Set<number>()
@@ -1831,17 +1821,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             .delete()
             .in('id', batchIdsToDelete)
           if (deleteEditableBatchesError) throw deleteEditableBatchesError
-
-          const lineIdsToDelete = rowsToDelete
-            .map((row) => Number(row.supply_line_id))
-            .filter((id) => Number.isFinite(id)) as number[]
-          if (lineIdsToDelete.length > 0) {
-            const { error: deleteEditableLinesError } = await supabase
-              .from('supply_lines')
-              .delete()
-              .in('id', lineIdsToDelete)
-            if (deleteEditableLinesError) throw deleteEditableLinesError
-          }
         }
 
         for (let index = 0; index < editableValidLines.length; index += 1) {
@@ -1853,19 +1832,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           const unitPriceRaw = line.unit_price?.trim()
           const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
 
-          const linePayload = {
-            supply_id: editingSupplyId,
-            product_id: parseInt(line.product_id, 10),
-            unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
-            ordered_qty: quantity,
-            received_qty: quantity,
-            accepted_qty: acceptedQty,
-            rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
-            variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
-            unit_price: unitPrice,
-          }
-
-          let targetLineId = line.supply_line_id ?? null
           const existingBatchId = Number(line.batch_id)
           const hasExistingBatch = Number.isFinite(existingBatchId) && existingBatchIdSet.has(existingBatchId)
           if (hasExistingBatch && lockedBatchIds.has(existingBatchId)) {
@@ -1873,27 +1839,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             continue
           }
 
-          if (targetLineId && Number.isFinite(targetLineId)) {
-            const { error: updateLineError } = await supabase
-              .from('supply_lines')
-              .update(linePayload)
-              .eq('id', targetLineId)
-              .eq('supply_id', editingSupplyId)
-            if (updateLineError) throw updateLineError
-          } else {
-            const { data: insertedLine, error: insertLineError } = await supabase
-              .from('supply_lines')
-              .insert(linePayload)
-              .select('id')
-              .single()
-            if (insertLineError) throw insertLineError
-            targetLineId = insertedLine.id as number
-          }
-
           const batchQualityStatus = rejectedQty === 0 ? 'PASSED' : acceptedQty === 0 ? 'FAILED' : 'HOLD'
           const batchPayload = {
             supply_id: editingSupplyId,
-            supply_line_id: targetLineId,
             product_id: parseInt(line.product_id, 10),
             unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
             received_qty: quantity,
@@ -1901,6 +1849,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
             current_qty: acceptedQty,
             quality_status: batchQualityStatus,
+            unit_price: unitPrice,
             expiry_date: null,
           }
 
@@ -2167,12 +2116,19 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           if (supplierSignOff.signatureType === 'E_SIGNATURE' && supplierSignOff.signatureData) {
             signOffPayload.signature_data = supplierSignOff.signatureData
           }
-          if (existingSignOff?.id) {
-            await supabase.from('supply_supplier_sign_offs').update(signOffPayload).eq('id', existingSignOff.id)
-          } else {
-            await supabase.from('supply_supplier_sign_offs').insert(signOffPayload)
-          }
+        if (existingSignOff?.id) {
+          await supabase.from('supply_supplier_sign_offs').update(signOffPayload).eq('id', existingSignOff.id)
+        } else {
+          await supabase.from('supply_supplier_sign_offs').insert(signOffPayload)
         }
+      }
+
+        await supabase.from('supply_activities').insert({
+          supply_id: editingSupplyId,
+          type: 'SUPPLY_UPDATED',
+          description: `Supply updated (${validLines.length} batches, ${formData.supply_batches.length} lots)`,
+          actor: profileId ?? null,
+        })
 
         if (lockedLotsDetected) {
           toast.success('Supply updated. Lots that already started processing were locked and left unchanged.')
@@ -2214,7 +2170,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
       const newSupplyId = insertedSupply.id
 
-      let insertedLines: { id: number }[] = []
       const invalidCreatePriceLine = validLines.find((line) => {
         const unitPrice = Number.parseFloat(line.unit_price?.trim() ?? '')
         return !Number.isFinite(unitPrice) || unitPrice <= 0
@@ -2223,40 +2178,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         toast.error('Unit price is required for every batch and must be greater than zero.')
         setIsSubmitting(false)
         return
-      }
-
-      if (validLines.length > 0) {
-        const supplyLineRows = validLines.map((line) => {
-          const quantity = Number.parseFloat(line.qty) || 0
-          const acceptedRaw = Number.parseFloat(line.accepted_qty)
-          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
-          const rejectedQty = Math.max(quantity - acceptedQty, 0)
-
-          const unitPriceRaw = line.unit_price?.trim()
-          const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
-          return {
-            supply_id: newSupplyId,
-            product_id: parseInt(line.product_id, 10),
-            unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
-            ordered_qty: quantity,
-            received_qty: quantity,
-            accepted_qty: acceptedQty,
-            rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
-            variance_reason: rejectedQty > 0 ? 'Rejected during quality evaluation' : null,
-            unit_price: unitPrice,
-          }
-        })
-
-        const { data: linesData, error: linesError } = await supabase
-          .from('supply_lines')
-          .insert(supplyLineRows)
-          .select('id')
-
-        if (linesError) {
-          throw linesError
-        }
-
-        insertedLines = linesData ?? []
       }
 
       if (validLines.length > 0) {
@@ -2272,10 +2193,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               : acceptedQty === 0
               ? 'FAILED'
               : 'HOLD'
+          const unitPriceRaw = line.unit_price?.trim()
+          const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
 
           return {
             supply_id: newSupplyId,
-            supply_line_id: insertedLines[index]?.id ?? null,
             product_id: parseInt(line.product_id, 10),
             unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
             lot_no: lotNumber,
@@ -2284,6 +2206,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             rejected_qty: rejectedQty > 0 ? rejectedQty : 0,
             current_qty: acceptedQty,
             quality_status: batchQualityStatus,
+            unit_price: unitPrice,
             expiry_date: null,
             created_at: nowISO,
           }
@@ -2670,6 +2593,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
       }
 
+      await supabase.from('supply_activities').insert({
+        supply_id: newSupplyId,
+        type: 'SUPPLY_CREATED',
+        description: `Supply captured (${validLines.length} batches, ${formData.supply_batches.length} lots)`,
+        actor: profileId ?? null,
+      })
+
       toast.success('Supply captured successfully.')
       const createdSupplyId = newSupplyId
       setFormData(getInitialFormData())
@@ -2766,7 +2696,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       try {
         const [
           { data: supplyData, error: supplyError },
-          { data: linesData, error: linesError },
           { data: batchesData, error: batchesError },
           { data: docsData },
           { data: vehicleData },
@@ -2778,7 +2707,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           { data: operationalEntryData },
         ] = await Promise.all([
           supabase.from('supplies').select('*').eq('id', supplyId).single(),
-          supabase.from('supply_lines').select('*').eq('supply_id', supplyId),
           supabase.from('supply_batches').select('*').eq('supply_id', supplyId),
           supabase.from('supply_documents').select('*').eq('supply_id', supplyId),
           supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId).maybeSingle(),
@@ -2794,24 +2722,17 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             .maybeSingle(),
         ])
         if (supplyError || !supplyData) throw supplyError ?? new Error('Supply not found')
-        if (linesError) throw linesError
         if (batchesError) throw batchesError
         const supply = supplyData as Record<string, unknown>
-        const lines = (linesData ?? []) as { id?: number; product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }[]
-        const lineById = new Map<number, { id?: number; product_id: number; unit_id: number | null; ordered_qty?: number; received_qty?: number; accepted_qty?: number; rejected_qty?: number; unit_price?: number | null }>(
-          lines
-            .filter((line) => Number.isFinite(Number(line.id)))
-            .map((line) => [Number(line.id), line]),
-        )
         const batches = (batchesData ?? []) as Array<{
           id: number
-          supply_line_id: number | null
           lot_no?: string | null
           product_id: number
           unit_id: number | null
           received_qty?: number
           accepted_qty?: number
           rejected_qty?: number
+          unit_price?: number | null
         }>
         const batchIds = batches.map((batch) => Number(batch.id)).filter((id) => Number.isFinite(id))
         const lockedBatchIds = new Set<number>()
@@ -2868,7 +2789,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             supply_batches: [
               {
                 batch_id: null,
-                supply_line_id: null,
                 lot_no: '',
                 is_locked: false,
                 product_id: '',
@@ -2886,14 +2806,14 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           setOperationalCondition((operationalEntry?.received_condition as 'PASS' | 'HOLD' | 'REJECT' | '') ?? '')
           setOperationalRemarks(String(operationalEntry?.remarks ?? ''))
           setOperationalSupplyLines(
-            lines.length > 0
-              ? lines.map((line) => ({
-                  product_id: String(line.product_id ?? ''),
-                  unit_id: line.unit_id != null ? String(line.unit_id) : '',
-                  qty: String(line.received_qty ?? line.ordered_qty ?? ''),
-                  unit_price: line.unit_price != null ? String(line.unit_price) : '',
+            batches.length > 0
+              ? batches.map((batch) => ({
+                  product_id: String(batch.product_id ?? ''),
+                  unit_id: batch.unit_id != null ? String(batch.unit_id) : '',
+                  qty: String(batch.received_qty ?? 0),
+                  unit_price: batch.unit_price != null ? String(batch.unit_price) : '',
                   amount_paid: '',
-                  notes: String(line.variance_reason ?? ''),
+                  notes: '',
                 }))
               : [createEmptyOperationalSupplyLine()]
           )
@@ -2913,13 +2833,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           supply_batches:
             batches.length > 0
               ? batches.map((batch) => {
-                  const linkedLine = batch.supply_line_id != null ? lineById.get(Number(batch.supply_line_id)) : null
-                  const received = Number(batch.received_qty ?? linkedLine?.received_qty ?? linkedLine?.ordered_qty ?? 0)
-                  const accepted = Number(batch.accepted_qty ?? linkedLine?.accepted_qty ?? 0)
-                  const rejected = Number(batch.rejected_qty ?? linkedLine?.rejected_qty ?? received - accepted)
+                  const received = Number(batch.received_qty ?? 0)
+                  const accepted = Number(batch.accepted_qty ?? 0)
+                  const rejected = Number(batch.rejected_qty ?? received - accepted)
                   return {
                     batch_id: Number(batch.id),
-                    supply_line_id: batch.supply_line_id != null ? Number(batch.supply_line_id) : null,
                     lot_no: String(batch.lot_no ?? ''),
                     is_locked: lockedBatchIds.has(Number(batch.id)),
                     product_id: String(batch.product_id),
@@ -2927,33 +2845,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                     qty: String(received),
                     accepted_qty: String(accepted),
                     rejected_qty: String(rejected >= 0 ? rejected : 0),
-                    unit_price: linkedLine?.unit_price != null ? String(linkedLine.unit_price) : '',
-                    amount_paid: '',
-                  }
-                })
-              : lines.length > 0
-              ? lines.map((l) => {
-                  const received = Number(l.received_qty ?? l.ordered_qty ?? 0)
-                  const accepted = Number(l.accepted_qty ?? 0)
-                  const rejected = Number(l.rejected_qty ?? received - accepted)
-                  return {
-                    batch_id: null,
-                    supply_line_id: Number.isFinite(Number(l.id)) ? Number(l.id) : null,
-                    lot_no: '',
-                    is_locked: false,
-                    product_id: String(l.product_id),
-                    unit_id: l.unit_id != null ? String(l.unit_id) : '',
-                    qty: String(received),
-                    accepted_qty: String(accepted),
-                    rejected_qty: String(rejected >= 0 ? rejected : 0),
-                    unit_price: l.unit_price != null ? String(l.unit_price) : '',
+                    unit_price: batch.unit_price != null ? String(batch.unit_price) : '',
                     amount_paid: '',
                   }
                 })
               : [
                   {
                     batch_id: null,
-                    supply_line_id: null,
                     lot_no: '',
                     is_locked: false,
                     product_id: '',
@@ -3099,7 +2997,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   }
 
   const handleRowClick = (supply: Supply) => {
-    const lines = supplyLines.filter((line) => line.supply_id === supply.id)
     const batches = supplyBatches.filter((batch) => batch.supply_id === supply.id)
     const qualityChecksForSupply = supplyQualityChecks.filter((check) => check.supply_id === supply.id)
     const qualityItemsForSupply = supplyQualityItems
@@ -3157,7 +3054,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     navigate(detailPath, {
       state: {
         supply,
-        supplyLines: lines,
         supplyBatches: batches,
         supplyQualityChecks: qualityChecksForSupply,
         supplyQualityItems: qualityItemsForSupply,
@@ -3373,7 +3269,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     try {
       const [
         suppliesResponse,
-        linesResponse,
         batchesResponse,
         qualityChecksResponse,
         qualityItemsResponse,
@@ -3389,8 +3284,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           .select('id, category_code, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
-        supabase.from('supply_lines').select('id, supply_id, product_id, unit_id, accepted_qty, unit_price'),
-        supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, quality_status'),
+        supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, accepted_qty, quality_status, unit_price'),
         supabase.from('supply_quality_checks').select('id, supply_id'),
         supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id, results'),
         supabase.from('user_profiles').select('id, full_name, email'),
@@ -3402,7 +3296,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       ])
 
       if (suppliesResponse.error) throw suppliesResponse.error
-      if (linesResponse.error) throw linesResponse.error
       if (batchesResponse.error) throw batchesResponse.error
       if (qualityChecksResponse.error) throw qualityChecksResponse.error
       if (qualityItemsResponse.error) throw qualityItemsResponse.error
@@ -3414,7 +3307,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       if (supplierSignOffsResponse.error) throw supplierSignOffsResponse.error
 
       setSupplies((suppliesResponse.data ?? []) as Supply[])
-      setSupplyLines((linesResponse.data ?? []) as SupplyLine[])
       setSupplyBatches((batchesResponse.data ?? []) as SupplyBatchData[])
       setSupplyQualityChecks((qualityChecksResponse.data ?? []) as { [key: string]: unknown }[])
       setSupplyQualityItems((qualityItemsResponse.data ?? []) as { [key: string]: unknown }[])
@@ -4215,7 +4107,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 {currentStep === 2 && isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
-                      <h3 className="text-lg font-semibold text-text-dark">Operational supply lines</h3>
+                      <h3 className="text-lg font-semibold text-text-dark">Operational supply batches</h3>
                       <p className="text-sm text-text-dark/70">
                         Add the products and quantities for this operational delivery.
                       </p>
@@ -4387,7 +4279,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                     </div>
 
                     <div className="mt-4 rounded-xl border border-olive-light/40 bg-white p-4">
-                      <p className="text-sm font-semibold text-text-dark">Operational supply lines</p>
+                      <p className="text-sm font-semibold text-text-dark">Operational supply batches</p>
                       <div className="mt-3 space-y-2">
                         {operationalSupplyLines.map((line, index) => {
                           const product = products.find((entry) => String(entry.id) === line.product_id)

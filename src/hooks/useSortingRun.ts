@@ -6,6 +6,7 @@ import type { ProcessSortingOutput, ProcessSortingWaste } from '@/types/processE
 interface UseSortingRunOptions {
   stepRunId: number | null
   enabled?: boolean
+  mode?: 'sorting' | 'grading'
 }
 
 interface UseSortingRunReturn {
@@ -27,12 +28,14 @@ interface UseSortingRunReturn {
     remarks?: string | null
   }) => Promise<void>
   deleteOutput: (outputId: number) => Promise<void>
-  addWaste: (wasteData: { sorting_run_id: number; waste_type: string; quantity_kg: number }) => Promise<void>
+  addWaste: (wasteData: { sorting_run_id?: number; process_step_run_id?: number; waste_type: string; quantity_kg: number }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
 }
 
 export function useSortingRun(options: UseSortingRunOptions): UseSortingRunReturn {
-  const { stepRunId, enabled = true } = options
+  const { stepRunId, enabled = true, mode = 'sorting' } = options
+  const outputsTable = mode === 'grading' ? 'process_grading_outputs' : 'process_sorting_outputs'
+  const wasteTable = mode === 'grading' ? 'process_grading_waste' : 'process_sorting_waste'
   const [outputs, setOutputs] = useState<ProcessSortingOutput[]>([])
   const [waste, setWaste] = useState<ProcessSortingWaste[]>([])
   const [loading, setLoading] = useState(true)
@@ -49,7 +52,7 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
 
     // Fetch outputs with product info
     const { data: outputsData, error: outputsError } = await supabase
-      .from('process_sorting_outputs')
+      .from(outputsTable)
       .select(`
         *,
         product:products(id, name, sku)
@@ -71,11 +74,35 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
       }))
       setOutputs(formattedOutputs as ProcessSortingOutput[])
 
-      // Fetch waste for all outputs
-      if (formattedOutputs.length > 0) {
+      if (mode === 'grading') {
+        const outputIds = formattedOutputs.map((o: ProcessSortingOutput) => o.id)
+        const [{ data: wasteByStepRun, error: stepWasteError }, wasteByOutputResult] = await Promise.all([
+          supabase
+            .from(wasteTable)
+            .select('*')
+            .eq('process_step_run_id', stepRunId)
+            .order('created_at', { ascending: false }),
+          outputIds.length > 0
+            ? supabase
+                .from(wasteTable)
+                .select('*')
+                .in('sorting_run_id', outputIds)
+                .order('created_at', { ascending: false })
+            : Promise.resolve({ data: [], error: null }),
+        ])
+
+        if (stepWasteError || wasteByOutputResult.error) {
+          setError(stepWasteError ?? wasteByOutputResult.error)
+          setWaste([])
+        } else {
+          const merged = [...(wasteByStepRun ?? []), ...(wasteByOutputResult.data ?? [])]
+          const uniqueById = Array.from(new Map(merged.map((row: any) => [row.id, row])).values())
+          setWaste(uniqueById as ProcessSortingWaste[])
+        }
+      } else if (formattedOutputs.length > 0) {
         const outputIds = formattedOutputs.map((o: ProcessSortingOutput) => o.id)
         const { data: wasteData, error: wasteError } = await supabase
-          .from('process_sorting_waste')
+          .from(wasteTable)
           .select('*')
           .in('sorting_run_id', outputIds)
           .order('created_at', { ascending: false })
@@ -92,7 +119,7 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
     }
 
     setLoading(false)
-  }, [stepRunId, enabled])
+  }, [stepRunId, enabled, mode, outputsTable, wasteTable])
 
   const addOutput = useCallback(
     async (data: {
@@ -104,9 +131,8 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
       if (!stepRunId) {
         throw new Error('Step run ID is required')
       }
-
       const { data: insertedOutput, error: insertError } = await supabase
-        .from('process_sorting_outputs')
+        .from(outputsTable)
         .insert({
           process_step_run_id: stepRunId,
           ...data,
@@ -139,7 +165,7 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
 
       await fetchData()
     },
-    [stepRunId, fetchData]
+    [stepRunId, fetchData, outputsTable]
   )
 
   const updateOutput = useCallback(
@@ -153,7 +179,7 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
       }
     ) => {
       const { data: updatedOutput, error: updateError } = await supabase
-        .from('process_sorting_outputs')
+        .from(outputsTable)
         .update(data)
         .eq('id', outputId)
         .select(`
@@ -186,13 +212,13 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
 
       await fetchData()
     },
-    [fetchData]
+    [fetchData, outputsTable]
   )
 
   const deleteOutput = useCallback(
     async (outputId: number) => {
       const { error: deleteError } = await supabase
-        .from('process_sorting_outputs')
+        .from(outputsTable)
         .delete()
         .eq('id', outputId)
 
@@ -203,14 +229,28 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
       setOutputs((prev) => prev.filter((output) => output.id !== outputId))
       setWaste((prev) => prev.filter((wasteRow) => wasteRow.sorting_run_id !== outputId))
     },
-    []
+    [outputsTable]
   )
 
   const addWaste = useCallback(
-    async (wasteData: { sorting_run_id: number; waste_type: string; quantity_kg: number }) => {
+    async (wasteData: { sorting_run_id?: number; process_step_run_id?: number; waste_type: string; quantity_kg: number }) => {
+      const insertPayload =
+        mode === 'grading'
+          ? {
+              process_step_run_id: wasteData.process_step_run_id ?? stepRunId,
+              sorting_run_id: wasteData.sorting_run_id ?? null,
+              waste_type: wasteData.waste_type,
+              quantity_kg: wasteData.quantity_kg,
+            }
+          : {
+              sorting_run_id: wasteData.sorting_run_id,
+              waste_type: wasteData.waste_type,
+              quantity_kg: wasteData.quantity_kg,
+            }
+
       const { data: insertedWaste, error: insertError } = await supabase
-        .from('process_sorting_waste')
-        .insert(wasteData)
+        .from(wasteTable)
+        .insert(insertPayload)
         .select('*')
         .single()
 
@@ -225,13 +265,13 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
 
       await fetchData()
     },
-    [fetchData]
+    [fetchData, wasteTable, mode, stepRunId]
   )
 
   const deleteWaste = useCallback(
     async (wasteId: number) => {
       const { error: deleteError } = await supabase
-        .from('process_sorting_waste')
+        .from(wasteTable)
         .delete()
         .eq('id', wasteId)
 
@@ -241,7 +281,7 @@ export function useSortingRun(options: UseSortingRunOptions): UseSortingRunRetur
 
       setWaste((prev) => prev.filter((row) => row.id !== wasteId))
     },
-    []
+    [wasteTable]
   )
 
   useEffect(() => {

@@ -2,6 +2,11 @@ import { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import type { Location as RouterLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
+import {
+  FEATURE_CARRIERS,
+  FEATURE_CYCLE_COUNTS,
+  FEATURE_INVENTORY_ADJUSTMENTS,
+} from './lib/features'
 
 const Login = lazy(() => import('./pages/Login'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -21,6 +26,8 @@ const WastePage = lazy(() => import('./pages/inventory/WastePage'))
 const WasteDetailsPage = lazy(() => import('./pages/inventory/WasteDetailsPage'))
 const OperationalSuppliesStockPage = lazy(() => import('./pages/inventory/OperationalSuppliesStockPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
+const InventoryAdjustments = lazy(() => import('./pages/inventory/InventoryAdjustments'))
+const CycleCounts = lazy(() => import('./pages/inventory/CycleCounts'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
 const OperationalSupplyDetail = lazy(() => import('./pages/supplies/OperationalSupplyDetail'))
@@ -50,6 +57,7 @@ const DocumentTypes = lazy(() => import('./pages/settings/DocumentTypes'))
 const QualityParameters = lazy(() => import('./pages/settings/QualityParameters'))
 const ProcessStepNames = lazy(() => import('./pages/settings/ProcessStepNames'))
 const PackagingManagement = lazy(() => import('./pages/settings/PackagingManagement'))
+const Carriers = lazy(() => import('./pages/settings/Carriers'))
 
 function LoadingScreen() {
   return (
@@ -237,6 +245,26 @@ function App() {
             </ProtectedRoute>
           }
         />
+        {FEATURE_INVENTORY_ADJUSTMENTS && (
+          <Route
+            path="/inventory/adjustments"
+            element={
+              <ProtectedRoute>
+                <InventoryAdjustments />
+              </ProtectedRoute>
+            }
+          />
+        )}
+        {FEATURE_CYCLE_COUNTS && (
+          <Route
+            path="/inventory/cycle-counts"
+            element={
+              <ProtectedRoute>
+                <CycleCounts />
+              </ProtectedRoute>
+            }
+          />
+        )}
         <Route
           path="/supplies"
           element={
@@ -365,6 +393,16 @@ function App() {
             </ProtectedRoute>
           }
         />
+        {FEATURE_CARRIERS && (
+          <Route
+            path="/settings/carriers"
+            element={
+              <ProtectedRoute>
+                <Carriers />
+              </ProtectedRoute>
+            }
+          />
+        )}
         <Route
           path="/process/process-steps"
           element={

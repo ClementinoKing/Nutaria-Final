@@ -5,6 +5,7 @@ import type { ProcessWashingRun, ProcessWashingWaste } from '@/types/processExec
 
 interface UseWashingRunOptions {
   stepRunId: number | null
+  gradingOutputId?: number | null
   enabled?: boolean
 }
 
@@ -19,13 +20,14 @@ interface UseWashingRunReturn {
     oxy_acid_ml?: number | null
     moisture_percent?: number | null
     remarks?: string | null
+    washing_state?: 'PENDING' | 'WASHED' | null
   }) => Promise<void>
   addWaste: (waste: { waste_type: string; quantity_kg: number; remarks?: string | null }) => Promise<void>
   deleteWaste: (wasteId: number) => Promise<void>
 }
 
 export function useWashingRun(options: UseWashingRunOptions): UseWashingRunReturn {
-  const { stepRunId, enabled = true } = options
+  const { stepRunId, gradingOutputId = null, enabled = true } = options
   const [washingRun, setWashingRun] = useState<ProcessWashingRun | null>(null)
   const [waste, setWaste] = useState<ProcessWashingWaste[]>([])
   const [loading, setLoading] = useState(true)
@@ -41,13 +43,19 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
     setError(null)
 
     // Fetch washing run
-    const { data: runData, error: runError } = await supabase
+    let runQuery = supabase
       .from('process_washing_runs')
       .select('*')
       .eq('process_step_run_id', stepRunId)
       .order('id', { ascending: false })
       .limit(1)
-      .maybeSingle()
+
+    runQuery =
+      gradingOutputId != null
+        ? runQuery.eq('grading_output_id', gradingOutputId)
+        : runQuery.is('grading_output_id', null)
+
+    const { data: runData, error: runError } = await runQuery.maybeSingle()
 
     if (runError && runError.code !== 'PGRST116') {
       // PGRST116 is "not found" which is OK
@@ -76,7 +84,7 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
     }
 
     setLoading(false)
-  }, [stepRunId, enabled])
+  }, [stepRunId, gradingOutputId, enabled])
 
   const saveWashingRun = useCallback(
     async (data: {
@@ -84,6 +92,7 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
       oxy_acid_ml?: number | null
       moisture_percent?: number | null
       remarks?: string | null
+      washing_state?: 'PENDING' | 'WASHED' | null
     }) => {
       if (!stepRunId) {
         throw new Error('Step run ID is required')
@@ -91,13 +100,17 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
 
       let runId = washingRun?.id
       if (!runId) {
-        const { data: existingRun } = await supabase
+        let existingQuery = supabase
           .from('process_washing_runs')
           .select('id')
           .eq('process_step_run_id', stepRunId)
           .order('id', { ascending: false })
           .limit(1)
-          .maybeSingle()
+        existingQuery =
+          gradingOutputId != null
+            ? existingQuery.eq('grading_output_id', gradingOutputId)
+            : existingQuery.is('grading_output_id', null)
+        const { data: existingRun } = await existingQuery.maybeSingle()
         runId = existingRun?.id ?? null
       }
 
@@ -108,7 +121,7 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
             .eq('id', runId)
         : await supabase
             .from('process_washing_runs')
-            .insert({ process_step_run_id: stepRunId, ...data })
+            .insert({ process_step_run_id: stepRunId, grading_output_id: gradingOutputId, ...data })
 
       if (error) {
         throw error
@@ -116,7 +129,7 @@ export function useWashingRun(options: UseWashingRunOptions): UseWashingRunRetur
 
       await fetchData()
     },
-    [stepRunId, washingRun, fetchData]
+    [stepRunId, gradingOutputId, washingRun, fetchData]
   )
 
   const addWaste = useCallback(

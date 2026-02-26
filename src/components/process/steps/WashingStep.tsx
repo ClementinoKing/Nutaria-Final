@@ -19,6 +19,9 @@ import {
 
 interface WashingStepProps {
   stepRun: ProcessStepRun
+  gradingOutputId?: number | null
+  saveMode?: 'auto' | 'manual'
+  onSaved?: () => void
   loading?: boolean
   availableQuantity?: {
     availableQty: number
@@ -32,12 +35,16 @@ const WASTE_TYPES = ['Final Product Waste', 'Dust', 'Floor Sweepings']
 
 export function WashingStep({
   stepRun,
+  gradingOutputId = null,
+  saveMode = 'auto',
+  onSaved,
   loading: externalLoading = false,
   availableQuantity,
   onQuantityChange,
 }: WashingStepProps) {
   const { washingRun, waste, loading, saveWashingRun, addWaste, deleteWaste } = useWashingRun({
     stepRunId: stepRun.id,
+    gradingOutputId,
     enabled: true,
   })
 
@@ -91,6 +98,9 @@ export function WashingStep({
 
   // Save in background, 10s after last field change.
   useEffect(() => {
+    if (saveMode !== 'auto') {
+      return
+    }
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false
       return
@@ -114,9 +124,12 @@ export function WashingStep({
         saveTimeoutRef.current = null
       }
     }
-  }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks])
+  }, [formData.washing_water_litres, formData.oxy_acid_ml, formData.moisture_percent, formData.remarks, saveMode])
 
   useEffect(() => {
+    if (saveMode !== 'auto') {
+      return
+    }
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
@@ -124,7 +137,27 @@ export function WashingStep({
         flushSave()
       }
     }
-  }, [flushSave])
+  }, [flushSave, saveMode])
+
+  const handleMarkWashed = async () => {
+    setSaving(true)
+    try {
+      await saveWashingRun({
+        washing_water_litres: formData.washing_water_litres ? parseFloat(formData.washing_water_litres) : null,
+        oxy_acid_ml: formData.oxy_acid_ml ? parseFloat(formData.oxy_acid_ml) : null,
+        moisture_percent: formData.moisture_percent ? parseFloat(formData.moisture_percent) : null,
+        remarks: formData.remarks.trim() || null,
+        washing_state: 'WASHED',
+      })
+      toast.success('Washing data saved')
+      onSaved?.()
+    } catch (error) {
+      console.error('Error saving washing data:', error)
+      toast.error('Failed to save washing data')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handleWasteSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -265,6 +298,18 @@ export function WashingStep({
             disabled={saving || externalLoading}
           />
         </div>
+        {saveMode === 'manual' && (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              onClick={handleMarkWashed}
+              disabled={saving || externalLoading}
+              className="bg-olive hover:bg-olive-dark"
+            >
+              Save
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Waste Section */}

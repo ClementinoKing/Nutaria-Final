@@ -22,10 +22,9 @@ interface Supply {
   [key: string]: unknown
 }
 
-interface SupplyLine {
+interface SupplyBatch {
   id: number
   supply_id: number
-  product_id: number
   accepted_qty: number
   unit_price?: number | null
   [key: string]: unknown
@@ -108,7 +107,7 @@ function Payments() {
   const { user } = useAuth()
   const { suppliers: supplierOptions } = useSuppliers({ pageSize: 500 })
   const [supplies, setSupplies] = useState<Supply[]>([])
-  const [supplyLines, setSupplyLines] = useState<SupplyLine[]>([])
+  const [supplyBatches, setSupplyBatches] = useState<SupplyBatch[]>([])
   const [supplyDocuments, setSupplyDocuments] = useState<SupplyDocument[]>([])
   const [payments, setPayments] = useState<SupplyPayment[]>([])
   const [loading, setLoading] = useState(true)
@@ -141,13 +140,13 @@ function Payments() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [suppliesRes, linesRes, docsRes, paymentsRes] = await Promise.all([
+      const [suppliesRes, batchesRes, docsRes, paymentsRes] = await Promise.all([
         supabase
           .from('supplies')
           .select('id, doc_no, supplier_id, received_at')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
-        supabase.from('supply_lines').select('id, supply_id, product_id, accepted_qty, unit_price'),
+        supabase.from('supply_batches').select('id, supply_id, accepted_qty, unit_price'),
         supabase
           .from('supply_documents')
           .select('supply_id, document_type_code, value')
@@ -161,12 +160,12 @@ function Payments() {
       ])
 
       if (suppliesRes.error) throw suppliesRes.error
-      if (linesRes.error) throw linesRes.error
+      if (batchesRes.error) throw batchesRes.error
       if (docsRes.error) throw docsRes.error
       if (paymentsRes.error) throw paymentsRes.error
 
       setSupplies((suppliesRes.data ?? []) as Supply[])
-      setSupplyLines((linesRes.data ?? []) as SupplyLine[])
+      setSupplyBatches((batchesRes.data ?? []) as SupplyBatch[])
       setSupplyDocuments((docsRes.data ?? []) as SupplyDocument[])
       const paymentRows = (paymentsRes.data ?? []) as SupplyPayment[]
       setPayments(paymentRows)
@@ -229,11 +228,11 @@ function Payments() {
     })
 
     const expectedBySupply = new Map<number, number>()
-    supplyLines.forEach((line) => {
-      const price = line.unit_price != null ? Number(line.unit_price) : 0
-      const qty = Number(line.accepted_qty) || 0
+    supplyBatches.forEach((batch) => {
+      const price = batch.unit_price != null ? Number(batch.unit_price) : 0
+      const qty = Number(batch.accepted_qty) || 0
       const lineTotal = price * qty
-      expectedBySupply.set(line.supply_id, (expectedBySupply.get(line.supply_id) ?? 0) + lineTotal)
+      expectedBySupply.set(batch.supply_id, (expectedBySupply.get(batch.supply_id) ?? 0) + lineTotal)
     })
 
     return supplies.map((s) => {
@@ -247,7 +246,7 @@ function Payments() {
         balance: expected - paid,
       }
     })
-  }, [supplies, supplyLines, payments, supplierLabelMap])
+  }, [supplies, supplyBatches, payments, supplierLabelMap])
 
   const getReconciliationStatus = useCallback((supply: SupplyWithTotals): ReconciliationFilter => {
     const paid = Number(supply.total_paid) || 0

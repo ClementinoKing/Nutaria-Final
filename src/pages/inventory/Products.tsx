@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type Dispatch, type SetStateAction } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { FEATURE_PROCESSING_PRODUCT_WIZARD } from '@/lib/features'
 
 interface ComponentProduct {
   id: number
@@ -89,6 +90,38 @@ interface BulkEditFormData {
   wip_component_ids: number[]
 }
 
+type CreationMode = 'OPERATIONAL' | 'PROCESSING' | null
+
+interface ProcessingDraftBase {
+  id?: number
+  temp_key: string
+  name: string
+  base_unit_id: string
+  reorder_point: string
+  safety_stock: string
+  target_stock: string
+  status: string
+  notes: string
+}
+
+interface ProcessingRawDraft extends ProcessingDraftBase {}
+
+interface ProcessingWipDraft extends ProcessingDraftBase {
+  raw_component_temp_keys: string[]
+}
+
+interface ProcessingFinishedDraft extends ProcessingDraftBase {
+  wip_component_temp_keys: string[]
+}
+
+interface LoadedChain {
+  chainId: number
+  chainName: string | null
+  raws: ProcessingRawDraft[]
+  wips: ProcessingWipDraft[]
+  finished: ProcessingFinishedDraft[]
+}
+
 const statusBadgeStyles = {
   ACTIVE: 'bg-green-100 text-green-800',
   INACTIVE: 'bg-gray-100 text-gray-700',
@@ -103,6 +136,9 @@ const productTypeBadgeStyles: Record<string, string> = {
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+const DEFAULT_REORDER_POINT = 250
+const DEFAULT_SAFETY_STOCK = 100
+const DEFAULT_TARGET_STOCK = 500
 
 const sortableColumns = [
   { value: 'name', label: 'Name' },
@@ -113,13 +149,22 @@ const sortableColumns = [
   { value: 'updated_at', label: 'Last Updated' },
 ]
 
-function createEmptyProductForm(existingProducts: Product[] = []): ProductFormData {
+function resolveDefaultKgUnitId(units: Unit[]): string {
+  const kilogramUnit = units.find((unit) => {
+    const symbol = (unit.symbol ?? '').trim().toLowerCase()
+    const name = (unit.name ?? '').trim().toLowerCase()
+    return symbol === 'kg' || name === 'kilogram' || name === 'kg'
+  })
+  return kilogramUnit ? String(kilogramUnit.id) : ''
+}
+
+function createEmptyProductForm(existingProducts: Product[] = [], units: Unit[] = []): ProductFormData {
   return {
     name: '',
-    base_unit_id: '',
-    reorder_point: '',
-    safety_stock: '',
-    target_stock: '',
+    base_unit_id: resolveDefaultKgUnitId(units),
+    reorder_point: String(DEFAULT_REORDER_POINT),
+    safety_stock: String(DEFAULT_SAFETY_STOCK),
+    target_stock: String(DEFAULT_TARGET_STOCK),
     status: 'ACTIVE',
     notes: '',
     product_type: 'RAW',
@@ -193,6 +238,19 @@ function createEmptyBulkEditForm(): BulkEditFormData {
   }
 }
 
+function createProcessingDraftBase(units: Unit[]): ProcessingDraftBase {
+  return {
+    temp_key: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: '',
+    base_unit_id: resolveDefaultKgUnitId(units),
+    reorder_point: String(DEFAULT_REORDER_POINT),
+    safety_stock: String(DEFAULT_SAFETY_STOCK),
+    target_stock: String(DEFAULT_TARGET_STOCK),
+    status: 'ACTIVE',
+    notes: '',
+  }
+}
+
 function Products() {
   const [products, setProducts] = useState<Product[]>([])
   const [units, setUnits] = useState<Unit[]>([])
@@ -215,6 +273,15 @@ function Products() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [formData, setFormData] = useState<ProductFormData>(() => createEmptyProductForm())
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+  const [creationMode, setCreationMode] = useState<CreationMode>(null)
+  const [processingStep, setProcessingStep] = useState<1 | 2 | 3 | 4>(1)
+  const [processingChainId, setProcessingChainId] = useState<number | null>(null)
+  const [processingChainName, setProcessingChainName] = useState('')
+  const [processingRaws, setProcessingRaws] = useState<ProcessingRawDraft[]>([])
+  const [processingWips, setProcessingWips] = useState<ProcessingWipDraft[]>([])
+  const [processingFinished, setProcessingFinished] = useState<ProcessingFinishedDraft[]>([])
+  const [processingEditMode, setProcessingEditMode] = useState(false)
+  const [processingFallbackNotice, setProcessingFallbackNotice] = useState<string | null>(null)
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([])
   const [bulkActionLoading, setBulkActionLoading] = useState(false)
   const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
@@ -540,12 +607,125 @@ function Products() {
     return 'No products found.'
   }, [error, loading])
 
+  const resetProcessingWizard = useCallback(() => {
+    setProcessingStep(1)
+    setProcessingChainId(null)
+    setProcessingChainName('')
+    setProcessingRaws([createProcessingDraftBase(units)])
+    setProcessingWips([
+      {
+        ...createProcessingDraftBase(units),
+        raw_component_temp_keys: [],
+      },
+    ])
+    setProcessingFinished([
+      {
+        ...createProcessingDraftBase(units),
+        wip_component_temp_keys: [],
+      },
+    ])
+    setProcessingEditMode(false)
+    setProcessingFallbackNotice(null)
+  }, [units])
+
+  const toDraftBase = useCallback((product: Product): ProcessingDraftBase => ({
+    id: product.id,
+    temp_key: `p-${product.id}`,
+    name: product.name ?? '',
+    base_unit_id: product.base_unit_id != null ? String(product.base_unit_id) : resolveDefaultKgUnitId(units),
+    reorder_point: product.reorder_point != null ? String(product.reorder_point) : String(DEFAULT_REORDER_POINT),
+    safety_stock: product.safety_stock != null ? String(product.safety_stock) : String(DEFAULT_SAFETY_STOCK),
+    target_stock: product.target_stock != null ? String(product.target_stock) : String(DEFAULT_TARGET_STOCK),
+    status: (product.status ?? 'ACTIVE').toUpperCase(),
+    notes: product.notes ?? '',
+  }), [units])
+
+  const loadProcessingChain = useCallback(async (chainId: number): Promise<LoadedChain> => {
+    const [{ data: chainData, error: chainError }, { data: membersData, error: membersError }] = await Promise.all([
+      supabase
+        .from('product_processing_chains')
+        .select('id, name')
+        .eq('id', chainId)
+        .single(),
+      supabase
+        .from('product_processing_chain_members')
+        .select('product_id, stage, display_order, product:products(id, name, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, product_type, sku)')
+        .eq('chain_id', chainId)
+        .order('stage', { ascending: true })
+        .order('display_order', { ascending: true }),
+    ])
+
+    if (chainError) throw chainError
+    if (membersError) throw membersError
+
+    const memberRows = (membersData ?? []) as Array<{
+      product_id: number
+      stage: 'RAW' | 'WIP' | 'FINISHED'
+      display_order: number
+      product: Product | null
+    }>
+
+    const raws = memberRows
+      .filter((row) => row.stage === 'RAW' && row.product)
+      .sort((a, b) => a.display_order - b.display_order)
+      .map((row) => ({ ...toDraftBase(row.product as Product) }))
+
+    const wipsBase = memberRows
+      .filter((row) => row.stage === 'WIP' && row.product)
+      .sort((a, b) => a.display_order - b.display_order)
+      .map((row) => ({ ...toDraftBase(row.product as Product), raw_component_temp_keys: [] as string[] }))
+
+    const finishedBase = memberRows
+      .filter((row) => row.stage === 'FINISHED' && row.product)
+      .sort((a, b) => a.display_order - b.display_order)
+      .map((row) => ({ ...toDraftBase(row.product as Product), wip_component_temp_keys: [] as string[] }))
+
+    const allParentIds = [...wipsBase.map((w) => w.id), ...finishedBase.map((f) => f.id)].filter((id): id is number => typeof id === 'number')
+    if (allParentIds.length > 0) {
+      const { data: linksData, error: linksError } = await supabase
+        .from('product_components')
+        .select('parent_product_id, component_product_id')
+        .in('parent_product_id', allParentIds)
+      if (linksError) throw linksError
+      const rawById = new Map(raws.map((r) => [r.id, r.temp_key] as const))
+      const wipById = new Map(wipsBase.map((w) => [w.id, w.temp_key] as const))
+
+      ;(linksData ?? []).forEach((link: { parent_product_id: number; component_product_id: number }) => {
+        const wipRow = wipsBase.find((w) => w.id === link.parent_product_id)
+        if (wipRow) {
+          const rawKey = rawById.get(link.component_product_id)
+          if (rawKey && !wipRow.raw_component_temp_keys.includes(rawKey)) {
+            wipRow.raw_component_temp_keys.push(rawKey)
+          }
+          return
+        }
+        const finishedRow = finishedBase.find((f) => f.id === link.parent_product_id)
+        if (finishedRow) {
+          const wipKey = wipById.get(link.component_product_id)
+          if (wipKey && !finishedRow.wip_component_temp_keys.includes(wipKey)) {
+            finishedRow.wip_component_temp_keys.push(wipKey)
+          }
+        }
+      })
+    }
+
+    return {
+      chainId,
+      chainName: (chainData as { id: number; name: string | null })?.name ?? null,
+      raws,
+      wips: wipsBase,
+      finished: finishedBase,
+    }
+  }, [toDraftBase])
+
   const handleOpenCreateModal = () => {
-    setFormData(createEmptyProductForm(products))
+    setFormData({ ...createEmptyProductForm(products, units), product_type: 'OP' })
     setFormErrors({})
     setComponentSearch('')
     setModalMode('create')
     setEditingProduct(null)
+    setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+    resetProcessingWizard()
     setIsModalOpen(true)
   }
 
@@ -557,8 +737,10 @@ function Products() {
     setFormErrors({})
     setModalMode('create')
     setEditingProduct(null)
-    setFormData(createEmptyProductForm(products))
+    setFormData(createEmptyProductForm(products, units))
     setComponentSearch('')
+    setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+    resetProcessingWizard()
   }
 
   const handleOpenEditModal = useCallback((product: Product) => {
@@ -566,38 +748,90 @@ function Products() {
       return
     }
 
-    setFormData({
-      name: product.name ?? '',
-      base_unit_id:
-        product.base_unit_id !== null && product.base_unit_id !== undefined
-          ? String(product.base_unit_id)
-          : '',
-      reorder_point:
-        product.reorder_point !== null && product.reorder_point !== undefined
-          ? String(product.reorder_point)
-          : '',
-      safety_stock:
-        product.safety_stock !== null && product.safety_stock !== undefined
-          ? String(product.safety_stock)
-          : '',
-      target_stock:
-        product.target_stock !== null && product.target_stock !== undefined
-          ? String(product.target_stock)
-          : '',
-      status: (product.status ?? 'ACTIVE').toUpperCase(),
-      notes: product.notes ?? '',
-      product_type: (product.product_type ?? 'RAW').toUpperCase(),
-      component_ids:
-        product.product_components
-          ?.map((row) => row?.component_product?.id)
-          .filter((id): id is number => typeof id === 'number') ?? [],
-    })
-    setFormErrors({})
-    setComponentSearch('')
-    setModalMode('edit')
-    setEditingProduct(product)
-    setIsModalOpen(true)
-  }, [])
+    const openSimpleForm = (notice: string | null = null) => {
+      setFormData({
+        name: product.name ?? '',
+        base_unit_id:
+          product.base_unit_id !== null && product.base_unit_id !== undefined
+            ? String(product.base_unit_id)
+            : '',
+        reorder_point:
+          product.reorder_point !== null && product.reorder_point !== undefined
+            ? String(product.reorder_point)
+            : '',
+        safety_stock:
+          product.safety_stock !== null && product.safety_stock !== undefined
+            ? String(product.safety_stock)
+            : '',
+        target_stock:
+          product.target_stock !== null && product.target_stock !== undefined
+            ? String(product.target_stock)
+            : '',
+        status: (product.status ?? 'ACTIVE').toUpperCase(),
+        notes: product.notes ?? '',
+        product_type: (product.product_type ?? 'RAW').toUpperCase(),
+        component_ids:
+          product.product_components
+            ?.map((row) => row?.component_product?.id)
+            .filter((id): id is number => typeof id === 'number') ?? [],
+      })
+      setCreationMode('OPERATIONAL')
+      setProcessingFallbackNotice(notice)
+      setProcessingEditMode(false)
+      setProcessingChainId(null)
+      setProcessingChainName('')
+      setFormErrors({})
+      setComponentSearch('')
+      setModalMode('edit')
+      setEditingProduct(product)
+      setIsModalOpen(true)
+    }
+
+    if (!FEATURE_PROCESSING_PRODUCT_WIZARD || (product.product_type ?? '').toUpperCase() === 'OP') {
+      openSimpleForm(null)
+      return
+    }
+
+    const productId = product.id
+    supabase
+      .from('product_processing_chain_members')
+      .select('chain_id')
+      .eq('product_id', productId)
+      .limit(1)
+      .maybeSingle()
+      .then(async ({ data, error: chainMemberError }) => {
+        if (chainMemberError || !data?.chain_id) {
+          openSimpleForm('Legacy product not linked to a processing chain. Editing in simple mode.')
+          return
+        }
+        const loaded = await loadProcessingChain(Number(data.chain_id))
+        setCreationMode('PROCESSING')
+        setProcessingEditMode(true)
+        setProcessingChainId(loaded.chainId)
+        setProcessingChainName(loaded.chainName ?? '')
+        setProcessingRaws(loaded.raws.length > 0 ? loaded.raws : [createProcessingDraftBase(units)])
+        setProcessingWips(
+          loaded.wips.length > 0
+            ? loaded.wips
+            : [{ ...createProcessingDraftBase(units), raw_component_temp_keys: [] }],
+        )
+        setProcessingFinished(
+          loaded.finished.length > 0
+            ? loaded.finished
+            : [{ ...createProcessingDraftBase(units), wip_component_temp_keys: [] }],
+        )
+        setProcessingStep(1)
+        setFormErrors({})
+        setComponentSearch('')
+        setModalMode('edit')
+        setEditingProduct(product)
+        setProcessingFallbackNotice(null)
+        setIsModalOpen(true)
+      })
+      .catch(() => {
+        openSimpleForm('Could not load processing chain. Editing in simple mode.')
+      })
+  }, [loadProcessingChain, resetProcessingWizard, units])
 
   const performDeleteProduct = useCallback(
     async (product: Product) => {
@@ -765,12 +999,113 @@ function Products() {
     }))
   }
 
+  const isProcessingWizardActive = FEATURE_PROCESSING_PRODUCT_WIZARD &&
+    ((modalMode === 'create' && creationMode === 'PROCESSING') || (modalMode === 'edit' && processingEditMode))
+
+  const updateDraftField = <T extends ProcessingDraftBase>(
+    setter: Dispatch<SetStateAction<T[]>>,
+    tempKey: string,
+    field: keyof ProcessingDraftBase,
+    value: string
+  ) => {
+    setter((prev) =>
+      prev.map((row) => (row.temp_key === tempKey ? { ...row, [field]: value } : row))
+    )
+  }
+
+  const toggleDraftLink = (
+    kind: 'WIP' | 'FINISHED',
+    parentKey: string,
+    componentKey: string
+  ) => {
+    if (kind === 'WIP') {
+      setProcessingWips((prev) =>
+        prev.map((row) => {
+          if (row.temp_key !== parentKey) return row
+          const next = new Set(row.raw_component_temp_keys)
+          if (next.has(componentKey)) next.delete(componentKey)
+          else next.add(componentKey)
+          return { ...row, raw_component_temp_keys: Array.from(next) }
+        })
+      )
+      return
+    }
+    setProcessingFinished((prev) =>
+      prev.map((row) => {
+        if (row.temp_key !== parentKey) return row
+        const next = new Set(row.wip_component_temp_keys)
+        if (next.has(componentKey)) next.delete(componentKey)
+        else next.add(componentKey)
+        return { ...row, wip_component_temp_keys: Array.from(next) }
+      })
+    )
+  }
+
   const numbersToPayload = (value: string | null | undefined): number | null => {
     if (value === '' || value === null || value === undefined) {
       return null
     }
     const numeric = Number(value)
     return Number.isNaN(numeric) ? null : numeric
+  }
+
+  const validateProcessingDrafts = (): boolean => {
+    const hasInvalidRaw = processingRaws.some((row) => !row.name.trim())
+    const hasInvalidWip = processingWips.some((row) => !row.name.trim() || row.raw_component_temp_keys.length === 0)
+    const hasInvalidFinished = processingFinished.some((row) => !row.name.trim() || row.wip_component_temp_keys.length === 0)
+
+    if (processingRaws.length === 0 || processingWips.length === 0 || processingFinished.length === 0) {
+      toast.error('RAW, WIP, and FINISHED steps each require at least one row.')
+      return false
+    }
+    if (hasInvalidRaw || hasInvalidWip || hasInvalidFinished) {
+      toast.error('Fill all names and required links before saving the processing chain.')
+      return false
+    }
+    return true
+  }
+
+  const buildProcessingPayload = () => {
+    const rawIndexByKey = new Map(processingRaws.map((row, index) => [row.temp_key, index] as const))
+    const wipIndexByKey = new Map(processingWips.map((row, index) => [row.temp_key, index] as const))
+    return {
+      raws: processingRaws.map((row) => ({
+        id: row.id ?? null,
+        name: row.name.trim(),
+        base_unit_id: row.base_unit_id || null,
+        reorder_point: row.reorder_point || null,
+        safety_stock: row.safety_stock || null,
+        target_stock: row.target_stock || null,
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        notes: row.notes.trim() || null,
+      })),
+      wips: processingWips.map((row) => ({
+        id: row.id ?? null,
+        name: row.name.trim(),
+        base_unit_id: row.base_unit_id || null,
+        reorder_point: row.reorder_point || null,
+        safety_stock: row.safety_stock || null,
+        target_stock: row.target_stock || null,
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        notes: row.notes.trim() || null,
+        raw_component_indexes: row.raw_component_temp_keys
+          .map((key) => rawIndexByKey.get(key))
+          .filter((idx): idx is number => typeof idx === 'number'),
+      })),
+      finished: processingFinished.map((row) => ({
+        id: row.id ?? null,
+        name: row.name.trim(),
+        base_unit_id: row.base_unit_id || null,
+        reorder_point: row.reorder_point || null,
+        safety_stock: row.safety_stock || null,
+        target_stock: row.target_stock || null,
+        status: (row.status || 'ACTIVE').toUpperCase(),
+        notes: row.notes.trim() || null,
+        wip_component_indexes: row.wip_component_temp_keys
+          .map((key) => wipIndexByKey.get(key))
+          .filter((idx): idx is number => typeof idx === 'number'),
+      })),
+    }
   }
 
   const saveProductComponents = async (
@@ -828,8 +1163,7 @@ function Products() {
     return Object.keys(errors).length === 0
   }
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const handleSubmitOperational = async () => {
     if (!validateForm()) {
       return
     }
@@ -856,14 +1190,25 @@ function Products() {
       const internalSku = isEditing
         ? (editingProduct?.sku ?? generateSku(products))
         : generateSku(products)
+      const parsedBaseUnitId = formData.base_unit_id ? Number(formData.base_unit_id) : null
+      const fallbackBaseUnitId = resolveDefaultKgUnitId(units)
+      const effectiveBaseUnitId =
+        parsedBaseUnitId !== null && !Number.isNaN(parsedBaseUnitId)
+          ? parsedBaseUnitId
+          : fallbackBaseUnitId
+            ? Number(fallbackBaseUnitId)
+            : null
+      const parsedReorderPoint = numbersToPayload(formData.reorder_point)
+      const parsedSafetyStock = numbersToPayload(formData.safety_stock)
+      const parsedTargetStock = numbersToPayload(formData.target_stock)
       const payload = {
         sku: internalSku,
         name: formData.name.trim(),
         category: isEditing ? (editingProduct?.category ?? null) : null,
-        base_unit_id: formData.base_unit_id ? Number(formData.base_unit_id) : null,
-        reorder_point: numbersToPayload(formData.reorder_point),
-        safety_stock: numbersToPayload(formData.safety_stock),
-        target_stock: numbersToPayload(formData.target_stock),
+        base_unit_id: isEditing ? parsedBaseUnitId : effectiveBaseUnitId,
+        reorder_point: isEditing ? parsedReorderPoint : (parsedReorderPoint ?? DEFAULT_REORDER_POINT),
+        safety_stock: isEditing ? parsedSafetyStock : (parsedSafetyStock ?? DEFAULT_SAFETY_STOCK),
+        target_stock: isEditing ? parsedTargetStock : (parsedTargetStock ?? DEFAULT_TARGET_STOCK),
         status: (formData.status || 'ACTIVE').toUpperCase(),
         notes: formData.notes.trim() || null,
         product_type: productTypeVal,
@@ -911,9 +1256,11 @@ function Products() {
       setIsModalOpen(false)
       setModalMode('create')
       setEditingProduct(null)
-      setFormData(createEmptyProductForm())
+      setFormData(createEmptyProductForm([], units))
       setFormErrors({})
       setComponentSearch('')
+      setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+      resetProcessingWizard()
     } catch (submitError) {
       const errorMessage =
         (submitError as PostgrestError)?.message ??
@@ -924,6 +1271,70 @@ function Products() {
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  const handleSubmitProcessingChainCreate = async () => {
+    if (!validateProcessingDrafts()) return
+    setIsSubmitting(true)
+    try {
+      const payload = buildProcessingPayload()
+      const { data, error: rpcError } = await supabase.rpc('create_processing_product_chain', {
+        p_chain_name: processingChainName.trim() || null,
+        p_payload: payload,
+      })
+      if (rpcError) throw rpcError
+      toast.success(`Processing chain created (ID ${data}).`)
+      await fetchProducts()
+      setIsModalOpen(false)
+      setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+      resetProcessingWizard()
+    } catch (error) {
+      const message = (error as PostgrestError)?.message ?? 'Unable to create processing chain.'
+      toast.error(message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleSubmitProcessingChainEdit = async () => {
+    if (!processingChainId) {
+      toast.error('Processing chain id is missing.')
+      return
+    }
+    if (!validateProcessingDrafts()) return
+    setIsSubmitting(true)
+    try {
+      const payload = buildProcessingPayload()
+      const { error: rpcError } = await supabase.rpc('update_processing_product_chain', {
+        p_chain_id: processingChainId,
+        p_payload: payload,
+        p_chain_name: processingChainName.trim() || null,
+      })
+      if (rpcError) throw rpcError
+      toast.success('Processing chain updated successfully.')
+      await fetchProducts()
+      setIsModalOpen(false)
+      setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+      resetProcessingWizard()
+    } catch (error) {
+      const message = (error as PostgrestError)?.message ?? 'Unable to update processing chain.'
+      toast.error(message)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (isProcessingWizardActive) {
+      if (modalMode === 'edit') {
+        await handleSubmitProcessingChainEdit()
+      } else {
+        await handleSubmitProcessingChainCreate()
+      }
+      return
+    }
+    await handleSubmitOperational()
   }
 
   const columns = useMemo(
@@ -1479,6 +1890,212 @@ function Products() {
             </div>
 
             <form onSubmit={handleSubmit} className="flex-1 px-6 py-6 space-y-6 overflow-y-auto">
+              {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === null ? (
+                <div className="space-y-6">
+                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
+                    <h3 className="text-sm font-semibold text-text-dark">Choose Creation Mode</h3>
+                    <p className="text-xs text-text-dark/60 mt-1">Operational products use a simple form. Processing products use RAW → WIP → FINISHED wizard.</p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-start border-olive-light/60"
+                        onClick={() => {
+                          setCreationMode('OPERATIONAL')
+                          setFormData((prev) => ({ ...prev, product_type: 'OP' }))
+                        }}
+                      >
+                        Operational product
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-start border-olive-light/60"
+                        onClick={() => {
+                          setCreationMode('PROCESSING')
+                          resetProcessingWizard()
+                        }}
+                      >
+                        Processing product
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-3 border-t border-olive-light/30 pt-4">
+                    <Button type="button" variant="ghost" onClick={handleCloseModal} className="text-text-dark hover:bg-olive-light/10">
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : isProcessingWizardActive ? (
+                <div className="space-y-6">
+                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-text-dark">{processingEditMode ? 'Edit Processing Chain' : 'Create Processing Chain'}</h3>
+                        <p className="text-xs text-text-dark/60">Step {processingStep} of 4</p>
+                      </div>
+                      <Input
+                        value={processingChainName}
+                        onChange={(e) => setProcessingChainName(e.target.value)}
+                        placeholder="Chain name (optional)"
+                        className="max-w-xs"
+                        disabled={isSubmitting}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2">
+                    {[1, 2, 3, 4].map((step) => (
+                      <button
+                        key={step}
+                        type="button"
+                        onClick={() => setProcessingStep(step as 1 | 2 | 3 | 4)}
+                        className={`rounded-md border px-3 py-2 text-sm ${processingStep === step ? 'border-olive bg-olive-light/20 text-text-dark' : 'border-olive-light/50 text-text-dark/70'}`}
+                        disabled={isSubmitting}
+                      >
+                        {step === 1 ? 'RAW' : step === 2 ? 'WIP' : step === 3 ? 'FINISHED' : 'Review'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {processingStep === 1 && (
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-text-dark">RAW Products</h4>
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingRaws((prev) => [...prev, createProcessingDraftBase(units)])}>+ Add Raw</Button>
+                      </div>
+                      {processingRaws.map((row) => (
+                        <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input placeholder="Raw name" value={row.name} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'name', e.target.value)} />
+                            <select value={row.status} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="ACTIVE">Active</option>
+                              <option value="INACTIVE">Inactive</option>
+                              <option value="DEVELOPMENT">Development</option>
+                            </select>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-4">
+                            <select value={row.base_unit_id} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'base_unit_id', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="">No unit</option>
+                              {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
+                            </select>
+                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'target_stock', e.target.value)} />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'notes', e.target.value)} />
+                            <Button type="button" variant="ghost" size="sm" disabled={processingRaws.length <= 1} onClick={() => setProcessingRaws((prev) => prev.filter((r) => r.temp_key !== row.temp_key))}>Remove</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {processingStep === 2 && (
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-text-dark">WIP Products</h4>
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingWips((prev) => [...prev, { ...createProcessingDraftBase(units), raw_component_temp_keys: [] }])}>+ Add WIP</Button>
+                      </div>
+                      {processingWips.map((row) => (
+                        <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input placeholder="WIP name" value={row.name} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'name', e.target.value)} />
+                            <select value={row.status} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="ACTIVE">Active</option>
+                              <option value="INACTIVE">Inactive</option>
+                              <option value="DEVELOPMENT">Development</option>
+                            </select>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-4">
+                            <select value={row.base_unit_id} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'base_unit_id', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="">No unit</option>
+                              {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
+                            </select>
+                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'target_stock', e.target.value)} />
+                          </div>
+                          <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'notes', e.target.value)} />
+                          <div className="grid max-h-32 gap-2 overflow-y-auto sm:grid-cols-2">
+                            {processingRaws.map((raw) => (
+                              <label key={raw.temp_key} className="flex items-center gap-2 rounded-md border border-olive-light/30 px-2 py-1 text-xs">
+                                <input type="checkbox" checked={row.raw_component_temp_keys.includes(raw.temp_key)} onChange={() => toggleDraftLink('WIP', row.temp_key, raw.temp_key)} />
+                                <span>{raw.name || 'Unnamed raw'}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <Button type="button" variant="ghost" size="sm" disabled={processingWips.length <= 1} onClick={() => setProcessingWips((prev) => prev.filter((w) => w.temp_key !== row.temp_key))}>Remove</Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {processingStep === 3 && (
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-text-dark">FINISHED Products</h4>
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingFinished((prev) => [...prev, { ...createProcessingDraftBase(units), wip_component_temp_keys: [] }])}>+ Add Finished</Button>
+                      </div>
+                      {processingFinished.map((row) => (
+                        <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input placeholder="Finished name" value={row.name} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'name', e.target.value)} />
+                            <select value={row.status} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="ACTIVE">Active</option>
+                              <option value="INACTIVE">Inactive</option>
+                              <option value="DEVELOPMENT">Development</option>
+                            </select>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-4">
+                            <select value={row.base_unit_id} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'base_unit_id', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
+                              <option value="">No unit</option>
+                              {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
+                            </select>
+                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'target_stock', e.target.value)} />
+                          </div>
+                          <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'notes', e.target.value)} />
+                          <div className="grid max-h-32 gap-2 overflow-y-auto sm:grid-cols-2">
+                            {processingWips.map((wip) => (
+                              <label key={wip.temp_key} className="flex items-center gap-2 rounded-md border border-olive-light/30 px-2 py-1 text-xs">
+                                <input type="checkbox" checked={row.wip_component_temp_keys.includes(wip.temp_key)} onChange={() => toggleDraftLink('FINISHED', row.temp_key, wip.temp_key)} />
+                                <span>{wip.name || 'Unnamed WIP'}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <Button type="button" variant="ghost" size="sm" disabled={processingFinished.length <= 1} onClick={() => setProcessingFinished((prev) => prev.filter((f) => f.temp_key !== row.temp_key))}>Remove</Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {processingStep === 4 && (
+                    <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm space-y-2 text-sm text-text-dark/80">
+                      <p><strong>RAW:</strong> {processingRaws.length}</p>
+                      <p><strong>WIP:</strong> {processingWips.length}</p>
+                      <p><strong>FINISHED:</strong> {processingFinished.length}</p>
+                      <p className="text-xs text-text-dark/60">Saving creates/updates all rows and links in one transaction.</p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-3 border-t border-olive-light/30 pt-4">
+                    <div className="flex gap-2">
+                      <Button type="button" variant="ghost" disabled={processingStep <= 1 || isSubmitting} onClick={() => setProcessingStep((prev) => Math.max(1, prev - 1) as 1 | 2 | 3 | 4)}>Back</Button>
+                      <Button type="button" variant="outline" disabled={processingStep >= 4 || isSubmitting} onClick={() => setProcessingStep((prev) => Math.min(4, prev + 1) as 1 | 2 | 3 | 4)}>Next</Button>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="ghost" onClick={handleCloseModal} disabled={isSubmitting}>Cancel</Button>
+                      <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                        {isSubmitting ? 'Saving…' : processingEditMode ? 'Update Chain' : 'Save Chain'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+              <>
               <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold text-text-dark">Core Details</h3>
@@ -1519,32 +2136,44 @@ function Products() {
                     ) : null}
                   </div>
                 </div>
-                <div className="mt-4 grid gap-4 sm:grid-cols-1">
-                  <div>
-                    <Label htmlFor="product-type">Product type</Label>
-                    <select
-                      id="product-type"
-                      name="product_type"
-                      value={formData.product_type}
-                      onChange={(event) => {
-                        handleFormChange(event)
-                        const nextType = event.target.value.toUpperCase()
-                        if (nextType === 'RAW' || nextType === 'OP') {
-                          setFormData((prev) => ({ ...prev, component_ids: [] }))
-                        }
-                      }}
-                      className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
-                      disabled={isSubmitting}
-                    >
-                      <option value="RAW">Raw</option>
-                      <option value="WIP">WIP</option>
-                      <option value="FINISHED">Finished</option>
-                      <option value="OP">Operational (OP)</option>
-                    </select>
-                    {formErrors.product_type ? (
-                      <p className="mt-1 text-sm text-red-600">{formErrors.product_type}</p>
-                    ) : null}
+                {processingFallbackNotice ? (
+                  <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    {processingFallbackNotice}
                   </div>
+                ) : null}
+                <div className="mt-4 grid gap-4 sm:grid-cols-1">
+                  {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === 'OPERATIONAL' ? (
+                    <div>
+                      <Label>Product type</Label>
+                      <p className="mt-1 rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark">Operational (OP)</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <Label htmlFor="product-type">Product type</Label>
+                      <select
+                        id="product-type"
+                        name="product_type"
+                        value={formData.product_type}
+                        onChange={(event) => {
+                          handleFormChange(event)
+                          const nextType = event.target.value.toUpperCase()
+                          if (nextType === 'RAW' || nextType === 'OP') {
+                            setFormData((prev) => ({ ...prev, component_ids: [] }))
+                          }
+                        }}
+                        className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
+                        disabled={isSubmitting}
+                      >
+                        <option value="RAW">Raw</option>
+                        <option value="WIP">WIP</option>
+                        <option value="FINISHED">Finished</option>
+                        <option value="OP">Operational (OP)</option>
+                      </select>
+                      {formErrors.product_type ? (
+                        <p className="mt-1 text-sm text-red-600">{formErrors.product_type}</p>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1758,6 +2387,8 @@ function Products() {
                       : 'Save Product'}
                 </Button>
               </div>
+              </>
+              )}
             </form>
           </div>
         </div>

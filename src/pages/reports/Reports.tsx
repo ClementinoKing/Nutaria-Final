@@ -46,13 +46,6 @@ interface SupplyRow {
   received_at?: string | null
 }
 
-interface SupplyLineRow {
-  id: number
-  supply_id: number
-  accepted_qty: number
-  unit_price?: number | null
-}
-
 interface SupplyBatchRow {
   id: number
   supply_id: number
@@ -61,6 +54,7 @@ interface SupplyBatchRow {
   rejected_qty?: number | null
   current_qty?: number | null
   quality_status?: string | null
+  unit_price?: number | null
 }
 
 interface SupplierRow {
@@ -125,7 +119,6 @@ export default function Reports() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [supplies, setSupplies] = useState<SupplyRow[]>([])
-  const [supplyLines, setSupplyLines] = useState<SupplyLineRow[]>([])
   const [supplyBatches, setSupplyBatches] = useState<SupplyBatchRow[]>([])
   const [suppliers, setSuppliers] = useState<SupplierRow[]>([])
   const [payments, setPayments] = useState<PaymentRow[]>([])
@@ -142,16 +135,15 @@ export default function Reports() {
     setLoading(true)
     setError(null)
     try {
-      const [suppliesRes, linesRes, batchesRes, suppliersRes, paymentsRes, shipmentsRes] = await Promise.all([
+      const [suppliesRes, batchesRes, suppliersRes, paymentsRes, shipmentsRes] = await Promise.all([
         supabase
           .from('supplies')
           .select('id, doc_no, supplier_id, received_at')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(1000),
-        supabase.from('supply_lines').select('id, supply_id, accepted_qty, unit_price'),
         supabase
           .from('supply_batches')
-          .select('id, supply_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status'),
+          .select('id, supply_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status, unit_price'),
         supabase
           .from('suppliers')
           .select('id, name, supplier_type, country, created_at')
@@ -162,14 +154,12 @@ export default function Reports() {
       ])
 
       if (suppliesRes.error) throw suppliesRes.error
-      if (linesRes.error) throw linesRes.error
       if (batchesRes.error) throw batchesRes.error
       if (suppliersRes.error) throw suppliersRes.error
       if (paymentsRes.error) throw paymentsRes.error
       if (shipmentsRes.error) throw shipmentsRes.error
 
       setSupplies((suppliesRes.data ?? []) as SupplyRow[])
-      setSupplyLines((linesRes.data ?? []) as SupplyLineRow[])
       setSupplyBatches((batchesRes.data ?? []) as SupplyBatchRow[])
       setSuppliers((suppliersRes.data ?? []) as SupplierRow[])
       setPayments((paymentsRes.data ?? []) as PaymentRow[])
@@ -246,9 +236,9 @@ export default function Reports() {
 
   const supplySpendTotals = useMemo(() => {
     let expected = 0
-    supplyLines.forEach((line) => {
-      const price = line.unit_price != null ? Number(line.unit_price) : 0
-      const qty = Number(line.accepted_qty) || 0
+    supplyBatches.forEach((batch) => {
+      const price = batch.unit_price != null ? Number(batch.unit_price) : 0
+      const qty = Number(batch.accepted_qty) || 0
       expected += price * qty
     })
     const paid = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
@@ -257,7 +247,7 @@ export default function Reports() {
       paid,
       balance: expected - paid,
     }
-  }, [supplyLines, payments])
+  }, [supplyBatches, payments])
 
   const topSuppliersByAccepted = useMemo(() => {
     const totalsBySupplier = new Map<number, number>()
@@ -300,10 +290,10 @@ export default function Reports() {
 
   const outstandingSupplies = useMemo(() => {
     const expectedBySupply = new Map<number, number>()
-    supplyLines.forEach((line) => {
-      const price = line.unit_price != null ? Number(line.unit_price) : 0
-      const qty = Number(line.accepted_qty) || 0
-      expectedBySupply.set(line.supply_id, (expectedBySupply.get(line.supply_id) ?? 0) + price * qty)
+    supplyBatches.forEach((batch) => {
+      const price = batch.unit_price != null ? Number(batch.unit_price) : 0
+      const qty = Number(batch.accepted_qty) || 0
+      expectedBySupply.set(batch.supply_id, (expectedBySupply.get(batch.supply_id) ?? 0) + price * qty)
     })
     const paidBySupply = new Map<number, number>()
     payments.forEach((payment) => {
@@ -326,7 +316,7 @@ export default function Reports() {
       .filter((row) => row.balance > 0.01)
       .sort((a, b) => b.balance - a.balance)
       .slice(0, 6)
-  }, [supplies, supplyLines, payments, supplierMap])
+  }, [supplies, supplyBatches, payments, supplierMap])
 
   const shipmentStatusCounts = useMemo(() => {
     const counts = new Map<string, number>()

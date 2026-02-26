@@ -141,12 +141,13 @@ export async function calculateAvailableQuantity(
     .filter((x) => x !== null)
     .sort((a, b) => a.process_steps.seq - b.process_steps.seq)
 
-  // If upToStepRunId is provided, only calculate up to that step
+  // If upToStepRunId is provided, calculate availability at the START of that step
+  // (use prior steps only, exclude current step deductions).
   let stepsToProcess = stepRuns || []
   if (upToStepRunId) {
     const targetStepIndex = stepsToProcess.findIndex((sr: any) => sr.id === upToStepRunId)
     if (targetStepIndex !== -1) {
-      stepsToProcess = stepsToProcess.slice(0, targetStepIndex + 1)
+      stepsToProcess = stepsToProcess.slice(0, targetStepIndex)
     }
   }
 
@@ -164,18 +165,18 @@ export async function calculateAvailableQuantity(
     const stepCode = ((stepRun as any).process_steps?._code as string) || ''
 
     if (stepCode === 'WASH') {
-      // Get washing run and its waste
-      const { data: washingRun } = await supabase
+      // Get all washing runs for this step and sum all waste.
+      const { data: washingRuns } = await supabase
         .from('process_washing_runs')
         .select('id')
         .eq('process_step_run_id', stepRun.id)
-        .maybeSingle()
+      const washingRunIds = (washingRuns ?? []).map((row: any) => Number(row.id)).filter((id: number) => Number.isFinite(id))
 
-      if (washingRun) {
+      if (washingRunIds.length > 0) {
         const { data: waste } = await supabase
           .from('process_washing_waste')
           .select('quantity_kg')
-          .eq('washing_run_id', washingRun.id)
+          .in('washing_run_id', washingRunIds)
 
         if (waste) {
           const totalWaste = waste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
@@ -231,30 +232,39 @@ export async function calculateAvailableQuantity(
         const totalMetalWaste = metalWaste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
         breakdown.metalWaste += totalMetalWaste
       }
-    } else if (stepCode === 'SORT') {
-      // Sorting step: outputs, reworks, and waste are handled within the sorting step UI
-      // with sequential deduction: outputs → reworks → waste
-      // We do NOT deduct sorting waste or reworks here because they come from the remaining
-      // quantity after sorting outputs, not from the initial supply quantity
-      // The available quantity returned here is used as the base for sorting step calculations
-      // Sorting waste is tracked in breakdown for reporting but not deducted from availableQty
-      const { data: outputs } = await supabase
-        .from('process_sorting_outputs')
-        .select('id')
-        .eq('process_step_run_id', stepRun.id)
-
-      if (outputs && outputs.length > 0) {
-        const outputIds = outputs.map((o: any) => o.id)
+    } else if (stepCode === 'SORT' || stepCode === 'GRAD') {
+      // Sort-like step: outputs are handled in-step.
+      // For SORT, reworks are also handled in-step. For GRAD, no reworks are allowed.
+      // We do NOT deduct sort/grading waste here because it comes from remaining quantity
+      // after outputs, not directly from the initial supply quantity.
+      const wasteTable = stepCode === 'GRAD' ? 'process_grading_waste' : 'process_sorting_waste'
+      if (stepCode === 'GRAD') {
         const { data: waste } = await supabase
-          .from('process_sorting_waste')
+          .from(wasteTable)
           .select('quantity_kg')
-          .in('sorting_run_id', outputIds)
+          .eq('process_step_run_id', stepRun.id)
 
         if (waste) {
           const totalWaste = waste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
           breakdown.sortingWaste += totalWaste
-          // Note: sortingWaste is tracked but NOT deducted from availableQty
-          // because it's handled within the sorting step's sequential calculation
+        }
+      } else {
+        const { data: outputs } = await supabase
+          .from('process_sorting_outputs')
+          .select('id')
+          .eq('process_step_run_id', stepRun.id)
+
+        if (outputs && outputs.length > 0) {
+          const outputIds = outputs.map((o: any) => o.id)
+          const { data: waste } = await supabase
+            .from(wasteTable)
+            .select('quantity_kg')
+            .in('sorting_run_id', outputIds)
+
+          if (waste) {
+            const totalWaste = waste.reduce((sum, w) => sum + (Number(w.quantity_kg) || 0), 0)
+            breakdown.sortingWaste += totalWaste
+          }
         }
       }
     } else if (stepCode === 'PACK') {
@@ -279,21 +289,18 @@ export async function calculateAvailableQuantity(
     }
   }
 
-  // Calculate total waste from steps BEFORE sorting
-  // Sorting waste and reworks are NOT included here because they are handled
-  // within the sorting step with sequential deduction: outputs → reworks → waste
+  // Calculate total waste from previous steps.
+  // Include sorting/grading waste from prior steps so downstream steps see
+  // the continuous remaining quantity correctly.
   const totalWaste =
     breakdown.washingWaste +
     breakdown.dryingWaste +
     breakdown.metalRejections +
     breakdown.metalWaste +
+    breakdown.sortingWaste +
     breakdown.packagingWaste
 
-  // Available quantity = initial - waste from previous steps (before sorting)
-  // This becomes the base for sorting step calculations where:
-  // remainingAfterOutputs = availableQty - sorting outputs
-  // remainingAfterReworks = remainingAfterOutputs - reworks
-  // remainingAfterWaste = remainingAfterReworks - sorting waste
+  // Available quantity = initial - waste from all prior completed steps.
   const availableQty = Math.max(0, initialQty - totalWaste)
 
   return {

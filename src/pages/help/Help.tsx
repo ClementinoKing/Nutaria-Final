@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ChevronDown,
   Search,
+  PlayCircle,
   LayoutDashboard,
   Warehouse,
   Package2,
@@ -31,7 +32,7 @@ interface HelpSection {
 }
 
 function Help() {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['getting-started']))
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['getting-started', 'tutorials']))
   const [searchTerm, setSearchTerm] = useState('')
 
   const toggleSection = (sectionId: string) => {
@@ -178,6 +179,113 @@ function Help() {
                   </p>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: 'tutorials',
+      title: 'Video Tutorials',
+      icon: PlayCircle,
+      content: (
+        <div className="space-y-5">
+          <p className="text-sm text-text-dark/70">
+            Start here if you are new to the system. These are placeholder YouTube links and can be replaced with real videos.
+          </p>
+
+          <div>
+            <h4 className="mb-2 font-semibold text-text-dark">Setup Tutorials</h4>
+            <div className="space-y-2">
+              <a
+                href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">System Settings Walkthrough</p>
+                <p className="text-sm text-text-dark/70">
+                  Covers units, warehouses, process setup, product setup, and key system settings.
+                </p>
+              </a>
+              <a
+                href="https://www.youtube.com/watch?v=3JZ_D3ELwOQ"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">Add a Supplier</p>
+                <p className="text-sm text-text-dark/70">
+                  How to create suppliers and assign the correct supplier type.
+                </p>
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <h4 className="mb-2 font-semibold text-text-dark">Daily Operations Tutorials</h4>
+            <div className="space-y-2">
+              <a
+                href="https://www.youtube.com/watch?v=L_jWHffIx5E"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">Add a Supply</p>
+                <p className="text-sm text-text-dark/70">
+                  Capture incoming supplies, complete quality checks, and save supplier sign-off.
+                </p>
+              </a>
+              <a
+                href="https://www.youtube.com/watch?v=9bZkp7q19f0"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">Inventory Basics</p>
+                <p className="text-sm text-text-dark/70">
+                  Stock levels, stock movements, and how to monitor inventory health.
+                </p>
+              </a>
+              <a
+                href="https://www.youtube.com/watch?v=oHg5SJYRHA0"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">Process Execution End-to-End</p>
+                <p className="text-sm text-text-dark/70">
+                  Run a lot through grading/washing/drying/sorting/packing and complete a process run.
+                </p>
+              </a>
+              <a
+                href="https://www.youtube.com/watch?v=tVj0ZTS4WF4"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">Create and Track Shipments</p>
+                <p className="text-sm text-text-dark/70">
+                  Create shipments, assign carrier details, and track shipment status.
+                </p>
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <h4 className="mb-2 font-semibold text-text-dark">Admin Tutorials</h4>
+            <div className="space-y-2">
+              <a
+                href="https://www.youtube.com/watch?v=ZZ5LpwO-An4"
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-lg border border-olive-light/30 bg-white p-3 hover:bg-olive-light/5"
+              >
+                <p className="font-medium text-text-dark">User Roles and Permissions</p>
+                <p className="text-sm text-text-dark/70">
+                  Manage users, roles, and access control for different teams.
+                </p>
+              </a>
             </div>
           </div>
         </div>
@@ -433,4 +541,3 @@ function Help() {
 }
 
 export default Help
-

@@ -9,7 +9,14 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 
-type MovementType = 'IN_RECEIPT' | 'OUT_SHIPMENT' | 'QUALITY_HOLD' | 'TRANSFER_OUT' | 'TRANSFER_IN' | 'PROCESS_START'
+type MovementType =
+  | 'IN_RECEIPT'
+  | 'OUT_SHIPMENT'
+  | 'QUALITY_HOLD'
+  | 'TRANSFER_OUT'
+  | 'TRANSFER_IN'
+  | 'PROCESS_START'
+  | 'ADJUSTMENT'
 
 interface StockMovement {
   id: string
@@ -27,6 +34,7 @@ interface StockMovement {
   unit: string
   actor: string
   note: string | null
+  source_type?: 'adjustment' | 'count' | null
   target_warehouse_id?: number
   target_warehouse_name?: string
   source_warehouse_id?: number
@@ -41,6 +49,7 @@ const movementTypeLabels: Record<MovementType, string> = {
   TRANSFER_OUT: 'Transfer Out',
   TRANSFER_IN: 'Transfer In',
   PROCESS_START: 'Sent to process',
+  ADJUSTMENT: 'Adjustment',
 }
 
 const movementTypeFamilies = [
@@ -142,6 +151,60 @@ function StockMovements() {
         (warehousesRes.data ?? []).map((w: any) => [w.id, w.name ?? '—'])
       )
 
+      // 3) Inventory adjustment/count movements from inventory_movements
+      const { data: inventoryMoveRows, error: inventoryMoveError } = await supabase
+        .from('inventory_movements')
+        .select('id, product_id, warehouse_id, lot_id, movement, qty, unit_id, source_type, source_id, reference, performed_at')
+        .in('source_type', ['adjustment', 'count'])
+        .order('performed_at', { ascending: true })
+
+      if (inventoryMoveError) {
+        setError(inventoryMoveError.message)
+        setMovements([])
+        setLoading(false)
+        return
+      }
+
+      const adjustmentMoves = (inventoryMoveRows ?? []) as Array<{
+        id: number
+        product_id: number
+        warehouse_id: number
+        lot_id: number | null
+        movement: string
+        qty: number
+        unit_id: number | null
+        source_type: 'adjustment' | 'count' | null
+        source_id: number | null
+        reference: string | null
+        performed_at: string | null
+      }>
+
+      const adjustmentProductIds = [...new Set(adjustmentMoves.map((row) => row.product_id).filter(Boolean))]
+      const adjustmentUnitIds = [...new Set(adjustmentMoves.map((row) => row.unit_id).filter((id): id is number => id != null))]
+      const adjustmentLotIds = [...new Set(adjustmentMoves.map((row) => row.lot_id).filter((id): id is number => id != null))]
+
+      const [adjustmentProductsRes, adjustmentUnitsRes, lotNoRes] = await Promise.all([
+        adjustmentProductIds.length > 0 ? supabase.from('products').select('id, name, sku').in('id', adjustmentProductIds) : { data: [] },
+        adjustmentUnitIds.length > 0 ? supabase.from('units').select('id, symbol, name').in('id', adjustmentUnitIds) : { data: [] },
+        adjustmentLotIds.length > 0 ? supabase.from('supply_batches').select('id, lot_no').in('id', adjustmentLotIds) : { data: [] },
+      ])
+
+      const adjustmentProductsMap = new Map<number, { name: string; sku: string }>(
+        ((adjustmentProductsRes.data ?? []) as Array<{ id: number; name: string | null; sku: string | null }>).map((row) => [
+          row.id,
+          { name: row.name ?? 'Unknown', sku: row.sku ?? '' },
+        ])
+      )
+      const adjustmentUnitsMap = new Map<number, { symbol: string; name: string }>(
+        ((adjustmentUnitsRes.data ?? []) as Array<{ id: number; symbol: string | null; name: string | null }>).map((row) => [
+          row.id,
+          { symbol: row.symbol ?? row.name ?? 'Kg', name: row.name ?? 'Kg' },
+        ])
+      )
+      const lotNoMap = new Map<number, string>(
+        ((lotNoRes.data ?? []) as Array<{ id: number; lot_no: string | null }>).map((row) => [row.id, row.lot_no ?? `Lot #${row.id}`])
+      )
+
       for (const b of batchList) {
         const supply = suppliesMap.get(b.supply_id)
         const product = productsMap.get(b.product_id)
@@ -201,6 +264,39 @@ function StockMovements() {
         }
       }
 
+      for (const movement of adjustmentMoves) {
+        const product = adjustmentProductsMap.get(movement.product_id) ?? productsMap.get(movement.product_id)
+        if (!product) continue
+
+        const unit = movement.unit_id
+          ? adjustmentUnitsMap.get(movement.unit_id) ?? unitsMap.get(movement.unit_id)
+          : null
+        const lotNo = movement.lot_id ? lotNoMap.get(movement.lot_id) ?? `Lot #${movement.lot_id}` : ''
+
+        allMovements.push({
+          id: `inventory-movement-${movement.id}`,
+          created_at: movement.performed_at ?? new Date().toISOString(),
+          movement_type: 'ADJUSTMENT',
+          ref_table: 'inventory_movements',
+          ref_id: movement.id,
+          product_id: movement.product_id,
+          product_name: product.name,
+          product_sku: product.sku,
+          warehouse_id: movement.warehouse_id,
+          warehouse_name: warehouseMap.get(movement.warehouse_id) ?? '—',
+          batch_id: lotNo,
+          qty: Math.round(Number(movement.qty || 0) * 1000) / 1000,
+          unit: unit?.symbol ?? unit?.name ?? 'Kg',
+          actor: movement.source_type === 'count' ? 'Cycle count' : 'Inventory adjustment',
+          note:
+            movement.source_type === 'count'
+              ? `Cycle count variance${movement.reference ? ` · ${movement.reference}` : ''}`
+              : movement.reference ?? (lotNo ? `Lot ${lotNo}` : 'Adjustment'),
+          source_type: movement.source_type,
+          runningBalance: undefined,
+        })
+      }
+
       allMovements.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
       setMovements(allMovements)
     } catch (e) {
@@ -225,8 +321,16 @@ function StockMovements() {
 
     const isMovementInFamily = (movement: StockMovement) => {
       if (movementFamily === 'ALL') return true
-      if (movementFamily === 'INBOUND') return movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN'
-      if (movementFamily === 'OUTBOUND') return movement.movement_type.startsWith('OUT') || movement.movement_type === 'TRANSFER_OUT'
+      if (movementFamily === 'INBOUND') {
+        if (movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN') return true
+        if (movement.movement_type === 'ADJUSTMENT') return movement.qty > 0
+        return false
+      }
+      if (movementFamily === 'OUTBOUND') {
+        if (movement.movement_type.startsWith('OUT') || movement.movement_type === 'TRANSFER_OUT') return true
+        if (movement.movement_type === 'ADJUSTMENT') return movement.qty < 0
+        return false
+      }
       if (movementFamily === 'PROCESS') return movement.movement_type === 'PROCESS_START'
       if (movementFamily === 'QUALITY') return movement.movement_type.includes('QUALITY')
       if (movementFamily === 'TRANSFER') return movement.movement_type.includes('TRANSFER')
@@ -261,6 +365,8 @@ function StockMovements() {
         const delta =
           movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN'
             ? movement.qty
+            : movement.movement_type === 'ADJUSTMENT'
+            ? movement.qty
             : -movement.qty
         const newBalance = previousBalance + delta
         runningBalances.set(key, newBalance)
@@ -279,7 +385,12 @@ function StockMovements() {
   }, [movements, movementFamily, searchTerm, sortDirection, warehouseFilter])
 
   const totalInbound = filteredMovements
-    .filter((movement) => movement.movement_type === 'IN_RECEIPT' || movement.movement_type === 'TRANSFER_IN')
+    .filter(
+      (movement) =>
+        movement.movement_type === 'IN_RECEIPT' ||
+        movement.movement_type === 'TRANSFER_IN' ||
+        (movement.movement_type === 'ADJUSTMENT' && movement.qty > 0)
+    )
     .reduce((accumulator, movement) => accumulator + movement.qty, 0)
 
   const totalOutbound = filteredMovements
@@ -287,9 +398,10 @@ function StockMovements() {
       (movement) =>
         movement.movement_type.startsWith('OUT') ||
         movement.movement_type.includes('TRANSFER_OUT') ||
-        movement.movement_type === 'PROCESS_START'
+        movement.movement_type === 'PROCESS_START' ||
+        (movement.movement_type === 'ADJUSTMENT' && movement.qty < 0)
     )
-    .reduce((accumulator, movement) => accumulator + movement.qty, 0)
+    .reduce((accumulator, movement) => accumulator + Math.abs(movement.qty), 0)
 
   const uniqueProducts = new Set(filteredMovements.map((movement) => movement.product_id)).size
 
@@ -299,6 +411,9 @@ function StockMovements() {
     }
     if (movementType.startsWith('OUT') || movementType === 'TRANSFER_OUT' || movementType === 'PROCESS_START') {
       return <ArrowUp className="h-4 w-4 text-red-600" />
+    }
+    if (movementType === 'ADJUSTMENT') {
+      return <ArrowRight className="h-4 w-4 text-blue-600" />
     }
     return <ArrowRight className="h-4 w-4 text-gray-600" />
   }
@@ -312,6 +427,9 @@ function StockMovements() {
     }
     if (movementType === 'PROCESS_START') {
       return 'bg-amber-100 text-amber-800'
+    }
+    if (movementType === 'ADJUSTMENT') {
+      return 'bg-blue-100 text-blue-800'
     }
     if (movementType.includes('QUALITY')) {
       return 'bg-orange-100 text-orange-800'
@@ -339,7 +457,9 @@ function StockMovements() {
         >
           {getMovementIcon(movement.movement_type)}
           <span className="ml-1">
-            {movementTypeLabels[movement.movement_type] ?? movement.movement_type}
+            {movement.movement_type === 'ADJUSTMENT' && movement.source_type === 'count'
+              ? 'Cycle Count Variance'
+              : movementTypeLabels[movement.movement_type] ?? movement.movement_type}
           </span>
         </span>
       ),
@@ -351,7 +471,9 @@ function StockMovements() {
         >
           {getMovementIcon(movement.movement_type)}
           <span className="ml-1">
-            {movementTypeLabels[movement.movement_type] ?? movement.movement_type}
+            {movement.movement_type === 'ADJUSTMENT' && movement.source_type === 'count'
+              ? 'Cycle Count Variance'
+              : movementTypeLabels[movement.movement_type] ?? movement.movement_type}
           </span>
         </span>
       ),
@@ -570,4 +692,3 @@ function StockMovements() {
 }
 
 export default StockMovements
-

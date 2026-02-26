@@ -55,7 +55,7 @@ interface PackagingUnitOption {
   is_active: boolean
 }
 
-interface SupplyLineStockRow {
+interface SupplyBatchStockRow {
   product_id: number | null
   accepted_qty: number | null
 }
@@ -312,6 +312,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
   const [storageUnitsAutoPrefillEnabled, setStorageUnitsAutoPrefillEnabled] = useState(true)
   const [editingStorageAllocationId, setEditingStorageAllocationId] = useState<number | null>(null)
   const [userProfilesByAuthId, setUserProfilesByAuthId] = useState<Record<string, string>>({})
+  const [photoPreviewUrls, setPhotoPreviewUrls] = useState<Record<number, string>>({})
   const [runWarehouseId, setRunWarehouseId] = useState<number | null>(null)
   const [opAcceptedByProductId, setOpAcceptedByProductId] = useState<Record<number, number>>({})
   const [opConsumedByProductId, setOpConsumedByProductId] = useState<Record<number, number>>({})
@@ -354,7 +355,10 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
       const stepsById = new Map((stepsData ?? []).map((s: { id: number; step_name_id?: number }) => [s.id, s.step_name_id]))
       const sortStepRunIds = stepRunsData
-        .filter((sr: { id: number; process_step_id: number }) => stepCodeByStepId.get(stepsById.get(sr.process_step_id)!) === 'SORT')
+        .filter((sr: { id: number; process_step_id: number }) => {
+          const code = stepCodeByStepId.get(stepsById.get(sr.process_step_id)!)
+          return code === 'SORT'
+        })
         .map((sr: { id: number }) => sr.id)
 
       if (sortStepRunIds.length === 0) {
@@ -578,12 +582,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
         const serviceSupplyIds = ((serviceSuppliesData ?? []) as Array<{ id: number }>).map((row) => row.id)
         if (serviceSupplyIds.length > 0) {
-          const { data: supplyLineData } = await supabase
-            .from('supply_lines')
+          const { data: supplyBatchData } = await supabase
+            .from('supply_batches')
             .select('product_id, accepted_qty')
             .in('supply_id', serviceSupplyIds)
 
-          ;((supplyLineData ?? []) as SupplyLineStockRow[]).forEach((line) => {
+          ;((supplyBatchData ?? []) as SupplyBatchStockRow[]).forEach((line) => {
             const productId = Number(line.product_id) || 0
             if (!productId) return
             const accepted = Number(line.accepted_qty) || 0
@@ -1108,13 +1112,78 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     }
   }
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadPhotoUrls = async () => {
+      if (photos.length === 0) {
+        setPhotoPreviewUrls({})
+        return
+      }
+
+      const pairs = await Promise.all(
+        photos.map(async (photo) => {
+          if (!photo.file_path) {
+            return [photo.id, ''] as const
+          }
+          const { data, error } = await supabase.storage.from('documents').createSignedUrl(photo.file_path, 3600)
+          if (error) {
+            return [photo.id, ''] as const
+          }
+          return [photo.id, data.signedUrl] as const
+        })
+      )
+
+      if (!cancelled) {
+        setPhotoPreviewUrls(Object.fromEntries(pairs))
+      }
+    }
+
+    void loadPhotoUrls()
+    return () => {
+      cancelled = true
+    }
+  }, [photos])
+
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    // In a real implementation, you would upload to Supabase Storage
-    // For now, we'll just show a placeholder
-    toast.info('Photo upload functionality will be implemented with Supabase Storage')
+    if (!packagingRun) {
+      toast.error('Create a packaging run before uploading photos')
+      e.target.value = ''
+      return
+    }
+
+    const photoType = e.target.dataset.photoType as 'product' | 'label' | 'pallet' | undefined
+    if (!photoType) {
+      toast.error('Unable to determine photo type')
+      e.target.value = ''
+      return
+    }
+
+    const fileExt = file.name.includes('.') ? file.name.split('.').pop() : 'jpg'
+    const safeExt = String(fileExt ?? 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '')
+    const storagePath = `process/packaging/${packagingRun.id}/${photoType}-${Date.now()}.${safeExt || 'jpg'}`
+
+    setSaving(true)
+    const { error: uploadError } = await supabase.storage.from('documents').upload(storagePath, file, { upsert: false })
+    if (uploadError) {
+      toast.error(uploadError.message)
+      setSaving(false)
+      e.target.value = ''
+      return
+    }
+
+    try {
+      await addPhoto({ photo_type: photoType, file_path: storagePath })
+      toast.success(`${photoType[0].toUpperCase()}${photoType.slice(1)} photo uploaded`)
+    } catch (error) {
+      await supabase.storage.from('documents').remove([storagePath])
+      toast.error(error instanceof Error ? error.message : 'Failed to save photo metadata')
+    } finally {
+      setSaving(false)
+    }
     e.target.value = ''
   }
 
@@ -1157,6 +1226,12 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           toast.success('Waste record deleted')
           break
         case 'photo':
+          {
+            const photo = photos.find((entry) => entry.id === deleteTarget.id)
+            if (photo?.file_path) {
+              await supabase.storage.from('documents').remove([photo.file_path])
+            }
+          }
           await deletePhoto(deleteTarget.id)
           toast.success('Photo deleted')
           break
@@ -3482,6 +3557,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     <input
                       type="file"
                       accept="image/*"
+                      data-photo-type={type.value}
                       onChange={handlePhotoUpload}
                       disabled={saving || externalLoading || !packagingRun || existing !== undefined}
                       className="hidden"
@@ -3502,6 +3578,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                   className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3"
                 >
                   <div className="flex items-center gap-4">
+                    {photoPreviewUrls[photo.id] ? (
+                      <img
+                        src={photoPreviewUrls[photo.id]}
+                        alt={`${photo.photo_type} preview`}
+                        className="h-14 w-14 rounded border border-olive-light/30 object-cover"
+                      />
+                    ) : (
+                      <div className="h-14 w-14 rounded border border-dashed border-olive-light/30 bg-olive-light/10" />
+                    )}
                     <span className="text-sm font-medium text-text-dark capitalize">{photo.photo_type}</span>
                     <span className="text-xs text-text-dark/50">{photo.file_path}</span>
                   </div>

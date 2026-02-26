@@ -136,12 +136,15 @@ function SupplierTypes() {
       const { error: insertError } = await supabase.from('supplier_types').insert({
         code: formData.code.trim(),
         name: formData.name.trim(),
+        category_code: 'PRODUCT',
       })
 
       if (insertError) {
         if (insertError.code === '23505') {
           toast.error('A supplier type with this code already exists.')
           setFormErrors((prev) => ({ ...prev, code: 'Code must be unique.' }))
+        } else if (insertError.code === '23503') {
+          toast.error('Supplier categories are not configured. Run latest DB migrations and try again.')
         } else {
           throw insertError
         }

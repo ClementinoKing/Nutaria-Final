@@ -2,7 +2,6 @@
 create table if not exists public.supply_batches (
   id bigserial primary key,
   supply_id bigint not null references public.supplies (id) on delete cascade,
-  supply_line_id bigint references public.supply_lines (id),
   product_id integer not null references public.products (id),
   unit_id integer references public.units (id),
   lot_no text not null constraint supply_batches_lot_no_key unique,
@@ -10,6 +9,7 @@ create table if not exists public.supply_batches (
   accepted_qty numeric,
   rejected_qty numeric,
   current_qty numeric,
+  unit_price numeric,
   quality_status text,
   process_status text not null default 'UNPROCESSED',
   expiry_date date,
@@ -26,4 +26,3 @@ create index if not exists supply_batches_supply_id_idx on public.supply_batches
 create index if not exists supply_batches_product_idx on public.supply_batches using btree (product_id) tablespace pg_default;
 create index if not exists supply_batches_quality_idx on public.supply_batches using btree (quality_status) tablespace pg_default;
 create index if not exists supply_batches_process_status_idx on public.supply_batches using btree (process_status) tablespace pg_default;
-

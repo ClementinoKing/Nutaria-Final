@@ -6,9 +6,13 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, FileText, MapPin, User2 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { toast } from 'sonner'
 
 interface ShipmentItem {
   id: string
+  shipment_item_id?: number
+  product_id?: number | null
+  product_name?: string | null
   sku?: string | null
   description?: string | null
   quantity?: number | null
@@ -32,6 +36,29 @@ interface ShipmentDocument {
   id: string
   name: string
   type: string
+}
+
+interface ShipmentActivity {
+  id: number
+  type: string | null
+  description: string | null
+  actor_name: string
+  timestamp: string | null
+}
+
+interface ShipmentLotAllocation {
+  id: number
+  shipment_item_id: number
+  lot_id: number
+  allocated_qty: number
+  lot_no: string
+  product_name: string
+}
+
+interface LotCandidate {
+  id: number
+  lot_no: string
+  product_id: number
 }
 
 type ShipmentStatus = 'PENDING' | 'READY' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED'
@@ -59,6 +86,7 @@ interface Shipment {
   items: ShipmentItem[]
   pack_items: ShipmentPackItem[]
   documents: ShipmentDocument[]
+  activities?: ShipmentActivity[]
   created_at: string
 }
 
@@ -125,6 +153,7 @@ const hydrateShipment = (shipment: Partial<Shipment> | null | undefined): Shipme
     items: Array.isArray(shipment.items) ? shipment.items : [],
     pack_items: Array.isArray(shipment.pack_items) ? shipment.pack_items : [],
     documents: Array.isArray(shipment.documents) ? shipment.documents : [],
+    activities: Array.isArray(shipment.activities) ? shipment.activities : [],
     created_at: shipment.created_at ?? new Date().toISOString(),
   }
 }
@@ -133,6 +162,13 @@ function ShipmentDetail() {
   const { shipmentId } = useParams()
   const navigate = useNavigate()
   const [shipment, setShipment] = useState<Shipment | null>(null)
+  const [activities, setActivities] = useState<ShipmentActivity[]>([])
+  const [lotAllocations, setLotAllocations] = useState<ShipmentLotAllocation[]>([])
+  const [lotCandidates, setLotCandidates] = useState<LotCandidate[]>([])
+  const [allocationItemId, setAllocationItemId] = useState('')
+  const [allocationLotId, setAllocationLotId] = useState('')
+  const [allocationQty, setAllocationQty] = useState('')
+  const [savingAllocation, setSavingAllocation] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -140,6 +176,9 @@ function ShipmentDetail() {
     const id = shipmentId ? Number(shipmentId) : NaN
     if (!shipmentId || Number.isNaN(id)) {
       setShipment(null)
+      setActivities([])
+      setLotAllocations([])
+      setLotCandidates([])
       setLoading(false)
       return
     }
@@ -155,12 +194,18 @@ function ShipmentDetail() {
       if (shipError) {
         setError(shipError.message)
         setShipment(null)
+        setActivities([])
+        setLotAllocations([])
+        setLotCandidates([])
         setLoading(false)
         return
       }
 
       if (!row) {
         setShipment(null)
+        setActivities([])
+        setLotAllocations([])
+        setLotCandidates([])
         setLoading(false)
         return
       }
@@ -170,7 +215,7 @@ function ShipmentDetail() {
         doc_no: string | null
         customer_id: number | null
         warehouse_id: number | null
-        carrier_name: string | null
+        carrier_id: number | null
         carrier_reference: string | null
         planned_ship_date: string | null
         shipped_at: string | null
@@ -185,8 +230,8 @@ function ShipmentDetail() {
         created_at: string
       }
 
-      const [itemsRes, packItemsRes, customerRes, warehouseRes] = await Promise.all([
-        supabase.from('shipment_items').select('*').eq('shipment_id', s.id).order('id'),
+      const [itemsRes, packItemsRes, customerRes, warehouseRes, carrierRes, activitiesRes] = await Promise.all([
+        supabase.from('shipment_items').select('id, shipment_id, product_id, description, requested_qty, unit_id').eq('shipment_id', s.id).order('id'),
         supabase
           .from('shipment_pack_items')
           .select(`
@@ -212,23 +257,51 @@ function ShipmentDetail() {
         s.warehouse_id
           ? supabase.from('warehouses').select('id, name').eq('id', s.warehouse_id).maybeSingle()
           : { data: null },
+        s.carrier_id
+          ? supabase.from('carriers').select('id, name').eq('id', s.carrier_id).maybeSingle()
+          : { data: null },
+        supabase
+          .from('shipment_activities')
+          .select('id, type, description, actor, timestamp')
+          .eq('shipment_id', s.id)
+          .order('timestamp', { ascending: false }),
       ])
 
       const itemsList = (itemsRes.data ?? []) as Array<{
         id: number
         shipment_id: number
         product_id: number | null
-        sku: string | null
         description: string | null
-        quantity: number
-        unit: string | null
+        requested_qty: number | null
+        unit_id: number | null
       }>
+      const itemProductIds = [...new Set(itemsList.map((item) => item.product_id).filter((value): value is number => value != null))]
+      const unitIds = [...new Set(itemsList.map((item) => item.unit_id).filter((value): value is number => value != null))]
+      const [productsRes, unitsRes] = await Promise.all([
+        itemProductIds.length > 0 ? supabase.from('products').select('id, name, sku').in('id', itemProductIds) : { data: [] },
+        unitIds.length > 0 ? supabase.from('units').select('id, symbol, name').in('id', unitIds) : { data: [] },
+      ])
+      const productMap = new Map<number, { name: string; sku: string | null }>(
+        ((productsRes.data ?? []) as Array<{ id: number; name: string | null; sku: string | null }>).map((product) => [
+          product.id,
+          { name: product.name ?? `Product #${product.id}`, sku: product.sku ?? null },
+        ])
+      )
+      const unitMap = new Map<number, string>(
+        ((unitsRes.data ?? []) as Array<{ id: number; symbol: string | null; name: string | null }>).map((unit) => [
+          unit.id,
+          unit.symbol ?? unit.name ?? '',
+        ])
+      )
       const items: ShipmentItem[] = itemsList.map((item) => ({
         id: `line-${item.id}`,
-        sku: item.sku ?? null,
+        shipment_item_id: item.id,
+        product_id: item.product_id,
+        product_name: item.product_id ? productMap.get(item.product_id)?.name ?? null : null,
+        sku: item.product_id ? productMap.get(item.product_id)?.sku ?? null : null,
         description: item.description ?? null,
-        quantity: item.quantity ?? null,
-        unit: item.unit ?? null,
+        quantity: item.requested_qty ?? null,
+        unit: item.unit_id ? unitMap.get(item.unit_id) ?? null : null,
       }))
 
       const packItemsList = (packItemsRes.data ?? []) as Array<{
@@ -261,6 +334,91 @@ function ShipmentDetail() {
         s.customer_id != null ? ((customerRes.data as { name?: string } | null)?.name ?? '') : ''
       const warehouseName: string =
         s.warehouse_id != null ? ((warehouseRes.data as { name?: string } | null)?.name ?? '') : ''
+      const carrierName: string | null =
+        s.carrier_id != null
+          ? ((carrierRes.data as { name?: string } | null)?.name ?? `Unknown carrier (ID ${s.carrier_id})`)
+          : null
+
+      const activityRows = (activitiesRes.data ?? []) as Array<{
+        id: number
+        type: string | null
+        description: string | null
+        actor: string | null
+        timestamp: string | null
+      }>
+
+      const actorIds = [...new Set(activityRows.map((activity) => activity.actor).filter((value): value is string => !!value))]
+      const { data: actorRows } =
+        actorIds.length > 0
+          ? await supabase.from('user_profiles').select('id, full_name, email').in('id', actorIds)
+          : { data: [] }
+      const actorMap = new Map<string, string>(
+        ((actorRows ?? []) as Array<{ id: string; full_name: string | null; email: string | null }>).map((actor) => [
+          actor.id,
+          actor.full_name || actor.email || actor.id,
+        ])
+      )
+
+      const hydratedActivities: ShipmentActivity[] = activityRows.map((activity) => ({
+        id: activity.id,
+        type: activity.type,
+        description: activity.description,
+        actor_name: activity.actor ? actorMap.get(activity.actor) ?? activity.actor : 'System',
+        timestamp: activity.timestamp,
+      }))
+      setActivities(hydratedActivities)
+
+      const shipmentItemIds = itemsList.map((item) => item.id)
+      const { data: lotAllocationRows } =
+        shipmentItemIds.length > 0
+          ? await supabase
+              .from('shipment_lot_allocations')
+              .select('id, shipment_item_id, lot_id, allocated_qty')
+              .in('shipment_item_id', shipmentItemIds)
+          : { data: [] }
+
+      const lotIds = [...new Set(((lotAllocationRows ?? []) as Array<{ lot_id: number }>).map((row) => row.lot_id))]
+      const { data: lotRows } =
+        lotIds.length > 0
+          ? await supabase.from('supply_batches').select('id, lot_no').in('id', lotIds)
+          : { data: [] }
+      const lotMap = new Map<number, string>(
+        ((lotRows ?? []) as Array<{ id: number; lot_no: string | null }>).map((lot) => [lot.id, lot.lot_no ?? `Lot #${lot.id}`])
+      )
+      const itemMap = new Map(items.map((item) => [item.shipment_item_id ?? 0, item]))
+      const mappedAllocations: ShipmentLotAllocation[] = ((lotAllocationRows ?? []) as Array<{
+        id: number
+        shipment_item_id: number
+        lot_id: number
+        allocated_qty: number
+      }>).map((allocation) => ({
+        id: allocation.id,
+        shipment_item_id: allocation.shipment_item_id,
+        lot_id: allocation.lot_id,
+        allocated_qty: Number(allocation.allocated_qty) || 0,
+        lot_no: lotMap.get(allocation.lot_id) ?? `Lot #${allocation.lot_id}`,
+        product_name: itemMap.get(allocation.shipment_item_id)?.product_name ?? 'Unknown product',
+      }))
+      setLotAllocations(mappedAllocations)
+
+      const { data: supplyRows } =
+        s.warehouse_id != null
+          ? await supabase.from('supplies').select('id').eq('warehouse_id', s.warehouse_id)
+          : { data: [] }
+      const supplyIds = ((supplyRows ?? []) as Array<{ id: number }>).map((supply) => supply.id)
+      const { data: lotCandidatesRows } =
+        supplyIds.length > 0 && itemProductIds.length > 0
+          ? await supabase
+              .from('supply_batches')
+              .select('id, lot_no, product_id')
+              .in('supply_id', supplyIds)
+              .in('product_id', itemProductIds)
+          : { data: [] }
+      setLotCandidates(
+        ((lotCandidatesRows ?? []) as Array<{ id: number; lot_no: string | null; product_id: number | null }>)
+          .filter((lot) => lot.product_id != null)
+          .map((lot) => ({ id: lot.id, lot_no: lot.lot_no ?? `Lot #${lot.id}`, product_id: lot.product_id as number }))
+      )
 
       setShipment(
         hydrateShipment({
@@ -274,7 +432,8 @@ function ShipmentDetail() {
           shipping_address: s.shipping_address ?? null,
           warehouse_id: s.warehouse_id ?? 0,
           warehouse_name: warehouseName,
-          carrier_name: s.carrier_name ?? null,
+          carrier_id: s.carrier_id ?? null,
+          carrier_name: carrierName,
           carrier_reference: s.carrier_reference ?? null,
           planned_ship_date: s.planned_ship_date ?? null,
           shipped_at: s.shipped_at ?? null,
@@ -285,12 +444,16 @@ function ShipmentDetail() {
           items,
           pack_items: packItems,
           documents: [],
+          activities: hydratedActivities,
           created_at: s.created_at ?? new Date().toISOString(),
         })
       )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load shipment')
       setShipment(null)
+      setActivities([])
+      setLotAllocations([])
+      setLotCandidates([])
     } finally {
       setLoading(false)
     }
@@ -310,6 +473,92 @@ function ShipmentDetail() {
     }
     navigate('/shipments', { state: { editShipmentId: shipment.id, shipment } })
   }
+
+  const logShipmentActivity = useCallback(async (type: string, description: string) => {
+    if (!shipment) return
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    await supabase.from('shipment_activities').insert({
+      shipment_id: shipment.id,
+      type,
+      description,
+      actor: user?.id ?? null,
+    })
+  }, [shipment])
+
+  const handleSaveLotAllocation = useCallback(async () => {
+    if (!shipment) return
+    const shipmentItemId = Number(allocationItemId)
+    const lotId = Number(allocationLotId)
+    const qty = Number(allocationQty)
+
+    if (!shipmentItemId || !lotId || !Number.isFinite(qty) || qty <= 0) {
+      toast.error('Select item, lot, and a valid allocated quantity.')
+      return
+    }
+
+    const selectedItem = shipment.items.find((item) => item.shipment_item_id === shipmentItemId)
+    const productId = selectedItem?.product_id ?? null
+    if (!productId) {
+      toast.error('Selected shipment item does not have a product.')
+      return
+    }
+
+    setSavingAllocation(true)
+    const { data: stockRow, error: stockError } = await supabase
+      .from('stock_levels')
+      .select('on_hand')
+      .eq('warehouse_id', shipment.warehouse_id)
+      .eq('product_id', productId)
+      .eq('lot_id', lotId)
+      .maybeSingle()
+
+    if (stockError) {
+      toast.error(stockError.message)
+      setSavingAllocation(false)
+      return
+    }
+
+    const available = Number(stockRow?.on_hand ?? 0)
+    if (qty > available) {
+      toast.error(`Allocated quantity ${qty} exceeds available lot stock ${available}.`)
+      setSavingAllocation(false)
+      return
+    }
+
+    const { error: upsertError } = await supabase.from('shipment_lot_allocations').upsert(
+      {
+        shipment_item_id: shipmentItemId,
+        lot_id: lotId,
+        allocated_qty: qty,
+      },
+      { onConflict: 'shipment_item_id,lot_id' }
+    )
+
+    if (upsertError) {
+      toast.error(upsertError.message)
+      setSavingAllocation(false)
+      return
+    }
+
+    await logShipmentActivity('LOT_ALLOCATIONS_UPDATED', `Lot allocation updated for item #${shipmentItemId} (lot #${lotId}, qty ${qty})`)
+    setAllocationItemId('')
+    setAllocationLotId('')
+    setAllocationQty('')
+    await loadShipment()
+    setSavingAllocation(false)
+  }, [allocationItemId, allocationLotId, allocationQty, loadShipment, logShipmentActivity, shipment])
+
+  const handleDeleteLotAllocation = useCallback(async (allocationId: number) => {
+    const { error: deleteError } = await supabase.from('shipment_lot_allocations').delete().eq('id', allocationId)
+    if (deleteError) {
+      toast.error(deleteError.message)
+      return
+    }
+    await logShipmentActivity('LOT_ALLOCATIONS_UPDATED', `Lot allocation #${allocationId} removed`)
+    await loadShipment()
+  }, [loadShipment, logShipmentActivity])
 
   if (loading) {
     return (
@@ -387,6 +636,11 @@ function ShipmentDetail() {
 
   const totalItems = shipment.items.reduce((count: number, item: ShipmentItem) => count + (item.quantity ?? 0), 0)
   const totalPackUnits = shipment.pack_items.reduce((count, item) => count + (item.units_count ?? item.box_count ?? 0), 0)
+  const selectedAllocationItem = shipment.items.find((item) => String(item.shipment_item_id) === allocationItemId)
+  const lotOptions = lotCandidates.filter((lot) => {
+    if (!selectedAllocationItem?.product_id) return true
+    return lot.product_id === selectedAllocationItem.product_id
+  })
 
   return (
     <PageLayout
@@ -535,6 +789,33 @@ function ShipmentDetail() {
 
         <Card className="border-olive-light/30 bg-white">
           <CardHeader>
+            <CardTitle className="text-text-dark">Activity Timeline</CardTitle>
+            <CardDescription>Operational events captured for this shipment.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {activities.length === 0 ? (
+              <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 text-sm text-text-dark/70">
+                No activity has been recorded yet.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {activities.map((activity) => (
+                  <div key={activity.id} className="rounded-lg border border-olive-light/30 bg-white p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium text-text-dark">{activity.type || 'Activity'}</p>
+                      <p className="text-xs text-text-dark/60">{formatDateTime(activity.timestamp)}</p>
+                    </div>
+                    <p className="mt-1 text-sm text-text-dark/80">{activity.description || 'No description'}</p>
+                    <p className="mt-1 text-xs text-text-dark/60">By {activity.actor_name}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-olive-light/30 bg-white">
+          <CardHeader>
             <CardTitle className="text-text-dark">Documents</CardTitle>
             <CardDescription>Supporting paperwork available for this shipment</CardDescription>
           </CardHeader>
@@ -615,6 +896,85 @@ function ShipmentDetail() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-olive-light/30 bg-white">
+          <CardHeader>
+            <CardTitle className="text-text-dark">Lot Allocations</CardTitle>
+            <CardDescription>Allocate shipment item quantities against specific lots.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="space-y-1 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Shipment Item</label>
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={allocationItemId}
+                  onChange={(event) => {
+                    setAllocationItemId(event.target.value)
+                    setAllocationLotId('')
+                  }}
+                >
+                  <option value="">Select item</option>
+                  {shipment.items.map((item) => (
+                    <option key={item.id} value={item.shipment_item_id}>
+                      {item.product_name || item.description || item.sku || item.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Lot</label>
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={allocationLotId}
+                  onChange={(event) => setAllocationLotId(event.target.value)}
+                >
+                  <option value="">Select lot</option>
+                  {lotOptions.map((lot) => (
+                    <option key={lot.id} value={lot.id}>
+                      {lot.lot_no}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Allocated Qty</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={allocationQty}
+                  onChange={(event) => setAllocationQty(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <Button className="bg-olive hover:bg-olive-dark" disabled={savingAllocation} onClick={handleSaveLotAllocation}>
+                {savingAllocation ? 'Saving...' : 'Save Allocation'}
+              </Button>
+            </div>
+
+            {lotAllocations.length === 0 ? (
+              <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 text-sm text-text-dark/70">
+                No lot allocations recorded for this shipment.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {lotAllocations.map((allocation) => (
+                  <div key={allocation.id} className="flex items-center justify-between rounded-lg border border-olive-light/30 bg-white p-3">
+                    <div>
+                      <p className="text-sm font-medium text-text-dark">{allocation.product_name}</p>
+                      <p className="text-xs text-text-dark/60">Lot {allocation.lot_no} · Qty {allocation.allocated_qty}</p>
+                    </div>
+                    <Button variant="ghost" className="text-red-600 hover:text-red-700" onClick={() => handleDeleteLotAllocation(allocation.id)}>
+                      Remove
+                    </Button>
+                  </div>
+                ))}
               </div>
             )}
           </CardContent>

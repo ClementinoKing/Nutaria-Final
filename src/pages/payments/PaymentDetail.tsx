@@ -15,7 +15,7 @@ interface SupplyDetailRow {
   received_at?: string | null
 }
 
-interface SupplyLineRow {
+interface SupplyBatchRow {
   accepted_qty: number
   unit_price?: number | null
 }
@@ -84,14 +84,14 @@ function PaymentDetail() {
 
     setLoading(true)
     try {
-      const [supplyRes, linesRes, paymentsRes] = await Promise.all([
+      const [supplyRes, batchesRes, paymentsRes] = await Promise.all([
         supabase
           .from('supplies')
           .select('id, doc_no, supplier_id, received_at')
           .eq('id', supplyId)
           .maybeSingle(),
         supabase
-          .from('supply_lines')
+          .from('supply_batches')
           .select('accepted_qty, unit_price')
           .eq('supply_id', supplyId),
         supabase
@@ -104,7 +104,7 @@ function PaymentDetail() {
       ])
 
       if (supplyRes.error) throw supplyRes.error
-      if (linesRes.error) throw linesRes.error
+      if (batchesRes.error) throw batchesRes.error
       if (paymentsRes.error) throw paymentsRes.error
 
       const supplyRow = (supplyRes.data as SupplyDetailRow | null) ?? null
@@ -112,10 +112,10 @@ function PaymentDetail() {
       setSupply(supplyRow)
       setPayments(paymentRows)
 
-      const lines = (linesRes.data ?? []) as SupplyLineRow[]
-      const totalExpected = lines.reduce((sum, line) => {
-        const qty = Number(line.accepted_qty) || 0
-        const price = Number(line.unit_price ?? 0) || 0
+      const batches = (batchesRes.data ?? []) as SupplyBatchRow[]
+      const totalExpected = batches.reduce((sum, batch) => {
+        const qty = Number(batch.accepted_qty) || 0
+        const price = Number(batch.unit_price ?? 0) || 0
         return sum + qty * price
       }, 0)
       setExpectedTotal(totalExpected)

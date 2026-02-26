@@ -131,6 +131,11 @@ interface ShipmentFormData {
   documents: ShipmentDocument[]
 }
 
+interface CarrierOption {
+  id: number
+  name: string
+}
+
 const statusOptions = [
   { value: 'PENDING', label: 'Pending' },
   { value: 'READY', label: 'Ready' },
@@ -251,6 +256,7 @@ function Shipments() {
   const [shipmentToDelete, setShipmentToDelete] = useState<Shipment | null>(null)
   const [customers, setCustomers] = useState<Array<{ id: number; name: string }>>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
+  const [carriers, setCarriers] = useState<CarrierOption[]>([])
   const [formStep, setFormStep] = useState(1)
   const [packedEntries, setPackedEntries] = useState<PackedEntryOption[]>([])
   const [loadingPackedEntries, setLoadingPackedEntries] = useState(false)
@@ -301,11 +307,13 @@ function Shipments() {
       const shipmentIds = list.map((s) => s.id)
       const customerIds = [...new Set(list.map((s) => s.customer_id).filter((id): id is number => id != null))]
       const warehouseIds = [...new Set(list.map((s) => s.warehouse_id).filter((id): id is number => id != null))]
+      const carrierIds = [...new Set(list.map((s) => s.carrier_id).filter((id): id is number => id != null))]
 
-      const [itemsRes, customersRes, warehousesRes] = await Promise.all([
+      const [itemsRes, customersRes, warehousesRes, carriersRes] = await Promise.all([
         supabase.from('shipment_items').select('*').in('shipment_id', shipmentIds),
         customerIds.length > 0 ? supabase.from('customers').select('id, name').in('id', customerIds) : { data: [] },
         warehouseIds.length > 0 ? supabase.from('warehouses').select('id, name').in('id', warehouseIds) : { data: [] },
+        carrierIds.length > 0 ? supabase.from('carriers').select('id, name').in('id', carrierIds) : { data: [] },
       ])
 
       const itemsList = (itemsRes.data ?? []) as Array<{
@@ -332,6 +340,7 @@ function Shipments() {
 
       const customerMap = new Map<number, string>((customersRes.data ?? []).map((c: any) => [c.id, c.name ?? '']))
       const warehouseMap = new Map<number, string>((warehousesRes.data ?? []).map((w: any) => [w.id, w.name ?? '']))
+      const carrierMap = new Map<number, string>((carriersRes.data ?? []).map((carrier: any) => [carrier.id, carrier.name ?? '']))
 
       const built: Shipment[] = list.map((s) => ({
         id: s.id,
@@ -345,7 +354,10 @@ function Shipments() {
         warehouse_id: s.warehouse_id,
         warehouse_name: warehouseMap.get(s.warehouse_id) ?? null,
         carrier_id: s.carrier_id ?? null,
-        carrier_name: null, // Not in schema - would need to join carriers table
+        carrier_name:
+          s.carrier_id == null
+            ? null
+            : carrierMap.get(s.carrier_id) ?? `Unknown carrier (ID ${s.carrier_id})`,
         carrier_reference: s.carrier_reference ?? null,
         planned_ship_date: s.planned_ship_date ?? null,
         shipped_at: s.shipped_at ?? null,
@@ -368,12 +380,14 @@ function Shipments() {
   }, [])
 
   const loadLookups = useCallback(async () => {
-    const [custRes, whRes] = await Promise.all([
+    const [custRes, whRes, carrierRes] = await Promise.all([
       supabase.from('customers').select('id, name').order('name'),
       supabase.from('warehouses').select('id, name').order('id', { ascending: true }),
+      supabase.from('carriers').select('id, name').order('name'),
     ])
     setCustomers((custRes.data ?? []) as Array<{ id: number; name: string }>)
     setWarehouses((whRes.data ?? []) as Array<{ id: number; name: string }>)
+    setCarriers((carrierRes.data ?? []) as CarrierOption[])
   }, [])
 
   useEffect(() => {
@@ -764,6 +778,7 @@ function Shipments() {
   }
 
   const performDeleteShipment = async (shipment: Shipment) => {
+    await logShipmentActivity(shipment.id, 'SHIPMENT_DELETED', `Shipment ${shipment.doc_no} deleted`)
     const { error: delError } = await supabase.from('shipments').delete().eq('id', shipment.id)
     if (delError) {
       toast.error(delError.message)
@@ -824,6 +839,18 @@ function Shipments() {
       warehouse_name: warehouse?.name ?? '',
     }))
   }
+
+  const logShipmentActivity = useCallback(async (shipmentId: number, type: string, description: string) => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    await supabase.from('shipment_activities').insert({
+      shipment_id: shipmentId,
+      type,
+      description,
+      actor: user?.id ?? null,
+    })
+  }, [])
 
   const handlePackItemChange = (itemId: string, field: keyof ShipmentPackItemForm, value: string) => {
     setFormData((prev) => {
@@ -1084,6 +1111,7 @@ function Shipments() {
 
     setSaving(true)
     try {
+      const editingBefore = editingShipmentId != null ? shipments.find((shipment) => shipment.id === editingShipmentId) ?? null : null
       if (editingShipmentId !== null) {
         const { error: updateError } = await supabase
           .from('shipments')
@@ -1109,6 +1137,19 @@ function Shipments() {
             .from('shipment_pack_items')
             .insert(normalizedPackItems.map((item) => ({ shipment_id: editingShipmentId, ...item })))
         }
+
+        if (editingBefore?.doc_status !== formData.doc_status) {
+          await logShipmentActivity(
+            editingShipmentId,
+            'STATUS_CHANGED',
+            `Status changed from ${editingBefore?.doc_status ?? 'Unknown'} to ${formData.doc_status}`
+          )
+        }
+        await logShipmentActivity(
+          editingShipmentId,
+          'ITEMS_UPDATED',
+          `Shipment items updated (${normalizedItems.length} line items, ${normalizedPackItems.length} pack allocations)`
+        )
 
         await load()
         toast.success('Shipment updated')
@@ -1141,6 +1182,12 @@ function Shipments() {
             .from('shipment_pack_items')
             .insert(normalizedPackItems.map((item) => ({ shipment_id: newId, ...item })))
         }
+
+        await logShipmentActivity(
+          newId,
+          'SHIPMENT_CREATED',
+          `Shipment created with ${normalizedItems.length} line items and ${normalizedPackItems.length} pack allocations`
+        )
 
         await load()
         toast.success('Shipment created')
@@ -1178,7 +1225,8 @@ function Shipments() {
     {
       key: 'carrier',
       header: 'Carrier',
-      render: (shipment: Shipment) => shipment.carrier_name || '-',
+      render: (shipment: Shipment) =>
+        shipment.carrier_name || (shipment.carrier_id ? `Unknown carrier (ID ${shipment.carrier_id})` : '-'),
       cellClassName: 'text-text-dark/60',
     },
     {
@@ -1493,14 +1541,23 @@ function Shipments() {
                         )}
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="carrier_name">Carrier</Label>
-                        <Input
-                          id="carrier_name"
-                          name="carrier_name"
-                          value={formData.carrier_name}
-                          onChange={handleChange}
-                          placeholder="Transport partner"
+                        <Label htmlFor="carrier_id">Carrier</Label>
+                        <SearchableSelect
+                          id="carrier_id"
+                          options={carriers.map((carrier) => ({ value: String(carrier.id), label: carrier.name }))}
+                          value={formData.carrier_id}
+                          onChange={(value) =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              carrier_id: value,
+                              carrier_name: carriers.find((carrier) => String(carrier.id) === value)?.name ?? '',
+                            }))
+                          }
+                          placeholder="Select carrier"
                         />
+                        {carriers.length === 0 ? (
+                          <p className="text-xs text-text-dark/50">No carriers found. Add carriers in Settings.</p>
+                        ) : null}
                       </div>
                     </div>
                   </section>
