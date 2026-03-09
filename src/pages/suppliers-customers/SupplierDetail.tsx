@@ -8,7 +8,24 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { useSupplierTypes } from '@/hooks/useSupplierTypes'
-import { ArrowLeft } from 'lucide-react'
+import { useDocumentTypes } from '@/hooks/useDocumentTypes'
+import {
+  ArrowLeft,
+  BadgeCheck,
+  ExternalLink,
+  FileImage,
+  FileStack,
+  FileText,
+  Globe,
+  Landmark,
+  Mail,
+  MapPin,
+  Phone,
+  ShieldCheck,
+  User,
+} from 'lucide-react'
+import { getStoredFileUrls } from '@/lib/fileStorage'
+import { getPrimarySupplierContact, type SupplierContactRecord } from '@/lib/supplierContacts'
 
 function formatEnumLabel(value: string | number | null | undefined): string {
   const label = value ?? ''
@@ -192,6 +209,8 @@ type SupplierFormState = {
   primary_contact_name: string
   primary_contact_email: string
   primary_contact_phone: string
+  primary_contact_role: string
+  contacts: SupplierContactRecord[]
   bank: string
   account_number: string
   branch: string
@@ -215,7 +234,37 @@ type SupplierFormState = {
   created_at: string | Date | number | null
 }
 
-function createFormStateFromSupplier(supplier: unknown, documentRows: unknown[] = []) {
+type FilePreviewMeta = {
+  name: string
+  size: number | null
+  expiry_date: string | null
+  storage_path: string | null
+}
+
+const getFileExtension = (name: string): string => {
+  const parts = name.toLowerCase().split('.')
+  return parts.length > 1 ? parts.pop() || '' : ''
+}
+
+const isImageFile = (name: string): boolean =>
+  ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(getFileExtension(name))
+
+const isPdfFile = (name: string): boolean => getFileExtension(name) === 'pdf'
+
+const getInitials = (name: string): string =>
+  name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('') || 'S'
+
+function createFormStateFromSupplier(
+  supplier: unknown,
+  documentRows: unknown[] = [],
+  contacts: SupplierContactRecord[] = []
+) {
   const supplierObj = supplier as Record<string, unknown> | null | undefined
   const baseFallbackDocuments = Array.isArray(supplierObj?.documents)
     ? (supplierObj.documents as unknown[]).map((item: unknown, index: number) => normalizeFileGroup(item, index, 'DOCUMENT'))
@@ -241,6 +290,8 @@ function createFormStateFromSupplier(supplier: unknown, documentRows: unknown[] 
 
   const groupedDocuments = documentRows.length > 0 ? groupDocumentsByType(documentRows) : null
 
+  const primaryContact = getPrimarySupplierContact(contacts, supplierObj)
+
   return {
     id: (supplierObj?.id as string | number | null | undefined) ?? null,
     name: String(supplierObj?.name ?? ''),
@@ -250,9 +301,11 @@ function createFormStateFromSupplier(supplier: unknown, documentRows: unknown[] 
     address: String(supplierObj?.address ?? ''),
     country: String(supplierObj?.country ?? ''),
     is_halal_certified: Boolean(supplierObj?.is_halal_certified ?? false),
-    primary_contact_name: String(supplierObj?.primary_contact_name ?? ''),
-    primary_contact_email: String(supplierObj?.primary_contact_email ?? ''),
-    primary_contact_phone: String(supplierObj?.primary_contact_phone ?? ''),
+    primary_contact_name: primaryContact.name,
+    primary_contact_email: primaryContact.email,
+    primary_contact_phone: primaryContact.phone,
+    primary_contact_role: primaryContact.role,
+    contacts,
     bank: String(supplierObj?.bank ?? ''),
     account_number: String(supplierObj?.account_number ?? ''),
     branch: String(supplierObj?.branch ?? ''),
@@ -266,15 +319,22 @@ function SupplierDetail() {
   const navigate = useNavigate()
   const { supplierId } = useParams()
   const { supplierTypes } = useSupplierTypes()
+  const { documentTypes } = useDocumentTypes()
 
   const typeNameMap = useMemo(
     () => new Map(supplierTypes.map((t) => [t.code, t.name])),
     [supplierTypes]
   )
+  const documentTypeNameMap = useMemo(
+    () => new Map(documentTypes.map((type) => [type.code?.toUpperCase(), type.name])),
+    [documentTypes]
+  )
 
   const [supplierData, setSupplierData] = useState<SupplierFormState | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({})
+  const [brokenPreviewPaths, setBrokenPreviewPaths] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     const fetchSupplier = async () => {
@@ -304,7 +364,18 @@ function SupplierDetail() {
         return
       }
 
-      const normalized = createFormStateFromSupplier(payload.supplier, payload.documents ?? [])
+      const { data: supplierContacts, error: contactsError } = await supabase
+        .from('supplier_contacts')
+        .select('id, name, email, phone, role, is_primary')
+        .eq('supplier_id', supplierIdValue)
+        .order('is_primary', { ascending: false })
+        .order('id', { ascending: true })
+
+      if (contactsError) {
+        console.warn('Unable to load supplier contacts', contactsError)
+      }
+
+      const normalized = createFormStateFromSupplier(payload.supplier, payload.documents ?? [], supplierContacts ?? [])
       setSupplierData(normalized)
       setLoading(false)
     }
@@ -318,6 +389,35 @@ function SupplierDetail() {
     }
   }, [error])
 
+  useEffect(() => {
+    const loadPreviewUrls = async () => {
+      const allFiles = [
+        ...(supplierData?.documents.flatMap((group) => group.files) ?? []),
+        ...(supplierData?.files ?? []),
+      ]
+      const storagePaths = allFiles
+        .map((file) => file.storage_path)
+        .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+
+      if (storagePaths.length === 0) {
+        setPreviewUrls({})
+        return
+      }
+
+      try {
+        const urls = await getStoredFileUrls(storagePaths, 3600)
+        setPreviewUrls(urls)
+        setBrokenPreviewPaths({})
+      } catch (previewError) {
+        console.error('Error loading supplier file previews', previewError)
+        setPreviewUrls({})
+        setBrokenPreviewPaths({})
+      }
+    }
+
+    void loadPreviewUrls()
+  }, [supplierData])
+
   const handleBack = () => {
     navigate('/suppliers-customers/suppliers')
   }
@@ -327,6 +427,17 @@ function SupplierDetail() {
       return
     }
     navigate(`/suppliers-customers/suppliers/${supplierData.id}/edit`)
+  }
+
+  const handleOpenDocument = (file: FilePreviewMeta) => {
+    if (!file.storage_path) {
+      toast.error('This document does not have a storage path.')
+      return
+    }
+
+    navigate(
+      `/documents/view?source=supplier&path=${encodeURIComponent(file.storage_path)}&name=${encodeURIComponent(file.name)}`
+    )
   }
   if (loading) {
     return (
@@ -373,57 +484,201 @@ function SupplierDetail() {
   const certificateGroups = documents.filter((group) => group.isCertificate)
   const totalDocumentFiles = documentGroups.reduce((count, entry) => count + entry.files.length, 0)
   const totalCertificateFiles = certificateGroups.reduce((count, entry) => count + entry.files.length, 0)
-  const complianceStats = [
+
+  const typeDisplay =
+    typeNameMap.get(supplierData.supplier_type ?? '') ?? supplierData.supplier_type ?? 'Not specified'
+
+  const summaryCards = [
     {
       title: 'Document Types',
       value: documentGroups.length,
       description: totalDocumentFiles
-        ? `${totalDocumentFiles} file${totalDocumentFiles === 1 ? '' : 's'} uploaded`
+        ? `${totalDocumentFiles} file${totalDocumentFiles === 1 ? '' : 's'} on record`
         : 'No files uploaded',
-      tone: documentGroups.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
+      icon: FileStack,
     },
     {
       title: 'Certificates',
       value: certificateGroups.length,
       description: totalCertificateFiles
-        ? `${totalCertificateFiles} file${totalCertificateFiles === 1 ? '' : 's'} uploaded`
-        : 'No files uploaded',
-      tone: certificateGroups.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
+        ? `${totalCertificateFiles} certificate file${totalCertificateFiles === 1 ? '' : 's'}`
+        : 'No certificates uploaded',
+      icon: ShieldCheck,
     },
     {
       title: 'Supporting Files',
       value: supplierData.files.length,
-      description: supplierData.files.length
-        ? 'Additional references shared'
-        : 'No supporting files uploaded',
-      tone: supplierData.files.length > 0 ? 'text-olive-dark' : 'text-text-dark/60',
+      description: supplierData.files.length ? 'Additional supporting material available' : 'No supporting files',
+      icon: BadgeCheck,
     },
   ]
 
-  const typeDisplay =
-    typeNameMap.get(supplierData.supplier_type ?? '') ?? supplierData.supplier_type ?? 'Not specified'
-
-  const companyDetails = [
-    { label: 'Supplier Type', value: typeDisplay },
-    { label: 'Halal Certified', value: supplierData.is_halal_certified ? 'Yes' : 'No' },
-    { label: 'Country', value: supplierData.country || 'Not provided' },
-    { label: 'Address', value: supplierData.address || 'Not provided' },
-    { label: 'Bank', value: supplierData.bank || 'Not provided' },
-    { label: 'Account Number', value: supplierData.account_number || 'Not provided' },
-    { label: 'Branch', value: supplierData.branch || 'Not provided' },
-    { label: 'Created', value: formatDate(supplierData.created_at) },
+  const companyProfileItems = [
+    { label: 'Supplier Type', value: typeDisplay, icon: BadgeCheck },
+    { label: 'Country', value: supplierData.country || 'Not provided', icon: Globe },
+    { label: 'Address', value: supplierData.address || 'Not provided', icon: MapPin },
+    { label: 'Added', value: formatDate(supplierData.created_at), icon: ShieldCheck },
   ]
 
-  const primaryContactDetails = [
-    { label: 'Name', value: supplierData.primary_contact_name || 'Not provided' },
-    { label: 'Email', value: supplierData.primary_contact_email || supplierData.email || 'Not provided' },
-    { label: 'Phone', value: supplierData.primary_contact_phone || supplierData.phone || 'Not provided' },
+  const supplierContacts = supplierData.contacts.length
+    ? supplierData.contacts
+    : [
+        {
+          id: 'fallback-primary',
+          name: supplierData.primary_contact_name || null,
+          email: supplierData.primary_contact_email || supplierData.email || null,
+          phone: supplierData.primary_contact_phone || supplierData.phone || null,
+          role: supplierData.primary_contact_role || null,
+          is_primary: true,
+        },
+      ].filter((contact) => contact.name || contact.email || contact.phone)
+
+  const financialItems = [
+    { label: 'Bank', value: supplierData.bank || 'Not provided', icon: Landmark },
+    { label: 'Account Number', value: supplierData.account_number || 'Not provided', icon: Landmark },
+    { label: 'Branch', value: supplierData.branch || 'Not provided', icon: Landmark },
+    {
+      label: 'Halal Status',
+      value: supplierData.is_halal_certified ? 'Halal Certified' : 'Not Halal Certified',
+      icon: supplierData.is_halal_certified ? ShieldCheck : BadgeCheck,
+    },
   ]
 
-  const contactChannels = [
-    { label: 'Main Email', value: supplierData.email || 'Not provided' },
-    { label: 'Main Phone', value: supplierData.phone || 'Not provided' },
-  ]
+  const getDocumentTypeLabel = (value: string) => {
+    const normalizedValue = value?.trim().toUpperCase()
+    return documentTypeNameMap.get(normalizedValue) ?? formatEnumLabel(value)
+  }
+
+  const renderFileCard = (file: FilePreviewMeta, key: string) => {
+    const expired = isExpired(file.expiry_date)
+    const previewUrl = file.storage_path ? previewUrls[file.storage_path] ?? '' : ''
+    const hasBrokenPreview = file.storage_path ? brokenPreviewPaths[file.storage_path] ?? false : false
+    const imageFile = isImageFile(file.name)
+    const pdfFile = isPdfFile(file.name)
+    const showImagePreview = imageFile && previewUrl && !hasBrokenPreview
+
+    return (
+      <button
+        key={key}
+        type="button"
+        onClick={() => handleOpenDocument(file)}
+        className={`flex w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition hover:border-olive hover:bg-white ${
+          expired ? 'border-red-200 bg-red-50/80' : 'border-olive-light/25 bg-white'
+        }`}
+      >
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-olive-light/30 bg-gradient-to-br from-olive-light/20 to-white">
+          {showImagePreview ? (
+            <img
+              src={previewUrl}
+              alt={file.name}
+              className="h-full w-full object-contain bg-white"
+              onError={() => {
+                if (!file.storage_path) return
+                setBrokenPreviewPaths((prev) => ({ ...prev, [file.storage_path!]: true }))
+              }}
+            />
+          ) : pdfFile ? (
+            <FileText className="h-4 w-4 text-olive-dark" />
+          ) : (
+            <FileImage className="h-4 w-4 text-olive-dark" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-text-dark">{file.name}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-dark/60">
+                {formatFileSize(file.size) && <span>{formatFileSize(file.size)}</span>}
+                {formatDateOnly(file.expiry_date) && (
+                  <span className={expired ? 'font-medium text-red-700' : ''}>
+                    {expired ? 'Expired ' : 'Expires '}
+                    {formatDateOnly(file.expiry_date)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-text-dark/40" />
+          </div>
+        </div>
+      </button>
+    )
+  }
+
+  const renderInfoList = (
+    title: string,
+    description: string,
+    items: Array<{ label: string; value: string; icon: React.ComponentType<{ className?: string }> }>
+  ) => (
+    <Card className="border-olive-light/35 bg-white shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-text-dark">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-0 px-6 pb-5">
+        {items.map((item) => {
+          const Icon = item.icon
+          return (
+            <div
+              key={item.label}
+              className="flex items-start gap-3 border-t border-olive-light/15 py-3 first:border-t-0 first:pt-0 last:pb-0"
+            >
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-olive-light/20 text-olive-dark">
+                <Icon className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-dark/45">{item.label}</p>
+                <p className="mt-1 text-sm font-medium text-text-dark">{item.value}</p>
+              </div>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+
+  const renderContactsCard = () => (
+    <Card className="border-olive-light/35 bg-white shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-text-dark">Contacts</CardTitle>
+        <CardDescription>Direct communication channels and accountable contact people.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-6 pb-5">
+        {supplierContacts.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-olive-light/40 bg-olive-light/10 px-4 py-5 text-sm text-text-dark/60">
+            No supplier contacts recorded.
+          </div>
+        ) : (
+          supplierContacts.map((contact, index) => (
+            <div key={String(contact.id ?? index)} className="rounded-xl border border-olive-light/20 bg-olive-light/10 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-text-dark">{contact.name || 'Unnamed contact'}</p>
+                    {contact.is_primary && (
+                      <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-olive-dark">
+                        Primary
+                      </span>
+                    )}
+                  </div>
+                  {contact.role && <p className="mt-1 text-xs text-text-dark/60">{contact.role}</p>}
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 text-sm text-text-dark/75">
+                <div className="flex items-center gap-2">
+                  <Phone className="h-4 w-4 text-text-dark/45" />
+                  <span>{contact.phone || 'No phone'}</span>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Mail className="h-4 w-4 shrink-0 text-text-dark/45" />
+                  <span className="truncate">{contact.email || 'No email'}</span>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  )
 
   return (
     <PageLayout
@@ -442,258 +697,119 @@ function SupplierDetail() {
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="space-y-6">
-        <Card className="overflow-hidden border-olive-light/40 bg-gradient-to-r from-olive-light/40 via-white to-white">
-          <CardContent className="flex flex-col gap-6 px-6 py-6 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-2">
-              <CardTitle className="text-2xl font-semibold text-text-dark">{supplierData.name}</CardTitle>
-              <p className="text-sm text-text-dark/70">
-                Comprehensive profile, contact channels, and compliance snapshot for this supplier.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="inline-flex items-center rounded-full border border-olive-light/60 bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
-                {typeDisplay}
-              </span>
-              <span
-                className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
-                  supplierData.is_halal_certified
-                    ? 'bg-green-100 text-green-800'
-                    : 'bg-gray-200 text-text-dark/80'
-                }`}
-              >
-                {supplierData.is_halal_certified ? 'Halal Certified' : 'Not Halal Certified'}
-              </span>
-              <span className="inline-flex items-center rounded-full bg-beige/40 px-3 py-1 text-xs font-medium text-text-dark/70">
-                Added {formatDate(supplierData.created_at)}
-              </span>
+        <Card className="overflow-hidden border-olive-light/35 bg-white shadow-sm">
+          <CardContent className="px-6 py-6 lg:px-8">
+            <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
+              <div className="flex items-start gap-4">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-olive text-lg font-semibold text-white">
+                  {getInitials(supplierData.name)}
+                </div>
+                <div className="min-w-0 space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-text-dark/40">Supplier profile</p>
+                    <CardTitle className="text-3xl font-semibold tracking-tight text-text-dark">{supplierData.name}</CardTitle>
+                    <p className="max-w-2xl text-sm leading-6 text-text-dark/65">
+                      Operational contact details, compliance status, and supplier documents in one place.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full border border-olive/20 bg-olive-light/20 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-olive-dark">
+                      {typeDisplay}
+                    </span>
+                    <span
+                      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                        supplierData.is_halal_certified ? 'bg-green-100 text-green-800' : 'bg-stone-200 text-text-dark/80'
+                      }`}
+                    >
+                      {supplierData.is_halal_certified ? 'Halal Certified' : 'Halal Not Recorded'}
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-beige/50 px-3 py-1 text-xs font-medium text-text-dark/70">
+                      Added {formatDate(supplierData.created_at)}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 text-sm text-text-dark/70 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-text-dark/45" />
+                      <span>{supplierData.phone || supplierData.primary_contact_phone || 'No phone'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Mail className="h-4 w-4 text-text-dark/45" />
+                      <span className="truncate">{supplierData.email || supplierData.primary_contact_email || 'No email'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MapPin className="h-4 w-4 text-text-dark/45" />
+                      <span>{supplierData.country || 'No country'}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[420px]">
+                {summaryCards.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <div
+                      key={item.title}
+                      className="rounded-xl border border-olive-light/25 bg-olive-light/10 px-4 py-4"
+                    >
+                      <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-white text-olive-dark">
+                        <Icon className="h-4 w-4" />
+                      </div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-text-dark/50">{item.title}</p>
+                      <p className="mt-2 text-2xl font-semibold text-text-dark">{item.value}</p>
+                      <p className="mt-1 text-xs leading-5 text-text-dark/65">{item.description}</p>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </CardContent>
         </Card>
 
-        <div className="grid gap-4 md:grid-cols-3">
-          {complianceStats.map((item) => (
-            <Card key={item.title} className="border border-olive-light/40 bg-white">
-              <CardContent className="space-y-2 px-5 py-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">{item.title}</p>
-                <p className={`text-2xl font-semibold ${item.tone}`}>{item.value}</p>
-                <p className="text-sm text-text-dark/70">{item.description}</p>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="grid gap-6 xl:grid-cols-3">
+          {renderInfoList('Company Profile', 'Primary supplier registration and business details.', companyProfileItems)}
+          {renderContactsCard()}
+          {renderInfoList('Financial & Compliance', 'Banking information and compliance standing.', financialItems)}
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="border-olive-light/40 bg-white lg:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Company Overview</CardTitle>
-              <CardDescription>Core profile information for this supplier</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 text-sm text-text-dark">
-              {companyDetails.map((detail) => (
-                <div key={detail.label} className="flex flex-col">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    {detail.label}
-                  </span>
-                  <span className="mt-1 text-base text-text-dark/90">{detail.value}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Card className="border-olive-light/40 bg-white">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Primary Contact</CardTitle>
-              <CardDescription>Your main point of contact at this supplier</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm text-text-dark">
-              {primaryContactDetails.map((detail) => (
-                <div key={detail.label} className="flex flex-col">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    {detail.label}
-                  </span>
-                  <span className="mt-1 text-base text-text-dark/90">{detail.value}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
-          <Card className="border-olive-light/40 bg-white xl:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Contact Channels</CardTitle>
-              <CardDescription>How to reach the supplier’s main desk</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 text-sm text-text-dark">
-              {contactChannels.map((item) => (
-                <div key={item.label} className="flex flex-col">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                    {item.label}
-                  </span>
-                  <span className="mt-1 text-base text-text-dark/90">{item.value}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Card className="border-olive-light/40 bg-white">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Supporting Files</CardTitle>
-              <CardDescription>Additional materials shared with this supplier</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm text-text-dark">
-              {supplierData.files.length === 0 ? (
-                <p className="text-text-dark/60">No supporting files uploaded.</p>
-              ) : (
-                <ul className="space-y-2 rounded-md border border-olive-light/40 bg-olive-light/10 p-3">
-                  {supplierData.files.map((file, index) => (
-                    <li
-                      key={`support-file-${index}`}
-                      className="flex items-center justify-between gap-2 text-sm text-text-dark"
-                    >
-                      <span className="truncate">{file.name}</span>
-                      {formatFileSize(file.size) && (
-                        <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card className="border-olive-light/40 bg-white">
+        <div className="space-y-6">
+          <Card className="border-olive-light/35 bg-white shadow-sm">
             <CardHeader>
               <CardTitle className="text-text-dark">Document Library</CardTitle>
               <CardDescription>Compliance and registration documentation grouped by type</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-text-dark">
+            <CardContent className="space-y-4 text-sm text-text-dark">
               {documentGroups.length === 0 ? (
-                <p className="text-text-dark/60">No document types captured.</p>
+                <div className="rounded-2xl border border-dashed border-olive-light/50 bg-olive-light/10 px-5 py-6 text-text-dark/60">
+                  No document types captured.
+                </div>
               ) : (
-                documentGroups.map((documentType) => (
-                  <div
-                    key={documentType.id}
-                    className="space-y-2 rounded-md border border-olive-light/40 bg-olive-light/10 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-text-dark">{formatEnumLabel(documentType.type)}</p>
-                        <p className="text-xs text-text-dark/60">
-                          {documentType.files.length
-                            ? `${documentType.files.length} file${documentType.files.length === 1 ? '' : 's'} uploaded`
-                            : 'No files uploaded yet'}
-                        </p>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {documentGroups.map((documentType) => (
+                    <div
+                      key={documentType.id}
+                      className="space-y-3 rounded-xl border border-olive-light/25 bg-olive-light/10 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-base font-semibold text-text-dark">{getDocumentTypeLabel(documentType.type)}</p>
+                          <p className="mt-1 text-xs text-text-dark/60">
+                            {documentType.files.length
+                              ? `${documentType.files.length} file${documentType.files.length === 1 ? '' : 's'} uploaded`
+                              : 'No files uploaded yet'}
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-dark/55">
+                          {documentType.files.length} item{documentType.files.length === 1 ? '' : 's'}
+                        </span>
                       </div>
+                      {documentType.files.length > 0 && (
+                        <div className="space-y-2.5 text-sm text-text-dark">
+                          {documentType.files.map((file, index) => renderFileCard(file, `${documentType.id}-file-${index}`))}
+                        </div>
+                      )}
                     </div>
-                    {documentType.files.length > 0 && (
-                      <ul className="space-y-1 text-sm text-text-dark">
-                        {documentType.files.map((file, index) => {
-                          const expired = isExpired(file.expiry_date)
-                          return (
-                            <li
-                              key={`${documentType.id}-file-${index}`}
-                              className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
-                                expired
-                                  ? 'border border-red-200 bg-red-50/80 dark:border-red-800 dark:bg-red-900/20'
-                                  : 'bg-white/80'
-                              }`}
-                            >
-                              <div className="flex flex-1 flex-col gap-0.5">
-                                <span className="truncate">{file.name}</span>
-                                {formatDateOnly(file.expiry_date) && (
-                                  <span className={expired ? 'text-xs font-medium text-red-700 dark:text-red-300' : 'text-xs text-text-dark/60'}>
-                                    {expired ? 'Expired ' : 'Expires '}
-                                    {formatDateOnly(file.expiry_date)}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-2">
-                                {expired && (
-                                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-200">
-                                    Expired
-                                  </span>
-                                )}
-                                {formatFileSize(file.size) && (
-                                  <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
-                                )}
-                              </div>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-olive-light/40 bg-white">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Certificate Portfolio</CardTitle>
-              <CardDescription>Certification coverage tracked for this supplier</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm text-text-dark">
-              {certificateGroups.length === 0 ? (
-                <p className="text-text-dark/60">No certificate types captured.</p>
-              ) : (
-                certificateGroups.map((certificateType) => (
-                  <div
-                    key={certificateType.id}
-                    className="space-y-2 rounded-md border border-olive-light/40 bg-olive-light/10 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-text-dark">{formatEnumLabel(certificateType.type)}</p>
-                        <p className="text-xs text-text-dark/60">
-                          {certificateType.files.length
-                            ? `${certificateType.files.length} file${certificateType.files.length === 1 ? '' : 's'} uploaded`
-                            : 'No files uploaded yet'}
-                        </p>
-                      </div>
-                    </div>
-                    {certificateType.files.length > 0 && (
-                      <ul className="space-y-1 text-sm text-text-dark">
-                        {certificateType.files.map((file, index) => {
-                          const expired = isExpired(file.expiry_date)
-                          return (
-                            <li
-                              key={`${certificateType.id}-file-${index}`}
-                              className={`flex items-center justify-between gap-2 rounded px-3 py-2 ${
-                                expired
-                                  ? 'border border-red-200 bg-red-50/80 dark:border-red-800 dark:bg-red-900/20'
-                                  : 'bg-white/80'
-                              }`}
-                            >
-                              <div className="flex flex-1 flex-col gap-0.5">
-                                <span className="truncate">{file.name}</span>
-                                {formatDateOnly(file.expiry_date) && (
-                                  <span className={expired ? 'text-xs font-medium text-red-700 dark:text-red-300' : 'text-xs text-text-dark/60'}>
-                                    {expired ? 'Expired ' : 'Expires '}
-                                    {formatDateOnly(file.expiry_date)}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-2">
-                                {expired && (
-                                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/50 dark:text-red-200">
-                                    Expired
-                                  </span>
-                                )}
-                                {formatFileSize(file.size) && (
-                                  <span className="text-xs text-text-dark/50">{formatFileSize(file.size)}</span>
-                                )}
-                              </div>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                ))
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>

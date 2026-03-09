@@ -35,8 +35,6 @@ import {
   Tag,
   Banknote,
   BarChart3,
-  Scale,
-  ClipboardCheck,
 } from 'lucide-react'
 import { useDailyChecks } from '@/context/DailyChecksContext'
 import { useTheme } from '@/context/ThemeContext'
@@ -44,9 +42,8 @@ import { User } from '@supabase/supabase-js'
 import { LucideIcon } from 'lucide-react'
 import {
   FEATURE_CARRIERS,
-  FEATURE_CYCLE_COUNTS,
-  FEATURE_INVENTORY_ADJUSTMENTS,
 } from '@/lib/features'
+import { ROLE_OPTIONS } from '@/constants/roles'
 
 interface NavigationSubItem {
   name: string
@@ -69,11 +66,16 @@ interface SidebarProps {
   setSidebarOpen: (open: boolean) => void
   activeItem?: string
   user: User | null
+  profile: {
+    full_name: string | null
+    email: string | null
+    role: string | null
+  } | null
   onLogout: () => Promise<{ error?: Error }>
   isDesktop?: boolean
 }
 
-function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDesktop = false }: SidebarProps) {
+function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLogout, isDesktop = false }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { remainingCount: dailyRemainingCount } = useDailyChecks()
@@ -98,12 +100,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       submenu: [
         { name: 'Stock Levels', icon: TrendingUp, key: 'stock-levels', path: '/inventory/stock-levels' },
         { name: 'Stock Movements', icon: ArrowRight, key: 'stock-movements', path: '/inventory/stock-movements' },
-        ...(FEATURE_INVENTORY_ADJUSTMENTS
-          ? [{ name: 'Adjustments', icon: Scale, key: 'inventory-adjustments', path: '/inventory/adjustments' }]
-          : []),
-        ...(FEATURE_CYCLE_COUNTS
-          ? [{ name: 'Cycle Counts', icon: ClipboardCheck, key: 'cycle-counts', path: '/inventory/cycle-counts' }]
-          : []),
       ]
     },
     { name: 'Supplies', icon: ArrowDownCircle, key: 'supplies', path: '/supplies' },
@@ -126,6 +122,9 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
       submenu: [
         { name: 'Suppliers', icon: Building2, key: 'suppliers', path: '/suppliers-customers/suppliers' },
         { name: 'Customers', icon: UsersIcon, key: 'customers', path: '/suppliers-customers/customers' },
+        ...(FEATURE_CARRIERS
+          ? [{ name: 'Carriers', icon: Truck, key: 'carriers', path: '/suppliers-customers/carriers' }]
+          : []),
       ]
     },
     { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments' },
@@ -162,9 +161,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         { name: 'Quality Parameters', icon: BadgeCheck, key: 'quality-parameters', path: '/settings/quality-parameters' },
         { name: 'Process Step Names', icon: Layers, key: 'process-step-names', path: '/settings/process-step-names' },
         { name: 'Packaging', icon: Package, key: 'packaging', path: '/settings/packaging' },
-        ...(FEATURE_CARRIERS
-          ? [{ name: 'Carriers', icon: Truck, key: 'carriers', path: '/settings/carriers' }]
-          : []),
       ],
     },
     { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
@@ -187,8 +183,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
   const inventoryPaths = [
     '/inventory/stock-levels',
     '/inventory/stock-movements',
-    ...(FEATURE_INVENTORY_ADJUSTMENTS ? ['/inventory/adjustments'] : []),
-    ...(FEATURE_CYCLE_COUNTS ? ['/inventory/cycle-counts'] : []),
   ]
   const settingsPaths = [
     '/inventory/units',
@@ -200,7 +194,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
     '/settings/quality-parameters',
     '/settings/process-step-names',
     '/settings/packaging',
-    ...(FEATURE_CARRIERS ? ['/settings/carriers'] : []),
   ]
   const processPaths = ['/process/view', '/process/process-steps']
   const checksPaths = ['/checks/metal-detector', '/checks/daily', '/daily-checks']
@@ -258,6 +251,12 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         return false
     }
   }
+
+  const roleLabel =
+    ROLE_OPTIONS.find((option) => option.value === (profile?.role ?? ''))?.label ??
+    (profile?.role ? profile.role.toUpperCase() : 'User')
+  const displayName = profile?.full_name?.trim() || profile?.email || user?.email || 'User'
+  const initialsSource = profile?.full_name?.trim() || profile?.email || user?.email || 'U'
 
   return (
     <aside
@@ -389,13 +388,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, onLogout, isDe
         <div className="mb-3 flex items-center space-x-3">
           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-olive text-white">
             <span className="text-sm font-medium">
-              {user?.email?.charAt(0).toUpperCase() || 'U'}
+              {initialsSource.charAt(0).toUpperCase()}
             </span>
           </div>
           {sidebarOpen && (
             <div className="flex-1 min-w-0">
-              <p className="truncate text-sm font-medium text-white">{user?.email || 'User'}</p>
-              <p className="text-xs text-white/70">Admin</p>
+              <p className="truncate text-sm font-medium text-white">{displayName}</p>
+              <p className="text-xs text-white/70">{roleLabel}</p>
             </div>
           )}
         </div>

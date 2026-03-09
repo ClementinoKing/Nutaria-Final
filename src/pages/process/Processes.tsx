@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, FormEvent, ChangeEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -226,6 +226,7 @@ function Processes() {
     productIds: [],
     steps: []
   })
+  const location = useLocation()
   const navigate = useNavigate()
 
   const fetchProcesses = useCallback(async () => {
@@ -373,6 +374,30 @@ function Processes() {
     )
   }, [availableRawProducts, productSearchTerm])
 
+  const initializeFormForProducts = useCallback((productIds: number[]) => {
+    const normalizedProductIds = productIds.filter((value) => Number.isInteger(value) && value > 0)
+    const selectedProductNames = normalizedProductIds
+      .map((id) => products.find((product: Product) => product.id === id))
+      .filter((product): product is Product => product !== undefined)
+      .map((product) => product.name)
+      .filter((name): name is string => Boolean(name))
+
+    const commonPrefix = findCommonPrefix(selectedProductNames)
+    const code = commonPrefix ? generateProcessCode(commonPrefix) : ''
+    const name = commonPrefix ? generateProcessName(commonPrefix) : ''
+
+    setCurrentStep(1)
+    setProductSearchTerm('')
+    setQualityParameterSearchTerms({})
+    setFormData({
+      code,
+      name,
+      productIds: normalizedProductIds,
+      steps: [],
+    })
+    setIsModalOpen(true)
+  }, [products])
+
   const handleOpenModal = () => {
     setCurrentStep(1)
     setIsModalOpen(true)
@@ -391,6 +416,23 @@ function Processes() {
       steps: []
     })
   }
+
+  useEffect(() => {
+    const state = location.state as { openCreateForProductId?: number; focusProductId?: number } | null
+    const requestedProductId = Number(state?.openCreateForProductId)
+    if (!requestedProductId || !products.length) {
+      return
+    }
+
+    const requestedProduct = products.find((product) => product.id === requestedProductId)
+    if (!requestedProduct) {
+      navigate(location.pathname, { replace: true, state: {} })
+      return
+    }
+
+    initializeFormForProducts([requestedProductId])
+    navigate(location.pathname, { replace: true, state: {} })
+  }, [initializeFormForProducts, location.pathname, location.state, navigate, products])
 
   const performDeleteProcess = useCallback(
     async (process: Process) => {

@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { useUserProfiles } from '@/hooks/useUserProfiles'
 import { ROLE_OPTIONS } from '@/constants/roles'
 import { Spinner } from '@/components/ui/spinner'
+import { normalizePhoneToE164, phoneToUsernameEmail } from '@/lib/authIdentifier'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,25 +43,14 @@ function formatDate(value: string | Date | number | null | undefined) {
   }
 }
 
-const REQUIRED_EMAIL_DOMAIN = '@nutaria.co.za'
+type CredentialMode = 'EMAIL' | 'PHONE'
 
 function normalizeEmail(rawEmail: string) {
-  const input = rawEmail.trim()
-  if (!input) {
-    return ''
-  }
-
-  const lowercase = input.toLowerCase()
-  if (lowercase.endsWith(REQUIRED_EMAIL_DOMAIN)) {
-    return input
-  }
-
-  const localPart = lowercase.includes('@') ? lowercase.split('@')[0] : lowercase
-  return `${localPart}${REQUIRED_EMAIL_DOMAIN}`
+  return rawEmail.trim().toLowerCase()
 }
 
-function isValidNutariaEmail(email: string) {
-  const pattern = /^[a-z0-9._%+-]+@nutaria\.co\.za$/i
+function isValidEmail(email: string) {
+  const pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   return pattern.test(email)
 }
 
@@ -71,7 +61,12 @@ function UserManagement() {
   const [profileToDelete, setProfileToDelete] = useState<{ [key: string]: unknown } | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState<{ [key: string]: unknown } | null>(null)
-  const [formState, setFormState] = useState({ fullName: '', email: '', role: 'viewer' })
+  const [formState, setFormState] = useState({
+    fullName: '',
+    identifier: '',
+    role: 'viewer',
+    credentialMode: 'EMAIL' as CredentialMode
+  })
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [password, setPassword] = useState('')
   const [deletingUserId, setDeletingUserId] = useState<string | number | null>(null)
@@ -136,7 +131,7 @@ function UserManagement() {
   }
 
   const resetFormState = () => {
-    setFormState({ fullName: '', email: '', role: 'viewer' })
+    setFormState({ fullName: '', identifier: '', role: 'viewer', credentialMode: 'EMAIL' })
     setPassword('')
   }
 
@@ -149,10 +144,12 @@ function UserManagement() {
     }
 
     setSelectedProfile(profile)
+    const rawIdentifier = String(profile.email ?? '')
     setFormState({
       fullName: String(profile.full_name ?? ''),
-      email: String(profile.email ?? ''),
-      role: String(profile.role ?? 'viewer')
+      identifier: rawIdentifier,
+      role: String(profile.role ?? 'viewer'),
+      credentialMode: rawIdentifier.includes('@') ? 'EMAIL' : 'PHONE'
     })
     setPassword('')
     setIsModalOpen(true)
@@ -172,7 +169,7 @@ function UserManagement() {
     if (selectedProfile) {
       const payload = {
         full_name: formState.fullName.trim() || null,
-      email: normalizeEmail(formState.email) || null,
+        email: normalizeEmail(formState.identifier) || null,
         role: formState.role
       }
 
@@ -195,21 +192,56 @@ function UserManagement() {
       return
     }
 
-    const sanitizedEmail = normalizeEmail(formState.email)
-    if (!sanitizedEmail || !password.trim()) {
-      toast.error('Email and password are required to create a user')
+    const sanitizedIdentifier = formState.identifier.trim()
+    if (!sanitizedIdentifier || !password.trim()) {
+      toast.error('Username/email and password are required to create a user')
       setIsSubmitting(false)
       return
     }
 
-    if (!isValidNutariaEmail(sanitizedEmail)) {
-      toast.error('Please supply a Nutaria email username using letters, numbers, dots or dashes.')
+    let normalizedEmail: string | null = null
+    let normalizedPhone: string | null = null
+    let authEmailForSignup: string | null = null
+
+    if (formState.credentialMode === 'EMAIL') {
+      normalizedEmail = normalizeEmail(sanitizedIdentifier)
+      if (!isValidEmail(normalizedEmail)) {
+        toast.error('Please supply a valid email address.')
+        setIsSubmitting(false)
+        return
+      }
+      authEmailForSignup = normalizedEmail
+    } else {
+      normalizedPhone = normalizePhoneToE164(sanitizedIdentifier)
+      if (!normalizedPhone) {
+        toast.error('Please enter a valid phone number (e.g. +265991234567).')
+        setIsSubmitting(false)
+        return
+      }
+      authEmailForSignup = phoneToUsernameEmail(normalizedPhone)
+    }
+
+    const duplicateValue = normalizedEmail ?? normalizedPhone
+    if (!duplicateValue) {
+      toast.error('Invalid credential value.')
+      setIsSubmitting(false)
+      return
+    }
+
+    const { data: existingProfile } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('email', duplicateValue)
+      .maybeSingle()
+
+    if (existingProfile) {
+      toast.error('A user with this credential already exists.')
       setIsSubmitting(false)
       return
     }
 
     const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email: sanitizedEmail,
+      email: authEmailForSignup!,
       password: password.trim(),
       options: {
         data: {
@@ -229,7 +261,7 @@ function UserManagement() {
       } else if (signUpError.status === 422) {
         toast.error(
           signUpError.message ??
-            'Supabase rejected the signup. Check if this email already exists or try a different password.'
+            'Supabase rejected the signup. Check if this credential already exists or try a different password.'
         )
       } else {
         toast.error(signUpError.message ?? 'Unable to create user')
@@ -249,7 +281,7 @@ function UserManagement() {
     const profilePayload = {
       auth_user_id: authUserId,
       full_name: formState.fullName.trim() || null,
-      email: sanitizedEmail,
+      email: normalizedEmail ?? normalizedPhone,
       role: formState.role
     }
 
@@ -265,7 +297,11 @@ function UserManagement() {
       return
     }
 
-    toast.success('User created and confirmed')
+    toast.success(
+      formState.credentialMode === 'EMAIL'
+        ? 'Email user created and confirmed'
+        : 'Phone username user created and confirmed'
+    )
     if (insertedProfiles) {
       setProfiles((previous) => [insertedProfiles, ...previous])
     }
@@ -362,7 +398,7 @@ function UserManagement() {
           <CardContent className="space-y-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <Input
-                placeholder="Search by name, email, or role"
+                placeholder="Search by name, credential, or role"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
                 className="w-full sm:max-w-sm"
@@ -389,7 +425,7 @@ function UserManagement() {
                       User
                     </th>
                       <th scope="col" className="px-4 py-3">
-                        Email
+                        Credential
                       </th>
                     <th scope="col" className="px-4 py-3">
                       Role
@@ -491,25 +527,33 @@ function UserManagement() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="user-email">Email Address</Label>
-                  <div className="relative">
+                  <Label htmlFor="user-email">
+                    {selectedProfile
+                      ? 'Email'
+                      : formState.credentialMode === 'EMAIL'
+                        ? 'Email Address'
+                        : 'Username (Phone)'}
+                  </Label>
                   <Input
                     id="user-email"
-                      type="text"
-                    value={formState.email}
-                      onChange={(event) =>
-                        setFormState((prev) => ({ ...prev, email: event.target.value }))
-                      }
-                      placeholder="jane.doe"
-                      className="pr-32"
-                    />
-                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-text-dark/60">
-                      @nutaria.co.za
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-text-dark/60">
-                    Enter only the username; the Nutaria domain is appended automatically.
-                  </p>
+                    type="text"
+                    value={formState.identifier}
+                    onChange={(event) =>
+                      setFormState((prev) => ({ ...prev, identifier: event.target.value }))
+                    }
+                    placeholder={
+                      selectedProfile || formState.credentialMode === 'EMAIL'
+                        ? 'info@nutaria.co.za'
+                        : '+265991234567'
+                    }
+                  />
+                  {!selectedProfile && (
+                    <p className="text-[11px] text-text-dark/60">
+                      {formState.credentialMode === 'EMAIL'
+                        ? 'User signs in with email and password.'
+                        : 'User signs in with phone number and password.'}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
@@ -535,6 +579,28 @@ function UserManagement() {
                   </div>
                 ) : (
                 <div className="space-y-2">
+                    <Label htmlFor="auth-mode">Credential Mode</Label>
+                    <select
+                      id="auth-mode"
+                      value={formState.credentialMode}
+                      onChange={(event) =>
+                        setFormState((prev) => ({
+                          ...prev,
+                          credentialMode: event.target.value as CredentialMode,
+                          identifier: ''
+                        }))
+                      }
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="EMAIL">Email</option>
+                      <option value="PHONE">Phone (username)</option>
+                    </select>
+                </div>
+                )}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {!selectedProfile && (
+                  <div className="space-y-2">
                     <Label htmlFor="user-password">Password</Label>
                     <Input
                       id="user-password"
@@ -543,7 +609,7 @@ function UserManagement() {
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder="Generate a secure password"
                     />
-                </div>
+                  </div>
                 )}
               </div>
               {!selectedProfile && (
@@ -590,5 +656,3 @@ function UserManagement() {
 }
 
 export default UserManagement
-
-

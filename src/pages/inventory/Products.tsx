@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type Dispatch, type SetStateAction } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Package2, Pencil, Plus, RefreshCcw, Trash2, X } from 'lucide-react'
+import { Boxes, Briefcase, Package2, Pencil, Plus, RefreshCcw, Trash2, X } from 'lucide-react'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
@@ -50,6 +51,11 @@ interface Product {
   product_components?: ProductComponentRow[] | null
 }
 
+interface ProductChainMeta {
+  chainId: number
+  chainName: string
+}
+
 interface PreparedProduct extends Product {
   createdAtDate: Date | null
   updatedAtDate: Date | null
@@ -91,6 +97,7 @@ interface BulkEditFormData {
 }
 
 type CreationMode = 'OPERATIONAL' | 'PROCESSING' | null
+type ProductCatalogTab = 'RAW' | 'PROCESSED' | 'OPERATIONAL'
 
 interface ProcessingDraftBase {
   id?: number
@@ -252,14 +259,16 @@ function createProcessingDraftBase(units: Unit[]): ProcessingDraftBase {
 }
 
 function Products() {
+  const navigate = useNavigate()
   const [products, setProducts] = useState<Product[]>([])
+  const [productChainMetaByProductId, setProductChainMetaByProductId] = useState<Map<number, ProductChainMeta>>(new Map())
   const [units, setUnits] = useState<Unit[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingUnits, setLoadingUnits] = useState(true)
   const [error, setError] = useState<PostgrestError | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
-  const [productTypeFilter, setProductTypeFilter] = useState<'ALL' | 'RAW' | 'WIP' | 'FINISHED' | 'OP'>('ALL')
+  const [catalogTab, setCatalogTab] = useState<ProductCatalogTab>('RAW')
   const [sortBy, setSortBy] = useState('name')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
@@ -274,7 +283,7 @@ function Products() {
   const [formData, setFormData] = useState<ProductFormData>(() => createEmptyProductForm())
   const [formErrors, setFormErrors] = useState<FormErrors>({})
   const [creationMode, setCreationMode] = useState<CreationMode>(null)
-  const [processingStep, setProcessingStep] = useState<1 | 2 | 3 | 4>(1)
+  const [processingStep, setProcessingStep] = useState<1 | 2 | 3>(1)
   const [processingChainId, setProcessingChainId] = useState<number | null>(null)
   const [processingChainName, setProcessingChainName] = useState('')
   const [processingRaws, setProcessingRaws] = useState<ProcessingRawDraft[]>([])
@@ -282,6 +291,7 @@ function Products() {
   const [processingFinished, setProcessingFinished] = useState<ProcessingFinishedDraft[]>([])
   const [processingEditMode, setProcessingEditMode] = useState(false)
   const [processingFallbackNotice, setProcessingFallbackNotice] = useState<string | null>(null)
+  const [linkingLegacyProduct, setLinkingLegacyProduct] = useState(false)
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([])
   const [bulkActionLoading, setBulkActionLoading] = useState(false)
   const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
@@ -340,11 +350,56 @@ function Products() {
       setError(fetchError)
       toast.error(fetchError.message ?? 'Unable to load products from Supabase.')
       setProducts([])
+      setProductChainMetaByProductId(new Map())
       setLoading(false)
       return
     }
 
-    setProducts(Array.isArray(data) ? data : [])
+    const loadedProducts = Array.isArray(data) ? data : []
+    setProducts(loadedProducts)
+
+    try {
+      const productIds = loadedProducts
+        .map((product: Product) => product.id)
+        .filter((id): id is number => typeof id === 'number')
+
+      if (productIds.length === 0) {
+        setProductChainMetaByProductId(new Map())
+      } else {
+        const { data: chainMembersData, error: chainMembersError } = await supabase
+          .from('product_processing_chain_members')
+          .select('product_id, chain_id, chain:product_processing_chains(name)')
+          .in('product_id', productIds)
+
+        if (chainMembersError) {
+          console.warn('Unable to fetch processing chain names for products:', chainMembersError)
+          setProductChainMetaByProductId(new Map())
+        } else {
+          const nextMap = new Map<number, ProductChainMeta>()
+          ;(
+            (chainMembersData ?? []) as Array<{
+              product_id: number
+              chain_id: number
+              chain: { name: string | null } | null
+            }>
+          ).forEach((row) => {
+            const chainLabel =
+              row.chain?.name && row.chain.name.trim().length > 0
+                ? row.chain.name.trim()
+                : `Chain ${row.chain_id}`
+            nextMap.set(row.product_id, {
+              chainId: row.chain_id,
+              chainName: chainLabel,
+            })
+          })
+          setProductChainMetaByProductId(nextMap)
+        }
+      }
+    } catch (chainLookupError) {
+      console.warn('Failed while loading product chain labels:', chainLookupError)
+      setProductChainMetaByProductId(new Map())
+    }
+
     setLoading(false)
   }, [])
 
@@ -377,7 +432,7 @@ function Products() {
 
   useEffect(() => {
     setPage(1)
-  }, [searchTerm, statusFilter, productTypeFilter, sortBy, sortDirection])
+  }, [searchTerm, statusFilter, catalogTab, sortBy, sortDirection])
 
   const unitMap = useMemo(() => {
     const map = new Map<number, Unit>()
@@ -479,6 +534,19 @@ function Products() {
       .map((status: string) => status)
   }, [preparedProducts])
 
+  const tabScopedProducts = useMemo(() => {
+    if (catalogTab === 'RAW') {
+      return preparedProducts.filter((product: PreparedProduct) => (product.product_type ?? 'RAW').toUpperCase() === 'RAW')
+    }
+    if (catalogTab === 'OPERATIONAL') {
+      return preparedProducts.filter((product: PreparedProduct) => (product.product_type ?? '').toUpperCase() === 'OP')
+    }
+    return preparedProducts.filter((product: PreparedProduct) => {
+      const type = (product.product_type ?? '').toUpperCase()
+      return type === 'WIP' || type === 'FINISHED'
+    })
+  }, [catalogTab, preparedProducts])
+
   const filteredProducts = useMemo(() => {
     const normalisedSearch = searchTerm.trim().toLowerCase()
 
@@ -491,12 +559,7 @@ function Products() {
       const matchesStatus =
         statusFilter === 'ALL' ||
         (product.status ?? '').toUpperCase() === statusFilter.toUpperCase()
-
-      const matchesProductType =
-        productTypeFilter === 'ALL' ||
-        (product.product_type ?? 'RAW').toUpperCase() === productTypeFilter.toUpperCase()
-
-      return matchesSearch && matchesStatus && matchesProductType
+      return matchesSearch && matchesStatus
     }
 
     const comparator = (a: PreparedProduct, b: PreparedProduct): number => {
@@ -530,8 +593,16 @@ function Products() {
       return 0
     }
 
-    return preparedProducts.filter(matchesFilters).sort(comparator)
-  }, [preparedProducts, productTypeFilter, searchTerm, sortBy, sortDirection, statusFilter])
+    const sorted = tabScopedProducts.filter(matchesFilters).sort(comparator)
+    const seenChains = new Set<number>()
+    return sorted.filter((product) => {
+      const chainMeta = productChainMetaByProductId.get(product.id)
+      if (!chainMeta) return true
+      if (seenChains.has(chainMeta.chainId)) return false
+      seenChains.add(chainMeta.chainId)
+      return true
+    })
+  }, [tabScopedProducts, searchTerm, sortBy, sortDirection, statusFilter, productChainMetaByProductId])
 
   const paginatedProducts = useMemo(
     () => filteredProducts.slice((page - 1) * pageSize, page * pageSize),
@@ -565,14 +636,14 @@ function Products() {
   }, [products])
 
   const stats = useMemo(() => {
-    const total = preparedProducts.length
+    const total = tabScopedProducts.length
     let active = 0
     let inactive = 0
     let configuredReorder = 0
     let updatedRecent = 0
     const now = Date.now()
 
-    preparedProducts.forEach((product) => {
+    tabScopedProducts.forEach((product) => {
       const status = (product.status ?? '').toUpperCase()
       if (status === 'ACTIVE') {
         active += 1
@@ -595,7 +666,7 @@ function Products() {
       configuredReorder,
       updatedRecent,
     }
-  }, [preparedProducts])
+  }, [tabScopedProducts])
 
   const emptyMessage = useMemo(() => {
     if (loading) {
@@ -718,6 +789,167 @@ function Products() {
     }
   }, [toDraftBase])
 
+  const openProcessingChainEditor = useCallback((product: Product, loaded: LoadedChain) => {
+    setCreationMode('PROCESSING')
+    setProcessingEditMode(true)
+    setProcessingChainId(loaded.chainId)
+    setProcessingChainName(loaded.chainName ?? '')
+    setProcessingRaws(loaded.raws.length > 0 ? loaded.raws : [createProcessingDraftBase(units)])
+    setProcessingWips(
+      loaded.wips.length > 0
+        ? loaded.wips
+        : [{ ...createProcessingDraftBase(units), raw_component_temp_keys: [] }],
+    )
+    setProcessingFinished(
+      loaded.finished.length > 0
+        ? loaded.finished
+        : [{ ...createProcessingDraftBase(units), wip_component_temp_keys: [] }],
+    )
+    setProcessingStep(1)
+    setFormErrors({})
+    setComponentSearch('')
+    setModalMode('edit')
+    setEditingProduct(product)
+    setProcessingFallbackNotice(null)
+    setIsModalOpen(true)
+  }, [units])
+
+  const handleLinkLegacyProductToChain = useCallback(async () => {
+    if (!editingProduct?.id) return
+    const productType = (editingProduct.product_type ?? '').toUpperCase()
+    if (productType === 'OP') {
+      toast.error('Operational products do not use processing chains.')
+      return
+    }
+
+    setLinkingLegacyProduct(true)
+    try {
+      const { data: existingMember, error: existingMemberError } = await supabase
+        .from('product_processing_chain_members')
+        .select('chain_id')
+        .eq('product_id', editingProduct.id)
+        .limit(1)
+        .maybeSingle()
+
+      if (existingMemberError) throw existingMemberError
+
+      if (existingMember?.chain_id) {
+        const loadedExisting = await loadProcessingChain(Number(existingMember.chain_id))
+        openProcessingChainEditor(editingProduct, loadedExisting)
+        toast.success('Legacy product is now linked to its processing chain.')
+        return
+      }
+
+      const rawIds = new Set<number>()
+      const wipIds = new Set<number>()
+      const finishedIds = new Set<number>()
+
+      const directComponentIds =
+        editingProduct.product_components
+          ?.map((row) => row?.component_product)
+          .filter((component): component is ComponentProduct => Boolean(component?.id))
+          .map((component) => ({ id: component.id, type: (component.product_type ?? '').toUpperCase() })) ?? []
+
+      if (productType === 'RAW') rawIds.add(editingProduct.id)
+      if (productType === 'WIP') wipIds.add(editingProduct.id)
+      if (productType === 'FINISHED') finishedIds.add(editingProduct.id)
+
+      if (productType === 'WIP') {
+        directComponentIds
+          .filter((component) => component.type === 'RAW')
+          .forEach((component) => rawIds.add(component.id))
+      }
+
+      if (productType === 'FINISHED') {
+        directComponentIds
+          .filter((component) => component.type === 'WIP')
+          .forEach((component) => wipIds.add(component.id))
+      }
+
+      if (productType === 'RAW') {
+        const { data: wipParents, error: wipParentsError } = await supabase
+          .from('product_components')
+          .select('parent:products!product_components_parent_product_id_fkey(id, product_type)')
+          .eq('component_product_id', editingProduct.id)
+
+        if (wipParentsError) throw wipParentsError
+        ;(wipParents ?? []).forEach((row: any) => {
+          const parent = row?.parent as { id?: number; product_type?: string | null } | null
+          if (parent?.id && (parent.product_type ?? '').toUpperCase() === 'WIP') {
+            wipIds.add(parent.id)
+          }
+        })
+      }
+
+      if (productType === 'WIP' || productType === 'RAW') {
+        const sourceWipIds = productType === 'WIP' ? [editingProduct.id] : Array.from(wipIds)
+        if (sourceWipIds.length > 0) {
+          const { data: finishedParents, error: finishedParentsError } = await supabase
+            .from('product_components')
+            .select('parent:products!product_components_parent_product_id_fkey(id, product_type)')
+            .in('component_product_id', sourceWipIds)
+
+          if (finishedParentsError) throw finishedParentsError
+          ;(finishedParents ?? []).forEach((row: any) => {
+            const parent = row?.parent as { id?: number; product_type?: string | null } | null
+            if (parent?.id && (parent.product_type ?? '').toUpperCase() === 'FINISHED') {
+              finishedIds.add(parent.id)
+            }
+          })
+        }
+      }
+
+      if (productType === 'FINISHED' && wipIds.size > 0) {
+        const { data: rawComponents, error: rawComponentsError } = await supabase
+          .from('product_components')
+          .select('component:products!product_components_component_product_id_fkey(id, product_type)')
+          .in('parent_product_id', Array.from(wipIds))
+
+        if (rawComponentsError) throw rawComponentsError
+        ;(rawComponents ?? []).forEach((row: any) => {
+          const component = row?.component as { id?: number; product_type?: string | null } | null
+          if (component?.id && (component.product_type ?? '').toUpperCase() === 'RAW') {
+            rawIds.add(component.id)
+          }
+        })
+      }
+
+      const { data: chainRecord, error: chainError } = await supabase
+        .from('product_processing_chains')
+        .insert({
+          name: `${editingProduct.name ?? `Product ${editingProduct.id}`} (Legacy Chain)`,
+          status: 'ACTIVE',
+        })
+        .select('id')
+        .single()
+
+      if (chainError) throw chainError
+
+      const chainId = Number((chainRecord as { id: number }).id)
+      const membersPayload = [
+        ...Array.from(rawIds).map((productId, index) => ({ chain_id: chainId, product_id: productId, stage: 'RAW', display_order: index + 1 })),
+        ...Array.from(wipIds).map((productId, index) => ({ chain_id: chainId, product_id: productId, stage: 'WIP', display_order: index + 1 })),
+        ...Array.from(finishedIds).map((productId, index) => ({ chain_id: chainId, product_id: productId, stage: 'FINISHED', display_order: index + 1 })),
+      ]
+
+      if (membersPayload.length > 0) {
+        const { error: membersError } = await supabase
+          .from('product_processing_chain_members')
+          .insert(membersPayload)
+        if (membersError) throw membersError
+      }
+
+      const loaded = await loadProcessingChain(chainId)
+      openProcessingChainEditor(editingProduct, loaded)
+      toast.success('Legacy product linked to processing chain.')
+    } catch (error) {
+      const message = (error as PostgrestError)?.message ?? 'Unable to link legacy product to a processing chain.'
+      toast.error(message)
+    } finally {
+      setLinkingLegacyProduct(false)
+    }
+  }, [editingProduct, loadProcessingChain, openProcessingChainEditor])
+
   const handleOpenCreateModal = () => {
     setFormData({ ...createEmptyProductForm(products, units), product_type: 'OP' })
     setFormErrors({})
@@ -805,53 +1037,38 @@ function Products() {
           return
         }
         const loaded = await loadProcessingChain(Number(data.chain_id))
-        setCreationMode('PROCESSING')
-        setProcessingEditMode(true)
-        setProcessingChainId(loaded.chainId)
-        setProcessingChainName(loaded.chainName ?? '')
-        setProcessingRaws(loaded.raws.length > 0 ? loaded.raws : [createProcessingDraftBase(units)])
-        setProcessingWips(
-          loaded.wips.length > 0
-            ? loaded.wips
-            : [{ ...createProcessingDraftBase(units), raw_component_temp_keys: [] }],
-        )
-        setProcessingFinished(
-          loaded.finished.length > 0
-            ? loaded.finished
-            : [{ ...createProcessingDraftBase(units), wip_component_temp_keys: [] }],
-        )
-        setProcessingStep(1)
-        setFormErrors({})
-        setComponentSearch('')
-        setModalMode('edit')
-        setEditingProduct(product)
-        setProcessingFallbackNotice(null)
-        setIsModalOpen(true)
+        openProcessingChainEditor(product, loaded)
       })
       .catch(() => {
         openSimpleForm('Could not load processing chain. Editing in simple mode.')
       })
-  }, [loadProcessingChain, resetProcessingWizard, units])
+  }, [loadProcessingChain, openProcessingChainEditor, resetProcessingWizard, units])
 
   const performDeleteProduct = useCallback(
     async (product: Product) => {
       if (!product?.id) return
       setDeletingProductId(product.id)
       try {
+        const productType = (product.product_type ?? '').toUpperCase()
+        const deleteIds =
+          productType === 'RAW'
+            ? await resolveRawCascadeDeleteIds([product.id])
+            : [product.id]
+
         try {
           await supabase
             .from('product_components')
             .delete()
-            .or(`parent_product_id.eq.${product.id},component_product_id.eq.${product.id}`)
+            .or(`parent_product_id.in.(${deleteIds.join(',')}),component_product_id.in.(${deleteIds.join(',')})`)
         } catch (pcErr) {
           console.warn('Failed to delete product_components links; table may be missing', pcErr)
         }
         const { error: deleteError } = await supabase
           .from('products')
           .delete()
-          .eq('id', product.id)
+          .in('id', deleteIds)
         if (deleteError) throw deleteError
-        toast.success('Product deleted.')
+        toast.success(`Deleted ${deleteIds.length} product(s).`)
         await fetchProducts()
       } catch (err) {
         const msg = (err as PostgrestError)?.message ?? 'Unable to delete product.'
@@ -860,13 +1077,45 @@ function Products() {
         setDeletingProductId(null)
       }
     },
-    [fetchProducts]
+    [fetchProducts, resolveRawCascadeDeleteIds]
   )
 
   const requestDeleteProduct = useCallback((product: Product) => {
     setProductToDelete(product)
     setDeleteAlertOpen(true)
   }, [])
+
+  async function resolveRawCascadeDeleteIds(rootRawIds: number[]): Promise<number[]> {
+    if (rootRawIds.length === 0) return []
+
+    const idsToDelete = new Set<number>(rootRawIds)
+    let frontier = [...rootRawIds]
+
+    while (frontier.length > 0) {
+      const { data, error: relationError } = await supabase
+        .from('product_components')
+        .select('parent:products!product_components_parent_product_id_fkey(id, product_type)')
+        .in('component_product_id', frontier)
+
+      if (relationError) throw relationError
+
+      const nextFrontier: number[] = []
+      ;((data ?? []) as Array<{ parent: { id?: number; product_type?: string | null } | null }>).forEach((row) => {
+        const parent = row.parent
+        const parentId = parent?.id
+        const parentType = (parent?.product_type ?? '').toUpperCase()
+        if (!parentId) return
+        if (parentType !== 'WIP' && parentType !== 'FINISHED') return
+        if (idsToDelete.has(parentId)) return
+        idsToDelete.add(parentId)
+        nextFrontier.push(parentId)
+      })
+
+      frontier = nextFrontier
+    }
+
+    return Array.from(idsToDelete)
+  }
 
   const toggleProductSelection = useCallback((productId: number) => {
     setSelectedProductIds((prev) =>
@@ -888,10 +1137,20 @@ function Products() {
     if (selectedProductIds.length === 0) return
     setBulkActionLoading(true)
     try {
-      const { error: deleteError } = await supabase.from('products').delete().in('id', selectedProductIds)
+      const selectedProductsMap = new Map(products.map((p) => [p.id, p]))
+      const rawIds = selectedProductIds.filter((id) => (selectedProductsMap.get(id)?.product_type ?? '').toUpperCase() === 'RAW')
+      const cascadedRawIds = await resolveRawCascadeDeleteIds(rawIds)
+      const deleteIds = Array.from(new Set([...selectedProductIds, ...cascadedRawIds]))
+
+      await supabase
+        .from('product_components')
+        .delete()
+        .or(`parent_product_id.in.(${deleteIds.join(',')}),component_product_id.in.(${deleteIds.join(',')})`)
+
+      const { error: deleteError } = await supabase.from('products').delete().in('id', deleteIds)
       if (deleteError) throw deleteError
-      setProducts((previous) => previous.filter((product) => !selectedProductIds.includes(product.id)))
-      toast.success(`Deleted ${selectedProductIds.length} product(s).`)
+      setProducts((previous) => previous.filter((product) => !deleteIds.includes(product.id)))
+      toast.success(`Deleted ${deleteIds.length} product(s).`)
       setSelectedProductIds([])
       setBulkDeleteAlertOpen(false)
     } catch (err) {
@@ -900,7 +1159,7 @@ function Products() {
     } finally {
       setBulkActionLoading(false)
     }
-  }, [selectedProductIds])
+  }, [products, resolveRawCascadeDeleteIds, selectedProductIds])
 
   const handleBulkEditFormChange = useCallback(
     (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -1378,7 +1637,29 @@ function Products() {
         header: 'Product',
         render: (product: PreparedProduct) => (
           <div>
-            <div className="font-medium text-text-dark">{product.name ?? 'Unnamed product'}</div>
+            {(() => {
+              const chainName = productChainMetaByProductId.get(product.id)?.chainName
+              const baseName = chainName || product.name || 'Unnamed product'
+              return (
+                <div className="font-medium text-text-dark">
+                  {(product.product_type ?? '').toUpperCase() === 'RAW' ? (
+                    <button
+                      type="button"
+                      className="text-left text-olive hover:underline"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        navigate(`/inventory/products/${product.id}`)
+                      }}
+                    >
+                      {baseName}
+                    </button>
+                  ) : (
+                    baseName
+                  )}
+                </div>
+              )
+            })()}
             {product.notes ? (
               <div className="mt-1 flex items-center gap-2 text-xs text-text-dark/60">
                 <Package2 className="h-3.5 w-3.5" />
@@ -1392,7 +1673,9 @@ function Products() {
         ),
         mobileRender: (product: PreparedProduct) => (
           <div className="text-right">
-            <div className="font-medium text-text-dark">{product.name ?? 'Unnamed product'}</div>
+            <div className="font-medium text-text-dark">
+              {productChainMetaByProductId.get(product.id)?.chainName || product.name || 'Unnamed product'}
+            </div>
             {product.notes ? <div className="text-xs text-text-dark/60">{product.notes}</div> : null}
           </div>
         ),
@@ -1603,6 +1886,8 @@ function Products() {
       selectedProductIds,
       toggleProductSelection,
       toggleSelectAllCurrentPage,
+      productChainMetaByProductId,
+      navigate,
     ]
   )
 
@@ -1668,9 +1953,50 @@ function Products() {
       <Card className="border-olive-light/30 bg-white">
         <CardHeader>
           <CardTitle className="text-text-dark">Products</CardTitle>
-          <CardDescription>Manage your product catalog, stock parameters, and statuses.</CardDescription>
+          <CardDescription>Default view shows raw products. Switch tabs to see processed and operational products.</CardDescription>
         </CardHeader>
+        <div className="border-b border-olive-light/40">
+          <nav className="flex flex-wrap gap-0 px-6" aria-label="Product category tabs">
+            <button
+              type="button"
+              onClick={() => setCatalogTab('RAW')}
+              className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                catalogTab === 'RAW'
+                  ? 'border-olive text-olive-dark text-text-dark'
+                  : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+              }`}
+            >
+              <Package2 className="h-4 w-4" />
+              Raw Products
+            </button>
+            <button
+              type="button"
+              onClick={() => setCatalogTab('PROCESSED')}
+              className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                catalogTab === 'PROCESSED'
+                  ? 'border-olive text-olive-dark text-text-dark'
+                  : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+              }`}
+            >
+              <Boxes className="h-4 w-4" />
+              Processed Products
+            </button>
+            <button
+              type="button"
+              onClick={() => setCatalogTab('OPERATIONAL')}
+              className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                catalogTab === 'OPERATIONAL'
+                  ? 'border-olive text-olive-dark text-text-dark'
+                  : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+              }`}
+            >
+              <Briefcase className="h-4 w-4" />
+              Operational Products
+            </button>
+          </nav>
+        </div>
         <CardContent className="space-y-6">
+
           <div className="grid gap-4 sm:grid-cols-5">
             <div className="sm:col-span-2">
               <Label htmlFor="product-search">Search products</Label>
@@ -1696,23 +2022,6 @@ function Products() {
                     {status.charAt(0) + status.slice(1).toLowerCase()}
                   </option>
                 ))}
-              </select>
-            </div>
-            <div>
-              <Label htmlFor="product-type-filter">Product type</Label>
-                <select
-                  id="product-type-filter"
-                  value={productTypeFilter}
-                  onChange={(event) =>
-                  setProductTypeFilter(event.target.value as 'ALL' | 'RAW' | 'WIP' | 'FINISHED' | 'OP')
-                  }
-                className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark shadow-sm focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive"
-              >
-                <option value="ALL">All types</option>
-                <option value="RAW">Raw</option>
-                <option value="WIP">WIP</option>
-                <option value="FINISHED">Finished</option>
-                <option value="OP">Operational (OP)</option>
               </select>
             </div>
             <div className="sm:col-span-1">
@@ -1746,7 +2055,7 @@ function Products() {
             <div className="rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70 sm:col-span-2">
               <div className="font-medium text-text-dark">Results</div>
               <div>
-                {filteredProducts.length} of {preparedProducts.length}
+                {filteredProducts.length} of {tabScopedProducts.length}
               </div>
             </div>
             <div className="flex items-end">
@@ -1808,7 +2117,12 @@ function Products() {
             tableClassName=""
             mobileCardClassName=""
             getRowClassName={() => ''}
-            onRowClick={undefined}
+            onRowClick={(row) => {
+              const type = (row.product_type ?? '').toUpperCase()
+              if (type === 'RAW') {
+                navigate(`/inventory/products/${row.id}`)
+              }
+            }}
           />
 
           {filteredProducts.length > 0 ? (
@@ -1889,24 +2203,15 @@ function Products() {
               </Button>
             </div>
 
-            <form onSubmit={handleSubmit} className="flex-1 px-6 py-6 space-y-6 overflow-y-auto">
+            <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+              <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
               {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === null ? (
                 <div className="space-y-6">
                   <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
                     <h3 className="text-sm font-semibold text-text-dark">Choose Creation Mode</h3>
+                    <p className="text-xs text-text-dark/60 mt-1">Step 1 of 4</p>
                     <p className="text-xs text-text-dark/60 mt-1">Operational products use a simple form. Processing products use RAW → WIP → FINISHED wizard.</p>
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="justify-start border-olive-light/60"
-                        onClick={() => {
-                          setCreationMode('OPERATIONAL')
-                          setFormData((prev) => ({ ...prev, product_type: 'OP' }))
-                        }}
-                      >
-                        Operational product
-                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -1918,12 +2223,18 @@ function Products() {
                       >
                         Processing product
                       </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-start border-olive-light/60"
+                        onClick={() => {
+                          setCreationMode('OPERATIONAL')
+                          setFormData((prev) => ({ ...prev, product_type: 'OP' }))
+                        }}
+                      >
+                        Operational product
+                      </Button>
                     </div>
-                  </div>
-                  <div className="flex items-center justify-end gap-3 border-t border-olive-light/30 pt-4">
-                    <Button type="button" variant="ghost" onClick={handleCloseModal} className="text-text-dark hover:bg-olive-light/10">
-                      Cancel
-                    </Button>
                   </div>
                 </div>
               ) : isProcessingWizardActive ? (
@@ -1932,7 +2243,9 @@ function Products() {
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-semibold text-text-dark">{processingEditMode ? 'Edit Processing Chain' : 'Create Processing Chain'}</h3>
-                        <p className="text-xs text-text-dark/60">Step {processingStep} of 4</p>
+                        <p className="text-xs text-text-dark/60">
+                          Step {modalMode === 'create' ? processingStep + 1 : processingStep} of {modalMode === 'create' ? 4 : 3}
+                        </p>
                       </div>
                       <Input
                         value={processingChainName}
@@ -1944,16 +2257,16 @@ function Products() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-2">
-                    {[1, 2, 3, 4].map((step) => (
+                  <div className="grid grid-cols-3 gap-2">
+                    {[1, 2, 3].map((step) => (
                       <button
                         key={step}
                         type="button"
-                        onClick={() => setProcessingStep(step as 1 | 2 | 3 | 4)}
+                        onClick={() => setProcessingStep(step as 1 | 2 | 3)}
                         className={`rounded-md border px-3 py-2 text-sm ${processingStep === step ? 'border-olive bg-olive-light/20 text-text-dark' : 'border-olive-light/50 text-text-dark/70'}`}
                         disabled={isSubmitting}
                       >
-                        {step === 1 ? 'RAW' : step === 2 ? 'WIP' : step === 3 ? 'FINISHED' : 'Review'}
+                        {step === 1 ? 'RAW' : step === 2 ? 'WIP' : 'FINISHED'}
                       </button>
                     ))}
                   </div>
@@ -1962,7 +2275,6 @@ function Products() {
                     <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">RAW Products</h4>
-                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingRaws((prev) => [...prev, createProcessingDraftBase(units)])}>+ Add Raw</Button>
                       </div>
                       {processingRaws.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
@@ -1989,6 +2301,11 @@ function Products() {
                           </div>
                         </div>
                       ))}
+                      <div className="flex justify-end pt-1">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingRaws((prev) => [...prev, createProcessingDraftBase(units)])}>
+                          + Add Raw
+                        </Button>
+                      </div>
                     </div>
                   )}
 
@@ -1996,7 +2313,6 @@ function Products() {
                     <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">WIP Products</h4>
-                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingWips((prev) => [...prev, { ...createProcessingDraftBase(units), raw_component_temp_keys: [] }])}>+ Add WIP</Button>
                       </div>
                       {processingWips.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
@@ -2029,6 +2345,11 @@ function Products() {
                           <Button type="button" variant="ghost" size="sm" disabled={processingWips.length <= 1} onClick={() => setProcessingWips((prev) => prev.filter((w) => w.temp_key !== row.temp_key))}>Remove</Button>
                         </div>
                       ))}
+                      <div className="flex justify-end pt-1">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingWips((prev) => [...prev, { ...createProcessingDraftBase(units), raw_component_temp_keys: [] }])}>
+                          + Add WIP
+                        </Button>
+                      </div>
                     </div>
                   )}
 
@@ -2036,7 +2357,6 @@ function Products() {
                     <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">FINISHED Products</h4>
-                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingFinished((prev) => [...prev, { ...createProcessingDraftBase(units), wip_component_temp_keys: [] }])}>+ Add Finished</Button>
                       </div>
                       {processingFinished.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
@@ -2069,30 +2389,14 @@ function Products() {
                           <Button type="button" variant="ghost" size="sm" disabled={processingFinished.length <= 1} onClick={() => setProcessingFinished((prev) => prev.filter((f) => f.temp_key !== row.temp_key))}>Remove</Button>
                         </div>
                       ))}
+                      <div className="flex justify-end pt-1">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setProcessingFinished((prev) => [...prev, { ...createProcessingDraftBase(units), wip_component_temp_keys: [] }])}>
+                          + Add Finished
+                        </Button>
+                      </div>
                     </div>
                   )}
 
-                  {processingStep === 4 && (
-                    <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm space-y-2 text-sm text-text-dark/80">
-                      <p><strong>RAW:</strong> {processingRaws.length}</p>
-                      <p><strong>WIP:</strong> {processingWips.length}</p>
-                      <p><strong>FINISHED:</strong> {processingFinished.length}</p>
-                      <p className="text-xs text-text-dark/60">Saving creates/updates all rows and links in one transaction.</p>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between gap-3 border-t border-olive-light/30 pt-4">
-                    <div className="flex gap-2">
-                      <Button type="button" variant="ghost" disabled={processingStep <= 1 || isSubmitting} onClick={() => setProcessingStep((prev) => Math.max(1, prev - 1) as 1 | 2 | 3 | 4)}>Back</Button>
-                      <Button type="button" variant="outline" disabled={processingStep >= 4 || isSubmitting} onClick={() => setProcessingStep((prev) => Math.min(4, prev + 1) as 1 | 2 | 3 | 4)}>Next</Button>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button type="button" variant="ghost" onClick={handleCloseModal} disabled={isSubmitting}>Cancel</Button>
-                      <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                        {isSubmitting ? 'Saving…' : processingEditMode ? 'Update Chain' : 'Save Chain'}
-                      </Button>
-                    </div>
-                  </div>
                 </div>
               ) : (
               <>
@@ -2138,7 +2442,21 @@ function Products() {
                 </div>
                 {processingFallbackNotice ? (
                   <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    {processingFallbackNotice}
+                    <div>{processingFallbackNotice}</div>
+                    {FEATURE_PROCESSING_PRODUCT_WIZARD && (formData.product_type || '').toUpperCase() !== 'OP' ? (
+                      <div className="mt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-amber-400 bg-amber-100 text-amber-900 hover:bg-amber-200"
+                          onClick={handleLinkLegacyProductToChain}
+                          disabled={isSubmitting || linkingLegacyProduct}
+                        >
+                          {linkingLegacyProduct ? 'Linking…' : 'Link to Processing Chain'}
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 <div className="mt-4 grid gap-4 sm:grid-cols-1">
@@ -2369,26 +2687,68 @@ function Products() {
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-3 border-t border-olive-light/30 pt-4">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleCloseModal}
-                  disabled={isSubmitting}
-                  className="text-text-dark hover:bg-olive-light/10"
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
-                  {isSubmitting
-                    ? 'Saving…'
-                    : isEditMode
-                      ? 'Update Product'
-                      : 'Save Product'}
-                </Button>
-              </div>
               </>
               )}
+              </div>
+
+              <div className="border-t border-olive-light/30 bg-white px-6 py-4">
+                {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === null ? (
+                  <div className="flex items-center justify-end gap-3">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleCloseModal}
+                      className="text-text-dark hover:bg-olive-light/10"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : isProcessingWizardActive ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={processingStep <= 1 || isSubmitting}
+                        onClick={() => setProcessingStep((prev) => Math.max(1, prev - 1) as 1 | 2 | 3)}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={processingStep >= 3 || isSubmitting}
+                        onClick={() => setProcessingStep((prev) => Math.min(3, prev + 1) as 1 | 2 | 3)}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="ghost" onClick={handleCloseModal} disabled={isSubmitting}>
+                        Cancel
+                      </Button>
+                      <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                        {isSubmitting ? 'Saving…' : processingEditMode ? 'Update Chain' : 'Save Chain'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-end gap-3">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleCloseModal}
+                      disabled={isSubmitting}
+                      className="text-text-dark hover:bg-olive-light/10"
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                      {isSubmitting ? 'Saving…' : isEditMode ? 'Update Product' : 'Save Product'}
+                    </Button>
+                  </div>
+                )}
+              </div>
             </form>
           </div>
         </div>

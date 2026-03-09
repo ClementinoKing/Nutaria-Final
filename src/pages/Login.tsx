@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAuth } from '../context/AuthContext'
 import { supabase } from '@/lib/supabaseClient'
+import { classifyIdentifier, isLikelyEmail } from '@/lib/authIdentifier'
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,7 +17,7 @@ import {
 import { cn } from '@/lib/utils'
 
 function Login() {
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [resetting, setResetting] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -32,12 +33,12 @@ function Login() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
-    if (!email || !password) {
-      toast.error('Please enter both email and password')
+    if (!identifier || !password) {
+      toast.error('Please enter both username/email and password')
       return
     }
 
-    const { error: signInError } = await login(email, password)
+    const { error: signInError } = await login(identifier, password)
     if (signInError) {
       toast.error(signInError.message ?? 'Unable to sign in. Please try again.')
       return
@@ -47,13 +48,24 @@ function Login() {
   }
 
   const handlePasswordReset = async () => {
-    if (!email) {
-      toast.error('Enter the email you use for your account first.')
+    if (!identifier) {
+      toast.error('Enter your account email first.')
+      return
+    }
+
+    const classified = classifyIdentifier(identifier)
+    if (classified?.type === 'phone') {
+      toast.info('Phone account reset is handled by admin.')
+      return
+    }
+
+    if (!isLikelyEmail(identifier)) {
+      toast.error('Enter your account email to reset password.')
       return
     }
 
     setResetting(true)
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    const { error } = await supabase.auth.resetPasswordForEmail(identifier.trim().toLowerCase(), {
       redirectTo: `${window.location.origin}/reset-password`
     })
     setResetting(false)
@@ -80,21 +92,21 @@ function Login() {
                   <div className="flex flex-col gap-1 text-left">
                     <h1 className="text-2xl font-bold text-card-foreground">Login to your account</h1>
                     <p className="text-muted-foreground text-sm">
-                      Enter your email below to login to your account
+                      Enter your username (phone) or email below to login
                     </p>
                   </div>
                   <Field>
-                    <FieldLabel htmlFor="email">Email</FieldLabel>
+                    <FieldLabel htmlFor="identifier">Username or Email</FieldLabel>
                     <div className="relative">
                       <Mail className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
                       <Input
-                        id="email"
-                        type="email"
-                        placeholder="info@nutaria.co.za"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
+                        id="identifier"
+                        type="text"
+                        placeholder="+265991234567 or info@nutaria.co.za"
+                        value={identifier}
+                        onChange={(e) => setIdentifier(e.target.value)}
                         className="h-14 rounded-xl border-none bg-muted pl-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"
-                        autoComplete="email"
+                        autoComplete="username"
                         required
                       />
                     </div>
@@ -183,4 +195,3 @@ function Login() {
 }
 
 export default Login
-

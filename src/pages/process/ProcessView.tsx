@@ -902,14 +902,6 @@ function ProcessView() {
                                   </div>
                                 )}
                                 <div className="text-sm text-text-dark/70">
-                                  <span className="font-medium text-text-dark">Quantity in:</span>{' '}
-                                  {item.quantity_in ?? '—'}
-                                </div>
-                                <div className="text-sm text-text-dark/70">
-                                  <span className="font-medium text-text-dark">Quantity out:</span>{' '}
-                                  {item.quantity_out ?? '—'}
-                                </div>
-                                <div className="text-sm text-text-dark/70">
                                   <span className="font-medium text-text-dark">Duration:</span>{' '}
                                   {item.started_at && item.completed_at
                                     ? `${Math.round(

@@ -149,17 +149,16 @@ export function usePackagingSettings(): UsePackagingSettingsReturn {
 
   const createUnit = useCallback(
     async (payload: PackagingUnitInput) => {
-      const { error: createError } = await supabase.rpc('upsert_packaging_unit', {
-        p_id: null,
-        p_code: payload.code,
-        p_name: payload.name,
-        p_unit_type: payload.unit_type,
-        p_packaging_type: payload.packaging_type,
-        p_net_weight_kg: payload.net_weight_kg,
-        p_length_mm: payload.length_mm,
-        p_width_mm: payload.width_mm,
-        p_height_mm: payload.height_mm,
-        p_operational_product_id: payload.operational_product_id,
+      const { error: createError } = await supabase.from('packaging_units').insert({
+        code: payload.code,
+        name: payload.name,
+        unit_type: payload.unit_type,
+        packaging_type: payload.packaging_type,
+        net_weight_kg: payload.net_weight_kg,
+        length_mm: payload.length_mm,
+        width_mm: payload.width_mm,
+        height_mm: payload.height_mm,
+        operational_product_id: payload.operational_product_id,
       })
       if (createError) return { error: createError }
       return fetchAll()
@@ -169,18 +168,20 @@ export function usePackagingSettings(): UsePackagingSettingsReturn {
 
   const updateUnit = useCallback(
     async (id: number, payload: PackagingUnitInput) => {
-      const { error: updateError } = await supabase.rpc('upsert_packaging_unit', {
-        p_id: id,
-        p_code: payload.code,
-        p_name: payload.name,
-        p_unit_type: payload.unit_type,
-        p_packaging_type: payload.packaging_type,
-        p_net_weight_kg: payload.net_weight_kg,
-        p_length_mm: payload.length_mm,
-        p_width_mm: payload.width_mm,
-        p_height_mm: payload.height_mm,
-        p_operational_product_id: payload.operational_product_id,
-      })
+      const { error: updateError } = await supabase
+        .from('packaging_units')
+        .update({
+          code: payload.code,
+          name: payload.name,
+          unit_type: payload.unit_type,
+          packaging_type: payload.packaging_type,
+          net_weight_kg: payload.net_weight_kg,
+          length_mm: payload.length_mm,
+          width_mm: payload.width_mm,
+          height_mm: payload.height_mm,
+          operational_product_id: payload.operational_product_id,
+        })
+        .eq('id', id)
       if (updateError) return { error: updateError }
       return fetchAll()
     },

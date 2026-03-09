@@ -21,6 +21,7 @@ import { VehicleInspectionsStep, VehicleInspection } from '@/components/supplies
 import { PackagingQualityStep, PackagingQuality } from '@/components/supplies/PackagingQualityStep'
 import { SupplierSignOffStep, SupplierSignOff } from '@/components/supplies/SupplierSignOffStep'
 import { CameraCapture } from '@/components/CameraCapture'
+import { buildStorageObjectPath, uploadStoredFile } from '@/lib/fileStorage'
 
 interface QualityEntry {
   score: number | string | null
@@ -34,6 +35,7 @@ interface QualityEntries {
 
 interface SupplyBatch {
   batch_id?: number | null
+  temp_key?: string
   lot_no?: string
   is_locked?: boolean
   product_id: string
@@ -77,6 +79,7 @@ interface SupplyBatchData {
   current_qty?: number
   received_qty?: number
   accepted_qty?: number
+  rejected_qty?: number
   unit_price?: number | null
   quality_status?: string
   [key: string]: unknown
@@ -278,8 +281,8 @@ const STEPS = [
   'Supply documents',
   'Vehicle inspections',
   'Packaging quality parameters',
+  'Supply batches',
   'Quality evaluation',
-  'Supply batches & submit',
   'Supplier sign-off',
 ]
 
@@ -314,6 +317,46 @@ function createInitialQualityEntries(parameters: QualityParameterWithId[] = []):
     }
     return accumulator
   }, {} as QualityEntries)
+}
+
+function createBatchTempKey(): string {
+  return `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function getSupplyBatchQualityKey(batch: SupplyBatch, index: number): string {
+  if (batch.batch_id != null && Number.isFinite(Number(batch.batch_id))) {
+    return `batch:${Number(batch.batch_id)}`
+  }
+  const tempKey = batch.temp_key?.trim()
+  return tempKey ? `temp:${tempKey}` : `temp:index_${index}`
+}
+
+function syncQualityEntriesWithParameters(
+  parameters: QualityParameterWithId[],
+  currentEntries: QualityEntries | undefined,
+): QualityEntries {
+  const entries = { ...(currentEntries ?? {}) }
+  let changed = !currentEntries
+
+  parameters.forEach((parameter) => {
+    if (!entries[parameter.code]) {
+      entries[parameter.code] = {
+        score: 3,
+        remarks: '',
+        results: '',
+      }
+      changed = true
+    }
+  })
+
+  Object.keys(entries).forEach((code) => {
+    if (!parameters.some((parameter) => parameter.code === code)) {
+      delete entries[code]
+      changed = true
+    }
+  })
+
+  return changed ? entries : (currentEntries as QualityEntries)
 }
 
 function parseNullableNumber(value: string): number | null {
@@ -368,6 +411,24 @@ function calculateAverageScore(entries: QualityEntries): number | null {
   return Math.round((total / scores.length) * 100) / 100
 }
 
+function evaluateBatchQuality(entries: QualityEntries): { hasQualityIssues: boolean; checkStatus: 'PASS' | 'FAIL'; overallScore: number | null } {
+  const hasLowScore = Object.values(entries).some((entry) => {
+    const score = entry?.score
+    if (score === null || score === '' || score === 4 || score === '4') {
+      return false
+    }
+    const numericScore = Number(score)
+    return Number.isFinite(numericScore) && numericScore < 3
+  })
+  const hasQualityIssues = hasLowScore
+
+  return {
+    hasQualityIssues,
+    checkStatus: hasQualityIssues ? 'FAIL' : 'PASS',
+    overallScore: calculateAverageScore(entries),
+  }
+}
+
 function sanitiseAcceptedQuantityInput(value: string | number | null | undefined): string {
   if (value === undefined || value === null) {
     return ''
@@ -397,7 +458,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const { supplyId: routeSupplyId } = useParams<{ supplyId?: string }>()
   const isDirectEditRoute = Boolean(routeSupplyId && location.pathname.endsWith('/edit'))
   const { user } = useAuth()
-  const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers()
+  const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers({
+    pageSize: 500,
+  })
   const [supplies, setSupplies] = useState<Supply[]>([])
   const [supplyBatches, setSupplyBatches] = useState<SupplyBatchData[]>([])
   const [supplyQualityChecks, setSupplyQualityChecks] = useState<{ [key: string]: unknown }[]>([])
@@ -413,7 +476,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const [userProfiles, setUserProfiles] = useState<UserProfile[]>([])
   const [qualityParameters, setQualityParameters] = useState<QualityParameterWithId[]>([])
   const [supplierTypeCategories, setSupplierTypeCategories] = useState<SupplierTypeCategory[]>([])
-  const [qualityEntries, setQualityEntries] = useState<QualityEntries>(() => createInitialQualityEntries())
+  const [qualityEntriesByBatchKey, setQualityEntriesByBatchKey] = useState<Record<string, QualityEntries>>({})
   const [supplyDocuments, setSupplyDocuments] = useState<SupplyDocument>(() => ({
     invoiceNumber: '',
     driverLicenseName: '',
@@ -448,6 +511,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const [addCoaFile, setAddCoaFile] = useState<File | null>(null)
   const [addCoaExpiry, setAddCoaExpiry] = useState('')
   const [addCoaCameraOpen, setAddCoaCameraOpen] = useState(false)
+  const [categorySuppliersLoading, setCategorySuppliersLoading] = useState(false)
+  const [categorySuppliers, setCategorySuppliers] = useState<Array<{ id: number | string; name?: unknown; supplier_type?: unknown }>>([])
   const [addCoaUploading, setAddCoaUploading] = useState(false)
   const [editingSupplyId, setEditingSupplyId] = useState<number | null>(null)
   const [editLoadDone, setEditLoadDone] = useState(false)
@@ -552,6 +617,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       supply_batches: [
         {
           batch_id: null,
+          temp_key: createBatchTempKey(),
           lot_no: '',
           is_locked: false,
           product_id: '',
@@ -588,7 +654,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const map = new Map<string, 'PRODUCT' | 'SERVICE'>()
     supplierTypeCategories.forEach((entry) => {
       if (entry?.code && entry?.category_code) {
-        map.set(entry.code, entry.category_code)
+        map.set(String(entry.code).trim().toUpperCase(), entry.category_code)
       }
     })
     if (!map.has('GS')) map.set('GS', 'PRODUCT')
@@ -598,16 +664,62 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     return map
   }, [supplierTypeCategories])
 
-  const filteredSupplierList = useMemo(() => {
-    return supplierList.filter((supplier) => {
-      const supplierType = String(supplier?.supplier_type ?? '')
-      if (!supplierType) {
-        return formData.category_code === 'PRODUCT'
+  const allowedSupplierTypeCodes = useMemo(
+    () => {
+      const codes = Array.from(supplierTypeCategoryMap.entries())
+        .filter(([, categoryCode]) => categoryCode === formData.category_code)
+        .map(([code]) => code)
+        .filter(Boolean)
+
+      if (formData.category_code === 'SERVICE' && codes.length === 0) {
+        return ['OS']
       }
-      const supplierCategory = supplierTypeCategoryMap.get(supplierType)
-      return supplierCategory ? supplierCategory === formData.category_code : formData.category_code === 'PRODUCT'
+
+      return codes
+    },
+    [supplierTypeCategoryMap, formData.category_code],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadCategorySuppliers = async () => {
+      if (allowedSupplierTypeCodes.length === 0) {
+        setCategorySuppliers([])
+        return
+      }
+
+      setCategorySuppliersLoading(true)
+      const { data, error } = await supabase
+        .from('suppliers')
+        .select('id, name, supplier_type')
+        .in('supplier_type', allowedSupplierTypeCodes)
+        .order('name', { ascending: true })
+
+      if (cancelled) return
+
+      if (error) {
+        console.error('Unable to load suppliers for selected category', error)
+        setCategorySuppliers([])
+      } else {
+        setCategorySuppliers((data ?? []) as Array<{ id: number | string; name?: unknown; supplier_type?: unknown }>)
+      }
+      setCategorySuppliersLoading(false)
+    }
+
+    void loadCategorySuppliers()
+
+    return () => {
+      cancelled = true
+    }
+  }, [allowedSupplierTypeCodes])
+
+  const filteredSupplierList = useMemo(() => {
+    return categorySuppliers.filter((supplier) => {
+      const supplierType = String(supplier?.supplier_type ?? '').trim().toUpperCase()
+      return supplierTypeCategoryMap.get(supplierType) === formData.category_code
     })
-  }, [supplierList, supplierTypeCategoryMap, formData.category_code])
+  }, [categorySuppliers, supplierTypeCategoryMap, formData.category_code])
 
   const supplierSelectOptions = useMemo(() => {
     return filteredSupplierList.map((supplier) => ({
@@ -618,14 +730,15 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
   const supplierLabelMap = useMemo(() => {
     const map = new Map<number, string>()
-    supplierList.forEach((supplier) => {
+    const mergedSupplierList = [...supplierList, ...categorySuppliers]
+    mergedSupplierList.forEach((supplier) => {
       const supplierId = typeof supplier?.id === 'number' ? supplier.id : Number(supplier?.id)
       if (supplierId !== undefined && !Number.isNaN(supplierId) && supplierId !== null) {
         map.set(supplierId, String(supplier.name ?? ''))
       }
     })
     return map
-  }, [supplierList])
+  }, [supplierList, categorySuppliers])
 
   const getUnitPriceSuffix = useCallback((unitId: string): string => {
     if (!unitId) return ''
@@ -722,10 +835,20 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     setCurrentPage((page) => Math.min(page, totalPages))
   }, [totalPages])
 
-  const qualityAverageScore = useMemo(
-    () => calculateAverageScore(qualityEntries),
-    [qualityEntries],
-  )
+  const qualityAverageScore = useMemo(() => {
+    const scores = formData.supply_batches
+      .map((batch, index) => {
+        const key = getSupplyBatchQualityKey(batch, index)
+        return calculateAverageScore(qualityEntriesByBatchKey[key] ?? createInitialQualityEntries(qualityParameters))
+      })
+      .filter((score): score is number => score != null && Number.isFinite(score))
+
+    if (scores.length === 0) {
+      return null
+    }
+    const total = scores.reduce((sum, score) => sum + score, 0)
+    return Math.round((total / scores.length) * 100) / 100
+  }, [formData.supply_batches, qualityEntriesByBatchKey, qualityParameters])
 
   const totalAcceptedKg = useMemo(
     () =>
@@ -854,7 +977,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   }, [currentUserName])
 
   useEffect(() => {
-    if (currentStep !== 6) {
+    if (currentStep !== 5) {
       return
     }
 
@@ -1121,6 +1244,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         ...prev.supply_batches,
         {
           batch_id: null,
+          temp_key: createBatchTempKey(),
           lot_no: '',
           is_locked: false,
           product_id: '',
@@ -1157,13 +1281,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     return `LOT-${currentYear}-${String(nextBatchNumber + index).padStart(3, '0')}`
   }
 
-  const handleQualityEntryChange = (code: string, entry: QualityEntry) => {
-    setQualityEntries((previous) => ({
+  const handleQualityEntryChange = (batchKey: string, code: string, entry: QualityEntry) => {
+    setQualityEntriesByBatchKey((previous) => ({
       ...previous,
-      [code]: {
-        score: entry.score,
-        remarks: entry.remarks,
-        results: entry.results,
+      [batchKey]: {
+        ...(previous[batchKey] ?? createInitialQualityEntries(qualityParameters)),
+        [code]: {
+          score: entry.score,
+          remarks: entry.remarks,
+          results: entry.results,
+        },
       },
     }))
   }
@@ -1293,25 +1420,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       }
 
       if (step === 5) {
-        // Quality evaluation validation
-        const missingScore = qualityParameters.find((parameter) => {
-          const entry = qualityEntries[parameter.code]
-          const score = entry?.score
-          // Allow null/N/A (value 4), or valid scores 1-3
-          if (score === null || score === '' || score === 4 || score === '4') {
-            return false // N/A is valid
-          }
-          const scoreNum = Number(score)
-          return !Number.isFinite(scoreNum) || scoreNum < 1 || scoreNum > 3
-        })
-
-        if (missingScore) {
-          toast.error(`Provide a valid score for ${missingScore.name} before continuing.`)
-          return false
-        }
-      }
-
-      if (step === 6) {
         // Supply batches validation
         if (formData.supply_batches.length === 0) {
           toast.error('Add at least one batch to continue.')
@@ -1368,9 +1476,30 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           return false
         }
 
-        if (!formData.doc_status) {
-          toast.error('Select a supply status before submitting.')
-          return false
+      }
+
+      if (step === 6) {
+        // Per-batch quality evaluation validation
+        for (let batchIndex = 0; batchIndex < formData.supply_batches.length; batchIndex += 1) {
+          const batch = formData.supply_batches[batchIndex]!
+          const batchKey = getSupplyBatchQualityKey(batch, batchIndex)
+          const batchEntries = qualityEntriesByBatchKey[batchKey] ?? createInitialQualityEntries(qualityParameters)
+
+          const invalidParameter = qualityParameters.find((parameter) => {
+            const entry = batchEntries[parameter.code]
+            const score = entry?.score
+            if (score === null || score === '' || score === 4 || score === '4') {
+              return false
+            }
+            const scoreNum = Number(score)
+            return !Number.isFinite(scoreNum) || scoreNum < 1 || scoreNum > 3
+          })
+
+          if (invalidParameter) {
+            const batchLabel = batch.lot_no?.trim() || `Batch ${batchIndex + 1}`
+            toast.error(`${batchLabel}: provide a valid score for ${invalidParameter.name}.`)
+            return false
+          }
         }
       }
 
@@ -1405,7 +1534,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       operationalMappedProducts.length,
       operationalSupplyLines,
       packagingQuality,
-      qualityEntries,
+      qualityEntriesByBatchKey,
       qualityParameters,
       supplierSignOff,
       supplyDocuments,
@@ -1652,13 +1781,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
     const nowISO = new Date().toISOString()
     const receivedAtISO = formData.received_at ? new Date(formData.received_at).toISOString() : nowISO
-    const hasQualityIssues = Object.values(qualityEntries).some((entry) => Number(entry?.score ?? 0) < 3)
-    const overallScore = calculateAverageScore(qualityEntries)
-    const hasRejectedBatches = formData.supply_batches.some(
-      (batch) => Number.parseFloat(batch.rejected_qty) > 0,
-    )
-    const qualityStatus = hasQualityIssues || hasRejectedBatches ? 'FAILED' : 'PASSED'
-    const qualityCheckStatus = hasQualityIssues || hasRejectedBatches ? 'FAIL' : 'PASS'
 
     const validLines = formData.supply_batches
       .map((batch) => {
@@ -1684,6 +1806,20 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       toast.error('Add at least one supply batch before saving.')
       return
     }
+
+    const batchAssessments = validLines.map((batch, index) => {
+      const qualityKey = getSupplyBatchQualityKey(batch, index)
+      const entries = qualityEntriesByBatchKey[qualityKey] ?? createInitialQualityEntries(qualityParameters)
+      const rejectedQty = Number.parseFloat(batch.rejected_qty)
+      return {
+        qualityKey,
+        entries,
+        ...evaluateBatchQuality(entries),
+      }
+    })
+    const qualityStatus = batchAssessments.some((assessment) => assessment.hasQualityIssues)
+      ? 'FAILED'
+      : 'PASSED'
 
     const managedSupplyDocumentCodes = ['INVOICE', 'DRIVER_LICENSE', 'BATCH_NUMBER', 'PRODUCTION_DATE', 'EXPIRY_DATE']
     const supplyDocumentTypeDefaults: Record<string, { name: string; is_required: boolean; allows_file_upload: boolean }> = {
@@ -1809,6 +1945,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           return
         }
 
+        const batchAssessmentByKey = new Map(
+          batchAssessments.map((assessment) => [assessment.qualityKey, assessment]),
+        )
+        const upsertedBatchQualityRows: Array<{
+          batchId: number
+          checkStatus: 'PASS' | 'FAIL'
+          overallScore: number | null
+          entries: QualityEntries
+        }> = []
+
         const rowsToDelete = existingBatchRows.filter(
           (row) =>
             !lockedBatchIds.has(row.id) &&
@@ -1816,6 +1962,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         )
         const batchIdsToDelete = rowsToDelete.map((row) => row.id)
         if (batchIdsToDelete.length > 0) {
+          const { error: deleteBatchQualityChecksError } = await supabase
+            .from('supply_quality_checks')
+            .delete()
+            .eq('supply_id', editingSupplyId)
+            .in('lot_id', batchIdsToDelete)
+          if (deleteBatchQualityChecksError) throw deleteBatchQualityChecksError
+
           const { error: deleteEditableBatchesError } = await supabase
             .from('supply_batches')
             .delete()
@@ -1825,6 +1978,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
         for (let index = 0; index < editableValidLines.length; index += 1) {
           const line = editableValidLines[index]!
+          const qualityKey = getSupplyBatchQualityKey(line, index)
+          const assessment = batchAssessmentByKey.get(qualityKey) ?? {
+            entries: createInitialQualityEntries(qualityParameters),
+            checkStatus: 'PASS' as const,
+            overallScore: null,
+            hasQualityIssues: false,
+          }
           const quantity = Number.parseFloat(line.qty) || 0
           const acceptedRaw = Number.parseFloat(line.accepted_qty)
           const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
@@ -1839,7 +1999,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             continue
           }
 
-          const batchQualityStatus = rejectedQty === 0 ? 'PASSED' : acceptedQty === 0 ? 'FAILED' : 'HOLD'
+          const batchQualityStatus = assessment.hasQualityIssues ? 'FAILED' : 'PASSED'
           const batchPayload = {
             supply_id: editingSupplyId,
             product_id: parseInt(line.product_id, 10),
@@ -1860,16 +2020,34 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               .eq('id', existingBatchId)
               .eq('supply_id', editingSupplyId)
             if (updateBatchError) throw updateBatchError
+            upsertedBatchQualityRows.push({
+              batchId: existingBatchId,
+              checkStatus: assessment.checkStatus,
+              overallScore: assessment.overallScore,
+              entries: assessment.entries,
+            })
           } else {
             const lotNumber = line.lot_no?.trim()
               ? line.lot_no.trim()
               : `LOT-${editingSupplyId}-${String(existingBatchRows.length + index + 1).padStart(3, '0')}`
-            const { error: insertBatchError } = await supabase.from('supply_batches').insert({
-              ...batchPayload,
-              lot_no: lotNumber,
-              created_at: nowISO,
-            })
+            const { data: insertedBatch, error: insertBatchError } = await supabase
+              .from('supply_batches')
+              .insert({
+                ...batchPayload,
+                lot_no: lotNumber,
+                created_at: nowISO,
+              })
+              .select('id')
+              .single()
             if (insertBatchError) throw insertBatchError
+            if (insertedBatch?.id) {
+              upsertedBatchQualityRows.push({
+                batchId: Number(insertedBatch.id),
+                checkStatus: assessment.checkStatus,
+                overallScore: assessment.overallScore,
+                entries: assessment.entries,
+              })
+            }
           }
         }
 
@@ -2051,45 +2229,80 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           }
         }
 
-        const { data: existingQualityCheck } = await supabase
+        const { data: existingQualityChecksData, error: existingQualityChecksError } = await supabase
           .from('supply_quality_checks')
-          .select('id')
+          .select('id, lot_id')
           .eq('supply_id', editingSupplyId)
-          .order('id', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        let qualityCheckId = existingQualityCheck?.id
-        if (!qualityCheckId) {
-          const { data: newQc } = await supabase.from('supply_quality_checks').insert({
-            supply_id: editingSupplyId,
-            check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
-            status: qualityCheckStatus,
-            result: qualityCheckStatus,
-            performed_by: profileId ?? null,
-            performed_at: nowISO,
-            evaluated_at: nowISO,
-            evaluated_by: profileId ?? null,
-            overall_score: overallScore,
-          }).select('id').single()
-          qualityCheckId = newQc?.id
-        } else {
-          await supabase.from('supply_quality_checks').update({
-            status: qualityCheckStatus,
-            result: qualityCheckStatus,
-            evaluated_at: nowISO,
-            overall_score: overallScore,
-          }).eq('id', qualityCheckId)
+        if (existingQualityChecksError) {
+          throw existingQualityChecksError
         }
-        if (qualityCheckId) {
-          await supabase.from('supply_quality_check_items').delete().eq('quality_check_id', qualityCheckId)
-          const parameterIdLookup = new Map(qualityParameterIdMap)
+        const existingQualityCheckByLotId = new Map<number, number>()
+        ;(existingQualityChecksData ?? []).forEach((row) => {
+          const lotId = Number((row as { lot_id: number | null }).lot_id)
+          const checkId = Number((row as { id: number }).id)
+          if (Number.isFinite(lotId) && Number.isFinite(checkId)) {
+            existingQualityCheckByLotId.set(lotId, checkId)
+          }
+        })
+
+        const parameterIdLookup = new Map(qualityParameterIdMap)
+        for (const qualityRow of upsertedBatchQualityRows) {
+          const existingCheckId = existingQualityCheckByLotId.get(qualityRow.batchId)
+          let qualityCheckId = existingCheckId ?? null
+
+          if (!qualityCheckId) {
+            const { data: insertedQualityCheck, error: insertQualityCheckError } = await supabase
+              .from('supply_quality_checks')
+              .insert({
+                supply_id: editingSupplyId,
+                lot_id: qualityRow.batchId,
+                check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
+                status: qualityRow.checkStatus,
+                result: qualityRow.checkStatus,
+                performed_by: profileId ?? null,
+                performed_at: nowISO,
+                evaluated_at: nowISO,
+                evaluated_by: profileId ?? null,
+                overall_score: qualityRow.overallScore,
+              })
+              .select('id')
+              .single()
+            if (insertQualityCheckError) throw insertQualityCheckError
+            qualityCheckId = insertedQualityCheck?.id ?? null
+          } else {
+            const { error: updateQualityCheckError } = await supabase
+              .from('supply_quality_checks')
+              .update({
+                status: qualityRow.checkStatus,
+                result: qualityRow.checkStatus,
+                lot_id: qualityRow.batchId,
+                evaluated_at: nowISO,
+                overall_score: qualityRow.overallScore,
+              })
+              .eq('id', qualityCheckId)
+            if (updateQualityCheckError) throw updateQualityCheckError
+          }
+
+          if (!qualityCheckId) {
+            continue
+          }
+
+          const { error: deleteItemsError } = await supabase
+            .from('supply_quality_check_items')
+            .delete()
+            .eq('quality_check_id', qualityCheckId)
+          if (deleteItemsError) throw deleteItemsError
+
           const qualityItemsPayload = qualityParameters
-            .map((p) => {
-              const entry = qualityEntries[p.code]
+            .map((parameter) => {
+              const entry = qualityRow.entries[parameter.code]
               if (!entry) return null
-              const parameterId = parameterIdLookup.get(p.code)
+              const parameterId = parameterIdLookup.get(parameter.code)
               if (!parameterId) return null
-              const scoreValue = entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4' ? 4 : Number(entry.score)
+              const scoreValue =
+                entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4'
+                  ? 4
+                  : Number(entry.score)
               return {
                 quality_check_id: qualityCheckId,
                 parameter_id: parameterId,
@@ -2099,10 +2312,21 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               }
             })
             .filter(Boolean)
+
           if (qualityItemsPayload.length > 0) {
-            await supabase.from('supply_quality_check_items').insert(qualityItemsPayload)
+            const { error: insertItemsError } = await supabase
+              .from('supply_quality_check_items')
+              .insert(qualityItemsPayload)
+            if (insertItemsError) throw insertItemsError
           }
         }
+
+        const { error: deleteLegacyQualityChecksError } = await supabase
+          .from('supply_quality_checks')
+          .delete()
+          .eq('supply_id', editingSupplyId)
+          .is('lot_id', null)
+        if (deleteLegacyQualityChecksError) throw deleteLegacyQualityChecksError
 
         const { data: existingSignOff } = await supabase.from('supply_supplier_sign_offs').select('id').eq('supply_id', editingSupplyId).maybeSingle()
         if (supplierSignOff.signatureType && supplierSignOff.signedByName) {
@@ -2180,19 +2404,17 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         return
       }
 
+      let insertedBatchesForQuality: Array<{ id: number; lot_no: string; quality_status: string | null; process_status: string | null }> = []
       if (validLines.length > 0) {
         const supplyBatchRows = validLines.map((line, index) => {
+          const qualityKey = getSupplyBatchQualityKey(line, index)
+          const assessment = batchAssessments.find((entry) => entry.qualityKey === qualityKey)
           const quantity = Number.parseFloat(line.qty) || 0
           const acceptedRaw = Number.parseFloat(line.accepted_qty)
           const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
           const rejectedQty = Math.max(quantity - acceptedQty, 0)
           const lotNumber = `LOT-${newSupplyId}-${String(index + 1).padStart(3, '0')}`
-          const batchQualityStatus =
-            rejectedQty === 0
-              ? 'PASSED'
-              : acceptedQty === 0
-              ? 'FAILED'
-              : 'HOLD'
+          const batchQualityStatus = assessment?.hasQualityIssues ? 'FAILED' : 'PASSED'
           const unitPriceRaw = line.unit_price?.trim()
           const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
 
@@ -2215,86 +2437,89 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         const { error: batchesError, data: insertedBatches } = await supabase
           .from('supply_batches')
           .insert(supplyBatchRows)
-          .select('id, product_id, quality_status, process_status')
+          .select('id, lot_no, product_id, quality_status, process_status')
         if (batchesError) {
           throw batchesError
         }
 
-        // Auto-create process lot runs for batches that are ready for production
-        if (insertedBatches && Array.isArray(insertedBatches)) {
-          const { createProcessLotRun } = await import('@/lib/processExecution')
-          for (const batch of insertedBatches) {
-            // Check if batch is ready: quality_status is 'PASSED' and process_status is 'UNPROCESSED'
-            if (
-              batch.quality_status === 'PASSED' &&
-              (batch.process_status === 'UNPROCESSED' || !batch.process_status)
-            ) {
-              try {
-                await createProcessLotRun(batch.id)
-              } catch (error) {
-                // Log error but don't fail the supply creation
-                console.warn(`Failed to auto-create process lot run for batch ${batch.id}:`, error)
-              }
-            }
-          }
-        }
+        insertedBatchesForQuality = (insertedBatches ?? []) as Array<{
+          id: number
+          lot_no: string
+          quality_status: string | null
+          process_status: string | null
+        }>
+
+        // Process lot runs are created manually from the process flow.
       }
 
       const parameterIdLookup = new Map(qualityParameterIdMap)
+      const batchByLotNo = new Map<string, { id: number }>()
+      insertedBatchesForQuality.forEach((batch) => {
+        if (batch.lot_no) {
+          batchByLotNo.set(String(batch.lot_no), { id: Number(batch.id) })
+        }
+      })
 
-      const { data: qualityCheckRow, error: qualityCheckError } = await supabase
-        .from('supply_quality_checks')
-        .insert({
-          supply_id: newSupplyId,
-          check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
-          status: qualityCheckStatus,
-          result: qualityCheckStatus,
-          performed_by: profileId ?? null,
-          performed_at: new Date().toISOString(),
-          evaluated_at: new Date().toISOString(),
-          evaluated_by: profileId ?? null,
-          overall_score: overallScore,
-        })
-        .select('id')
-        .single()
+      for (let index = 0; index < validLines.length; index += 1) {
+        const lotNo = `LOT-${newSupplyId}-${String(index + 1).padStart(3, '0')}`
+        const insertedBatch = batchByLotNo.get(lotNo)
+        if (!insertedBatch) {
+          continue
+        }
 
-      if (qualityCheckError) {
-        throw qualityCheckError
-      }
+        const assessment = batchAssessments[index] ?? {
+          entries: createInitialQualityEntries(qualityParameters),
+          checkStatus: 'PASS' as const,
+          overallScore: null,
+        }
 
-      const qualityItemsPayload = qualityParameters
-        .map((parameter) => {
-          const entry = qualityEntries[parameter.code]
-          if (!entry) {
-            return null
-          }
+        const { data: qualityCheckRow, error: qualityCheckError } = await supabase
+          .from('supply_quality_checks')
+          .insert({
+            supply_id: newSupplyId,
+            lot_id: insertedBatch.id,
+            check_name: formData.doc_no ? `Receiving inspection - ${formData.doc_no}` : 'Receiving inspection',
+            status: assessment.checkStatus,
+            result: assessment.checkStatus,
+            performed_by: profileId ?? null,
+            performed_at: nowISO,
+            evaluated_at: nowISO,
+            evaluated_by: profileId ?? null,
+            overall_score: assessment.overallScore,
+          })
+          .select('id')
+          .single()
+        if (qualityCheckError) throw qualityCheckError
 
-          const parameterId = parameterIdLookup.get(parameter.code)
-          if (!parameterId) {
-            throw new Error(`Quality parameter ${parameter.code} is missing an id.`)
-          }
+        const qualityItemsPayload = qualityParameters
+          .map((parameter) => {
+            const entry = assessment.entries[parameter.code]
+            if (!entry) {
+              return null
+            }
+            const parameterId = parameterIdLookup.get(parameter.code)
+            if (!parameterId) {
+              throw new Error(`Quality parameter ${parameter.code} is missing an id.`)
+            }
+            const scoreValue =
+              entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4'
+                ? 4
+                : Number(entry.score)
+            return {
+              quality_check_id: qualityCheckRow.id,
+              parameter_id: parameterId,
+              score: scoreValue,
+              remarks: entry.remarks?.trim() ? entry.remarks.trim() : null,
+              results: entry.results?.trim() ? entry.results.trim() : null,
+            }
+          })
+          .filter(Boolean)
 
-          // Store 4 for N/A, or the numeric score
-          const scoreValue = entry.score === null || entry.score === '' || entry.score === 4 || entry.score === '4' 
-            ? 4 
-            : Number(entry.score)
-          
-          return {
-            quality_check_id: qualityCheckRow.id,
-            parameter_id: parameterId,
-            score: scoreValue,
-            remarks: entry.remarks?.trim() ? entry.remarks.trim() : null,
-            results: entry.results?.trim() ? entry.results.trim() : null,
-          }
-        })
-        .filter(Boolean)
-
-      if (qualityItemsPayload.length > 0) {
-        const { error: qualityItemsError } = await supabase
-          .from('supply_quality_check_items')
-          .insert(qualityItemsPayload)
-        if (qualityItemsError) {
-          throw qualityItemsError
+        if (qualityItemsPayload.length > 0) {
+          const { error: qualityItemsError } = await supabase
+            .from('supply_quality_check_items')
+            .insert(qualityItemsPayload)
+          if (qualityItemsError) throw qualityItemsError
         }
       }
 
@@ -2305,29 +2530,32 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       if (supplyDocuments.invoiceNumber) {
         let invoiceDocumentId = null
         if (supplyDocuments.invoiceFile) {
-          const storagePath = `supplies/${newSupplyId}/documents/invoice_${Date.now()}_${supplyDocuments.invoiceFile.name}`
-          const { error: uploadError } = await supabase.storage
+          const storagePath = buildStorageObjectPath(
+            `supplies/${newSupplyId}/documents`,
+            `invoice_${supplyDocuments.invoiceFile.name}`
+          )
+          await uploadStoredFile(storagePath, supplyDocuments.invoiceFile)
+
+          const { data: docData, error: docError } = await supabase
             .from('documents')
-            .upload(storagePath, supplyDocuments.invoiceFile)
-          
-          if (!uploadError) {
-            const { data: docData, error: docError } = await supabase
-              .from('documents')
-              .insert({
-                owner_type: 'supply',
-                owner_id: newSupplyId,
-                name: supplyDocuments.invoiceFile.name,
-                storage_path: storagePath,
-                doc_type: 'INVOICE',
-                document_type_code: 'INVOICE',
-                uploaded_by: profileId ?? null,
-              })
-              .select('id')
-              .single()
-            
-            if (!docError && docData) {
-              invoiceDocumentId = docData.id
-            }
+            .insert({
+              owner_type: 'supply',
+              owner_id: newSupplyId,
+              name: supplyDocuments.invoiceFile.name,
+              storage_path: storagePath,
+              doc_type: 'INVOICE',
+              document_type_code: 'INVOICE',
+              uploaded_by: profileId ?? null,
+            })
+            .select('id')
+            .single()
+
+          if (docError) {
+            throw docError
+          }
+
+          if (docData) {
+            invoiceDocumentId = docData.id
           }
         }
         
@@ -2518,29 +2746,32 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         let signOffDocumentId = null
         
         if (supplierSignOff.signatureType === 'UPLOADED_DOCUMENT' && supplierSignOff.documentFile) {
-          const storagePath = `supplies/${newSupplyId}/signatures/signature_${Date.now()}_${supplierSignOff.documentFile.name}`
-          const { error: uploadError } = await supabase.storage
+          const storagePath = buildStorageObjectPath(
+            `supplies/${newSupplyId}/signatures`,
+            `signature_${supplierSignOff.documentFile.name}`
+          )
+          await uploadStoredFile(storagePath, supplierSignOff.documentFile)
+
+          const { data: docData, error: docError } = await supabase
             .from('documents')
-            .upload(storagePath, supplierSignOff.documentFile)
-          
-          if (!uploadError) {
-            const { data: docData, error: docError } = await supabase
-              .from('documents')
-              .insert({
-                owner_type: 'supply',
-                owner_id: newSupplyId,
-                name: supplierSignOff.documentFile.name,
-                storage_path: storagePath,
-                doc_type: 'SIGNATURE',
-                document_type_code: 'SIGNATURE',
-                uploaded_by: profileId ?? null,
-              })
-              .select('id')
-              .single()
-            
-            if (!docError && docData) {
-              signOffDocumentId = docData.id
-            }
+            .insert({
+              owner_type: 'supply',
+              owner_id: newSupplyId,
+              name: supplierSignOff.documentFile.name,
+              storage_path: storagePath,
+              doc_type: 'SIGNATURE',
+              document_type_code: 'SIGNATURE',
+              uploaded_by: profileId ?? null,
+            })
+            .select('id')
+            .single()
+
+          if (docError) {
+            throw docError
+          }
+
+          if (docData) {
+            signOffDocumentId = docData.id
           }
         }
 
@@ -2603,7 +2834,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       toast.success('Supply captured successfully.')
       const createdSupplyId = newSupplyId
       setFormData(getInitialFormData())
-      setQualityEntries(createInitialQualityEntries(qualityParameters))
+      setQualityEntriesByBatchKey({})
       setSupplyDocuments({
         invoiceNumber: '',
         driverLicenseName: '',
@@ -2657,13 +2888,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     }
     setAddCoaUploading(true)
     try {
-      const storagePath = `suppliers/${supplierId}/certificates/coa_${Date.now()}_${addCoaFile.name}`
-      const { error: uploadError } = await supabase.storage
-        .from('documents')
-        .upload(storagePath, addCoaFile)
-      if (uploadError) {
-        throw uploadError
-      }
+      const storagePath = buildStorageObjectPath(`suppliers/${supplierId}/certificates`, `coa_${addCoaFile.name}`)
+      await uploadStoredFile(storagePath, addCoaFile)
       const expiryToUse = addCoaExpiry.trim() ? addCoaExpiry.trim() : null
       const { error: insertError } = await supabase.from('documents').insert({
         owner_type: 'supplier',
@@ -2712,7 +2938,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId).maybeSingle(),
           supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId).maybeSingle(),
           supabase.from('supply_packaging_quality_check_items').select('*'),
-          supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId).order('id', { ascending: false }).limit(1),
+          supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId).order('id', { ascending: false }),
           supabase.from('supply_quality_check_items').select('*'),
           supabase.from('supply_supplier_sign_offs').select('*').eq('supply_id', supplyId).maybeSingle(),
           supabase
@@ -2762,10 +2988,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         ;(packagingParamsData ?? []).forEach((p: { id: number; code: string | null; name?: string | null }) => {
           packagingParamMap.set(p.id, normalizePackagingParameterCode(p.code || p.name))
         })
-        const qualityCheck = qualityChecksData?.[0] ?? null
-        const qualityItems = (qualityItemsData ?? []).filter(
-          (i: { quality_check_id?: number }) => qualityCheck && i.quality_check_id === (qualityCheck as { id: number }).id,
-        ) as { parameter_id: number; score: number | null; remarks: string | null; results: string | null }[]
+        const qualityChecks = (qualityChecksData ?? []) as Array<{ id: number; lot_id?: number | null }>
+        const qualityCheckIds = qualityChecks.map((check) => Number(check.id)).filter((id) => Number.isFinite(id))
+        const qualityItems = (qualityItemsData ?? []).filter((item: { quality_check_id?: number }) =>
+          qualityCheckIds.includes(Number(item.quality_check_id)),
+        ) as Array<{ quality_check_id: number; parameter_id: number; score: number | null; remarks: string | null; results: string | null }>
         const signOff = signOffData as Record<string, unknown> | null
         const supplyCategoryCode = String(supply.category_code ?? 'PRODUCT').toUpperCase()
 
@@ -2787,11 +3014,12 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             received_by: currentUserName,
             doc_status: String(supply.doc_status ?? STATUS_OPTIONS[0]),
             supply_batches: [
-              {
-                batch_id: null,
-                lot_no: '',
-                is_locked: false,
-                product_id: '',
+        {
+          batch_id: null,
+          temp_key: createBatchTempKey(),
+          lot_no: '',
+          is_locked: false,
+          product_id: '',
                 unit_id: '',
                 qty: '',
                 accepted_qty: '0',
@@ -2838,6 +3066,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                   const rejected = Number(batch.rejected_qty ?? received - accepted)
                   return {
                     batch_id: Number(batch.id),
+                    temp_key: `edit_${String(batch.id)}`,
                     lot_no: String(batch.lot_no ?? ''),
                     is_locked: lockedBatchIds.has(Number(batch.id)),
                     product_id: String(batch.product_id),
@@ -2852,6 +3081,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               : [
                   {
                     batch_id: null,
+                    temp_key: createBatchTempKey(),
                     lot_no: '',
                     is_locked: false,
                     product_id: '',
@@ -2907,18 +3137,51 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           odor: toYesNoNa(packagingMap.odor),
           strengthIntegrity: toStrengthIntegrity(packagingMap.strengthIntegrity),
         })
-        const entries: QualityEntries = {}
+        const entriesByQualityCheckId = new Map<number, QualityEntries>()
+        qualityChecks.forEach((check) => {
+          entriesByQualityCheckId.set(Number(check.id), createInitialQualityEntries(qualityParameters))
+        })
         qualityItems.forEach((item) => {
+          const checkEntries =
+            entriesByQualityCheckId.get(Number(item.quality_check_id)) ??
+            createInitialQualityEntries(qualityParameters)
           const param = qualityParameters.find((p) => p.id === item.parameter_id)
           if (param?.code) {
-            entries[param.code] = {
+            checkEntries[param.code] = {
               score: item.score ?? 3,
               remarks: item.remarks ?? '',
               results: item.results ?? '',
             }
+            entriesByQualityCheckId.set(Number(item.quality_check_id), checkEntries)
           }
         })
-        setQualityEntries({ ...createInitialQualityEntries(qualityParameters), ...entries })
+
+        const lotQualityEntries = new Map<number, QualityEntries>()
+        let legacyEntries: QualityEntries | null = null
+        qualityChecks.forEach((check) => {
+          const resolvedEntries = entriesByQualityCheckId.get(Number(check.id)) ?? createInitialQualityEntries(qualityParameters)
+          const lotId = Number(check.lot_id)
+          if (Number.isFinite(lotId)) {
+            lotQualityEntries.set(lotId, resolvedEntries)
+          } else if (!legacyEntries) {
+            legacyEntries = resolvedEntries
+          }
+        })
+
+        const batchEntriesByKey: Record<string, QualityEntries> = {}
+        const loadedBatches =
+          batches.length > 0
+            ? batches
+            : [{ id: -1, lot_no: '', product_id: 0, unit_id: null, received_qty: 0, accepted_qty: 0, rejected_qty: 0 }]
+        loadedBatches.forEach((batch, index) => {
+          const batchId = Number(batch.id)
+          const batchKey = Number.isFinite(batchId) ? `batch:${batchId}` : `temp:load_${index}`
+          batchEntriesByKey[batchKey] =
+            lotQualityEntries.get(batchId) ??
+            legacyEntries ??
+            createInitialQualityEntries(qualityParameters)
+        })
+        setQualityEntriesByBatchKey(batchEntriesByKey)
         setSupplierSignOff({
           signatureType: signOff?.signature_type === 'E_SIGNATURE' ? 'E_SIGNATURE' : signOff?.signature_type === 'UPLOADED_DOCUMENT' ? 'UPLOADED_DOCUMENT' : '',
           signatureData: (signOff?.signature_data as string) ?? null,
@@ -2953,7 +3216,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     setEditingSupplyId(null)
     setEditLoadDone(false)
     setFormData(getInitialFormData())
-    setQualityEntries(createInitialQualityEntries(qualityParameters))
+    setQualityEntriesByBatchKey({})
     setSupplyDocuments({
       invoiceNumber: '',
       driverLicenseName: '',
@@ -3079,7 +3342,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       initialData.warehouse_id = String(warehouses[0]!.id)
     }
     setFormData(initialData)
-    setQualityEntries(createInitialQualityEntries(qualityParameters))
+    setQualityEntriesByBatchKey({})
     setSupplyDocuments({
       invoiceNumber: '',
       driverLicenseName: '',
@@ -3123,7 +3386,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     if (!isEditingSupply) {
       return STEPS.map((label, index) => ({ label, stepIndex: index }))
     }
-    return STEPS.slice(1, 7).map((label, index) => ({ label, stepIndex: index + 1 }))
+    return STEPS.slice(1).map((label, index) => ({ label, stepIndex: index + 1 }))
   }, [isEditingSupply, isOperationalFlow])
   const minimumModalStepIndex = isEditingSupply ? 1 : 0
   const lastModalStepIndex =
@@ -3182,31 +3445,30 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   }, [suppliersError])
 
   useEffect(() => {
-    setQualityEntries((previous) => {
-      const next = { ...previous }
+    setQualityEntriesByBatchKey((previous) => {
+      const activeKeys = new Set(
+        formData.supply_batches.map((batch, index) => getSupplyBatchQualityKey(batch, index)),
+      )
+      const next: Record<string, QualityEntries> = {}
       let changed = false
 
-      qualityParameters.forEach((parameter) => {
-        if (!next[parameter.code]) {
-          next[parameter.code] = {
-            score: 3,
-            remarks: '',
-            results: '',
-          }
+      activeKeys.forEach((batchKey) => {
+        const synced = syncQualityEntriesWithParameters(qualityParameters, previous[batchKey])
+        next[batchKey] = synced
+        if (!previous[batchKey] || previous[batchKey] !== synced) {
           changed = true
         }
       })
 
-      Object.keys(next).forEach((code) => {
-        if (!qualityParameters.some((parameter) => parameter.code === code)) {
-          delete next[code as keyof QualityEntries]
+      Object.keys(previous).forEach((batchKey) => {
+        if (!activeKeys.has(batchKey)) {
           changed = true
         }
       })
 
       return changed ? next : previous
     })
-  }, [qualityParameters])
+  }, [formData.supply_batches, qualityParameters])
 
   const loadReferenceData = useCallback(async () => {
     try {
@@ -3251,11 +3513,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           defaultRemarks: '',
         }))
         setQualityParameters(mappedParameters)
-        // Initialize quality entries with fetched parameters
-        setQualityEntries(createInitialQualityEntries(mappedParameters))
       } else {
         setQualityParameters([])
-        setQualityEntries({})
+        setQualityEntriesByBatchKey({})
         toast.warning('No quality parameters found in database. Please configure quality parameters in settings.')
       }
     } catch (error) {
@@ -3284,7 +3544,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           .select('id, category_code, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
-        supabase.from('supply_batches').select('id, supply_id, current_qty, received_qty, accepted_qty, quality_status, unit_price'),
+        supabase.from('supply_batches').select('id, supply_id, lot_no, product_id, unit_id, current_qty, received_qty, accepted_qty, rejected_qty, quality_status, unit_price'),
         supabase.from('supply_quality_checks').select('id, supply_id'),
         supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id, results'),
         supabase.from('user_profiles').select('id, full_name, email'),
@@ -3914,12 +4174,14 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                           options={supplierSelectOptions}
                           value={formData.supplier_id}
                           onChange={(value) => handleInputChange('supplier_id', value)}
-                          placeholder={suppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
-                          disabled={isSubmitting}
+                          placeholder={suppliersLoading || categorySuppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
+                          disabled={isSubmitting || categorySuppliersLoading}
                           required
                           emptyMessage={
-                            supplierList.length === 0
-                              ? 'No suppliers found. Add suppliers under Partner → Suppliers.'
+                            suppliersLoading || categorySuppliersLoading
+                              ? 'Loading suppliers...'
+                              : allowedSupplierTypeCodes.length === 0
+                              ? 'No supplier type codes configured for this category.'
                               : filteredSupplierList.length === 0
                               ? 'No suppliers match the selected category.'
                               : 'No match'
@@ -3993,10 +4255,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                           options={supplierSelectOptions}
                           value={formData.supplier_id}
                           onChange={(value) => handleInputChange('supplier_id', value)}
-                          placeholder={suppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
-                          disabled={isSubmitting}
+                          placeholder={suppliersLoading || categorySuppliersLoading ? 'Loading suppliers...' : 'Select supplier'}
+                          disabled={isSubmitting || categorySuppliersLoading}
                           required
-                          emptyMessage="No suppliers found"
+                          emptyMessage={
+                            suppliersLoading || categorySuppliersLoading
+                              ? 'Loading suppliers...'
+                              : allowedSupplierTypeCodes.length === 0
+                              ? 'No supplier type codes configured for this category.'
+                              : 'No suppliers match the selected category.'
+                          }
                         />
                       </div>
 
@@ -4356,125 +4624,21 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 5 && (
-                  <section className={sectionCardClass}>
-                    <div className="mb-6 flex items-center justify-between gap-4">
-                      <div>
-                        <h3 className="text-lg font-semibold text-text-dark">Quality evaluation</h3>
-                        <p className="text-sm text-text-dark/70">
-                          Score each parameter and capture remarks for transparency.
-                        </p>
-                      </div>
-                    </div>
-
-                    <QualityEvaluationTable
-                      parameters={qualityParameters}
-                      entries={qualityEntries}
-                      legend={SUPPLY_QUALITY_SCORE_LEGEND}
-                      onEntryChange={handleQualityEntryChange}
-                    />
-                  </section>
-                )}
-
-                {currentStep === 6 && (
                   <section className="space-y-6">
-                    <div className={sectionCardClass}>
-                      <div className="mb-4">
-                        <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">Finalize supply</h3>
-                        <p className="text-sm text-text-dark/70 dark:text-slate-300">
-                          Confirm the outcome and key details before submission.
-                        </p>
-                      </div>
-                      <div className="grid gap-6 lg:grid-cols-12">
-                        <div className="space-y-2 lg:col-span-4">
-                          <Label htmlFor="doc_status_review">Supply status *</Label>
-                          <select
-                            id="doc_status_review"
-                            required
-                            className={baseFieldClass}
-                            value={formData.doc_status}
-                            onChange={(event) => handleInputChange('doc_status', event.target.value)}
-                          >
-                            <option value="">Select status</option>
-                            {STATUS_OPTIONS.map((status) => (
-                              <option key={status} value={status}>
-                                {status}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-xs text-text-dark/60 dark:text-slate-400">
-                            Set the final state after completing quality evaluation.
-                          </p>
-                        </div>
-                        <div className="space-y-2 lg:col-span-4">
-                          <Label htmlFor="review_received_at">Received at</Label>
-                          <Input
-                            id="review_received_at"
-                            readOnly
-                            value={formatDateTime(formData.received_at)}
-                            className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
-                          />
-                        </div>
-                        <div className="space-y-2 lg:col-span-4">
-                          <Label htmlFor="review_received_by">Received by</Label>
-                          <Input
-                            id="review_received_by"
-                            readOnly
-                            value={formData.received_by}
-                            className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
-                          />
-                        </div>
-                      </div>
-                      <dl className="mt-6 grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
-                            Document number
-                          </dt>
-                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
-                            {formData.doc_no}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
-                            Warehouse
-                          </dt>
-                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
-                            {warehouseLabelMap.get(parseInt(formData.warehouse_id, 10)) || 'Not set'}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
-                            Supplier
-                          </dt>
-                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
-                            {supplierLabelMap.get(parseInt(formData.supplier_id, 10)) || 'Not set'}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60 dark:text-slate-400">
-                            Quality score
-                          </dt>
-                          <dd className="text-sm font-medium text-text-dark dark:text-slate-100">
-                            {qualityAverageScore ?? 'Pending'}
-                          </dd>
-                        </div>
-                      </dl>
-                    </div>
-
                     <div className={sectionCardClass}>
                       <div className="mb-6">
                         <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
                           Supply batches
                         </h3>
                         <p className="text-sm text-text-dark/70 dark:text-slate-300">
-                          Enter each batch after completing quality evaluation, then allocate accepted and rejected
-                          quantities.
+                          Enter each batch and allocation. Quality evaluation is done in the next step per batch.
                         </p>
                       </div>
 
                       <div className="space-y-6">
                         {formData.supply_batches.map((batch, index) => (
                           <div
-                            key={index}
+                            key={batch.batch_id != null ? `batch-${batch.batch_id}` : `temp-${batch.temp_key ?? index}`}
                             className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-slate-500"
                           >
                             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -4654,14 +4818,18 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                         </Button>
                       </div>
                     </div>
+                  </section>
+                )}
 
+                {currentStep === 6 && (
+                  <section className="space-y-6">
                     <div className={sectionCardClass}>
                       <div className="mb-4">
                         <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
-                          Review quality evaluation
+                          Quality evaluation per batch
                         </h3>
                         <p className="text-sm text-text-dark/70 dark:text-slate-300">
-                          Confirm recorded scores before submitting the supply.
+                          Capture quality results independently for each lot.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
@@ -4669,28 +4837,49 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                           Average score: {qualityAverageScore ?? '—'}
                         </span>
                         <span className="inline-flex items-center rounded-full bg-olive-light/40 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-text-dark/70 dark:bg-slate-900/50 dark:text-slate-200">
-                          Entries: {qualityParameters.length}
+                          Batches: {formData.supply_batches.length}
                         </span>
                       </div>
-                      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                        {qualityParameters.map((parameter) => {
-                          const entry = qualityEntries[parameter.code]
-                          const remarks = entry?.remarks?.trim() ? String(entry.remarks.trim()) : 'No remarks'
+                      <div className="mt-4 space-y-4">
+                        {formData.supply_batches.map((batch, index) => {
+                          const batchKey = getSupplyBatchQualityKey(batch, index)
+                          const entries = qualityEntriesByBatchKey[batchKey] ?? createInitialQualityEntries(qualityParameters)
+                          const assessment = evaluateBatchQuality(entries)
+                          const batchProduct = products.find((product) => String(product.id) === batch.product_id)
                           return (
-                            <div
-                              key={`review-quality-${parameter.code}`}
-                              className="flex min-h-[5.5rem] flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-3 py-2.5 shadow-sm transition hover:border-olive-light/70 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:border-slate-500"
+                            <details
+                              key={`quality-batch-${batchKey}`}
+                              className="rounded-xl border border-olive-light/40 bg-white/90 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/70"
+                              open
                             >
-                              <div className="flex items-start justify-between gap-3">
-                                <p className="text-sm font-semibold text-text-dark dark:text-slate-100">
-                                  {parameter.name}
-                                </p>
-                                <span className="inline-flex items-center rounded-full bg-olive-light/40 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-dark/80 dark:bg-slate-900/50 dark:text-slate-100">
-                                  {entry?.score ?? '—'}
+                              <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3">
+                                <div className="space-y-1">
+                                  <p className="text-sm font-semibold text-text-dark dark:text-slate-100">
+                                    {batch.lot_no?.trim() || `Batch ${index + 1}`} {batchProduct?.name ? `• ${batchProduct.name}` : ''}
+                                  </p>
+                                  <p className="text-xs text-text-dark/70 dark:text-slate-300">
+                                    Received {batch.qty || '0'} • Accepted {batch.accepted_qty || '0'} • Rejected {batch.rejected_qty || '0'}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                                    assessment.checkStatus === 'PASS'
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-red-100 text-red-700'
+                                  }`}
+                                >
+                                  {assessment.checkStatus} • Score {assessment.overallScore ?? '—'}
                                 </span>
+                              </summary>
+                              <div className="mt-4">
+                                <QualityEvaluationTable
+                                  parameters={qualityParameters}
+                                  entries={entries}
+                                  legend={SUPPLY_QUALITY_SCORE_LEGEND}
+                                  onEntryChange={(code, entry) => handleQualityEntryChange(batchKey, code, entry)}
+                                />
                               </div>
-                              <p className="mt-3 text-sm text-text-dark/70 dark:text-slate-200">{remarks}</p>
-                            </div>
+                            </details>
                           )
                         })}
                       </div>

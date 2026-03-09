@@ -13,7 +13,16 @@ import { useSuppliers } from '@/hooks/useSuppliers'
 import { useSupplierTypes } from '@/hooks/useSupplierTypes'
 import { useDocumentTypes } from '@/hooks/useDocumentTypes'
 import { CameraCapture } from '@/components/CameraCapture'
-import { Camera } from 'lucide-react'
+import { Camera, Plus, X } from 'lucide-react'
+import { buildStorageObjectPath, uploadStoredFile } from '@/lib/fileStorage'
+import {
+  createSupplierContactEntry,
+  getAdditionalSupplierContacts,
+  getPrimarySupplierContact,
+  normalizeSupplierContacts,
+  type SupplierContactRecord,
+  type SupplierContactFormEntry,
+} from '@/lib/supplierContacts'
 
 type ExistingDocumentFile = {
   id?: unknown
@@ -52,6 +61,8 @@ type FormData = {
   primary_contact_name: string
   primary_contact_email: string
   primary_contact_phone: string
+  primary_contact_role: string
+  additional_contacts: SupplierContactFormEntry[]
   supplier_age: string
   gender: string
   number_of_employees: string
@@ -253,16 +264,25 @@ const groupDocumentRows = (rows: Array<{ id?: unknown; doc_type?: unknown; docum
   }
 }
 
-const createFormDataFromSupplier = (supplier: { name?: unknown; supplier_type?: unknown; phone?: unknown; email?: unknown; country?: unknown; address?: unknown; primary_contact_name?: unknown; primary_contact_email?: unknown; primary_contact_phone?: unknown; supplier_age?: unknown; gender?: unknown; number_of_employees?: unknown; number_of_dependants?: unknown; bank?: unknown; account_number?: unknown; branch?: unknown } | null, groupedDocuments: { documents?: ExistingDocumentGroup[]; proof?: ExistingProofOfResidence[] } | null): FormData => ({
+const createFormDataFromSupplier = (
+  supplier: { name?: unknown; supplier_type?: unknown; phone?: unknown; email?: unknown; country?: unknown; address?: unknown; primary_contact_name?: unknown; primary_contact_email?: unknown; primary_contact_phone?: unknown; supplier_age?: unknown; gender?: unknown; number_of_employees?: unknown; number_of_dependants?: unknown; bank?: unknown; account_number?: unknown; branch?: unknown } | null,
+  groupedDocuments: { documents?: ExistingDocumentGroup[]; proof?: ExistingProofOfResidence[] } | null,
+  contacts: SupplierContactRecord[] = []
+): FormData => {
+  const primaryContact = getPrimarySupplierContact(contacts, supplier)
+
+  return ({
   name: String(supplier?.name ?? ''),
   supplier_type: String(supplier?.supplier_type ?? ''),
   phone: String(supplier?.phone ?? ''),
   email: String(supplier?.email ?? ''),
   country: String(supplier?.country ?? 'South Africa'),
   address: String(supplier?.address ?? ''),
-  primary_contact_name: String(supplier?.primary_contact_name ?? ''),
-  primary_contact_email: String(supplier?.primary_contact_email ?? ''),
-  primary_contact_phone: String(supplier?.primary_contact_phone ?? ''),
+  primary_contact_name: primaryContact.name,
+  primary_contact_email: primaryContact.email,
+  primary_contact_phone: primaryContact.phone,
+  primary_contact_role: primaryContact.role,
+  additional_contacts: getAdditionalSupplierContacts(contacts),
   supplier_age: String(supplier?.supplier_age ?? ''),
   gender: String(supplier?.gender ?? ''),
   number_of_employees: String(supplier?.number_of_employees ?? ''),
@@ -275,6 +295,7 @@ const createFormDataFromSupplier = (supplier: { name?: unknown; supplier_type?: 
   existingDocuments: groupedDocuments?.documents ?? [],
   existingProofOfResidence: groupedDocuments?.proof ?? [],
 })
+}
 
 const baseFieldClass =
   'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40'
@@ -389,6 +410,17 @@ function SupplierEdit() {
         console.warn('Unable to load supplier documents', docsError)
       }
 
+      const { data: supplierContacts, error: contactsError } = await supabase
+        .from('supplier_contacts')
+        .select('id, name, email, phone, role, is_primary')
+        .eq('supplier_id', supplierId)
+        .order('is_primary', { ascending: false })
+        .order('id', { ascending: true })
+
+      if (contactsError) {
+        console.warn('Unable to load supplier contacts', contactsError)
+      }
+
       const grouped = groupDocumentRows(docRows ?? [])
       const initialExpiry: Record<string, string> = {}
       grouped.documents.forEach((group) => {
@@ -399,7 +431,7 @@ function SupplierEdit() {
         })
       })
       setSupplierRecord(supplier)
-      setFormData(createFormDataFromSupplier(supplier, grouped))
+      setFormData(createFormDataFromSupplier(supplier, grouped, supplierContacts ?? []))
       setDocumentsToDelete(new Set())
       setExistingDocumentExpiry(initialExpiry)
       setFormErrors(createEmptyFormErrors())
@@ -410,7 +442,7 @@ function SupplierEdit() {
     fetchSupplier()
   }, [supplierId])
 
-  const filterErrorsForStep = (errors: { fields: Record<string, string>; documents: Record<string, string>; proof_of_residence: string | null } | null, step: { fieldKeys?: string[]; includeDocuments?: boolean; includeProofOfResidence?: boolean }) => {
+  const filterErrorsForStep = (errors: { fields: Record<string, string>; documents: Record<string, string>; proof_of_residence: string | null } | null, step: { id?: string; fieldKeys?: string[]; includeDocuments?: boolean; includeProofOfResidence?: boolean }) => {
     if (!errors) {
       return null
     }
@@ -429,6 +461,14 @@ function SupplierEdit() {
 
     if (step.includeProofOfResidence) {
       filtered.proof_of_residence = errors.proof_of_residence
+    }
+
+    if (step.id === 'additional') {
+      Object.entries(errors.fields).forEach(([field, message]) => {
+        if (field.startsWith('contact_email_')) {
+          filtered.fields[field] = message
+        }
+      })
     }
 
     return hasValidationErrors(filtered) ? filtered : null
@@ -464,6 +504,51 @@ function SupplierEdit() {
       if (!prev.fields.supplier_type) return prev
       const nextFields = { ...prev.fields }
       delete nextFields.supplier_type
+      return { ...prev, fields: nextFields }
+    })
+  }
+
+  const handleAdditionalContactChange = (
+    clientId: string,
+    field: keyof Omit<SupplierContactFormEntry, 'clientId'>,
+    value: string
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      additional_contacts: prev.additional_contacts.map((contact) =>
+        contact.clientId === clientId ? { ...contact, [field]: value } : contact
+      ),
+    }))
+    setFormErrors((prev) => {
+      const errorKey = `contact_email_${clientId}`
+      if (!prev.fields[errorKey]) {
+        return prev
+      }
+      const nextFields = { ...prev.fields }
+      delete nextFields[errorKey]
+      return { ...prev, fields: nextFields }
+    })
+  }
+
+  const handleAddAdditionalContact = () => {
+    setFormData((prev) => ({
+      ...prev,
+      additional_contacts: [...prev.additional_contacts, createSupplierContactEntry()],
+    }))
+  }
+
+  const handleRemoveAdditionalContact = (clientId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      additional_contacts: prev.additional_contacts.filter((contact) => contact.clientId !== clientId),
+    }))
+    setFormErrors((prev) => {
+      const errorKey = `contact_email_${clientId}`
+      if (!prev.fields[errorKey]) {
+        return prev
+      }
+      const nextFields = { ...prev.fields }
+      delete nextFields[errorKey]
       return { ...prev, fields: nextFields }
     })
   }
@@ -621,6 +706,13 @@ function SupplierEdit() {
       errors.fields.primary_contact_email = 'Enter a valid email address.'
     }
 
+    data.additional_contacts.forEach((contact) => {
+      const trimmedEmail = contact.email?.trim()
+      if (trimmedEmail && !isValidEmail(trimmedEmail)) {
+        errors.fields[`contact_email_${contact.clientId}`] = 'Enter a valid email address.'
+      }
+    })
+
     const integerFieldValidations = [
       { field: 'supplier_age', label: 'Supplier age' },
       { field: 'number_of_employees', label: 'Number of employees' },
@@ -675,10 +767,24 @@ function SupplierEdit() {
     const halalFromNewUploads = hasHalalUploads(formData.documents)
     const isHalalCertified = halalFromExisting || halalFromNewUploads
 
+    const contactRows = normalizeSupplierContacts([
+      {
+        name: formData.primary_contact_name,
+        email: formData.primary_contact_email,
+        phone: formData.primary_contact_phone,
+        role: formData.primary_contact_role,
+      },
+      ...formData.additional_contacts,
+    ])
+
+    const primaryContact = contactRows[0] ?? null
+
     const payload = {
       name: requiredText(formData.name),
       supplier_type: formData.supplier_type || null,
-      primary_contact_name: optionalText(formData.primary_contact_name),
+      primary_contact_name: primaryContact?.name ?? null,
+      primary_contact_email: primaryContact?.email ?? null,
+      primary_contact_phone: primaryContact?.phone ?? null,
       phone: optionalText(formData.phone),
       email: optionalText(formData.email),
       country: optionalText(formData.country),
@@ -700,25 +806,57 @@ function SupplierEdit() {
         throw updateError
       }
 
-      const documentRows = formData.documents
-        .filter((entry) => entry.document_type_code && entry.files.length > 0)
-        .flatMap((entry) => {
+      const { error: deleteContactsError } = await supabase
+        .from('supplier_contacts')
+        .delete()
+        .eq('supplier_id', supplierRecord.id)
+
+      if (deleteContactsError) {
+        throw deleteContactsError
+      }
+
+      if (contactRows.length > 0) {
+        const { error: contactsError } = await supabase.from('supplier_contacts').insert(
+          contactRows.map((contact) => ({
+            supplier_id: supplierRecord.id,
+            name: contact.name,
+            email: contact.email,
+            phone: contact.phone,
+            role: contact.role,
+            is_primary: contact.is_primary,
+          }))
+        )
+
+        if (contactsError) {
+          throw contactsError
+        }
+      }
+
+      const documentRows = []
+      for (const entry of formData.documents.filter((item) => item.document_type_code && item.files.length > 0)) {
           const docType = documentTypeMap.get(entry.document_type_code)
           const requiresExpiry = docType?.has_expiry_date ?? false
-          return entry.files.map((file) => ({
+          for (const file of entry.files) {
+            const storagePath = buildStorageObjectPath(
+              `suppliers/${supplierRecord.id}/${requiresExpiry ? 'certificates' : 'documents'}`,
+              file.name
+            )
+            await uploadStoredFile(storagePath, file)
+            documentRows.push({
             owner_type: 'supplier',
             owner_id: supplierRecord.id,
             name: file.name,
             document_type_code: entry.document_type_code,
             doc_type: entry.document_type_code,
-            storage_path: `suppliers/${supplierRecord.id}/${requiresExpiry ? 'certificates/' : ''}${file.name}`,
+            storage_path: storagePath,
             expiry_date:
               requiresExpiry && entry.expiryDate && entry.expiryDate.toString().trim()
                 ? entry.expiryDate
                 : null,
             uploaded_by: profileId ?? null,
-          }))
-        })
+            })
+          }
+      }
 
       // For proof of residence, we need a document_type_code that exists in document_types table
       // Find a document type code for proof of residence, or use the first available one as fallback
@@ -730,17 +868,22 @@ function SupplierEdit() {
         dt.name?.toLowerCase().includes('residence')
       )?.code || documentTypes[0]?.code
 
-      const proofRows = proofDocTypeCode 
-        ? formData.proof_of_residence.map((file) => ({
+      const proofRows = []
+      if (proofDocTypeCode) {
+        for (const file of formData.proof_of_residence) {
+          const storagePath = buildStorageObjectPath(`suppliers/${supplierRecord.id}/proof-of-residence`, file.name)
+          await uploadStoredFile(storagePath, file)
+          proofRows.push({
             owner_type: 'supplier',
             owner_id: supplierRecord.id,
             name: file.name,
             document_type_code: proofDocTypeCode,
             doc_type: 'PROOF_OF_RESIDENCE',
-            storage_path: `suppliers/${supplierRecord.id}/proof-of-residence/${file.name}`,
+            storage_path: storagePath,
             uploaded_by: profileId ?? null,
-          }))
-        : [] // Skip if no valid document type code found
+          })
+        }
+      }
 
       const rowsToInsert = [...documentRows, ...proofRows]
 
@@ -1023,11 +1166,17 @@ function SupplierEdit() {
             {currentStep?.id === 'additional' && (
               <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1">
                 <section className={sectionCardClass}>
-                  <div>
-                    <h3 className="text-lg font-semibold text-text-dark">Primary contact</h3>
-                    <p className="text-sm text-text-dark/70">
-                      Keep the liaison details up to date for quick reach outs.
-                    </p>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-text-dark">Supplier contacts</h3>
+                      <p className="text-sm text-text-dark/70">
+                        Keep the primary contact and any additional supplier contacts on record.
+                      </p>
+                    </div>
+                    <Button type="button" variant="outline" onClick={handleAddAdditionalContact} disabled={saving}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Contact
+                    </Button>
                   </div>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5 sm:col-span-2">
@@ -1072,7 +1221,100 @@ function SupplierEdit() {
                         <p className="text-xs text-red-600">{formErrors.fields.primary_contact_email}</p>
                       )}
                     </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label htmlFor="primary_contact_role">Role</Label>
+                      <Input
+                        id="primary_contact_role"
+                        name="primary_contact_role"
+                        value={formData.primary_contact_role}
+                        onChange={handleChange}
+                        placeholder="Operations Manager"
+                        disabled={saving}
+                      />
+                    </div>
                   </div>
+
+                  {formData.additional_contacts.length > 0 && (
+                    <div className="mt-4 space-y-3 border-t border-olive-light/30 pt-4">
+                      {formData.additional_contacts.map((contact, index) => (
+                        <div key={contact.clientId} className="rounded-lg border border-olive-light/30 bg-white p-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-text-dark">Additional contact {index + 1}</p>
+                              <p className="text-xs text-text-dark/60">Extra supplier liaison details.</p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="text-text-dark/60 hover:text-red-600"
+                              onClick={() => handleRemoveAdditionalContact(contact.clientId)}
+                              disabled={saving}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-1.5 sm:col-span-2">
+                              <Label>Contact name</Label>
+                              <Input
+                                value={contact.name}
+                                onChange={(event) =>
+                                  handleAdditionalContactChange(contact.clientId, 'name', event.target.value)
+                                }
+                                placeholder="John Banda"
+                                disabled={saving}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label>Contact phone</Label>
+                              <Input
+                                value={contact.phone}
+                                onChange={(event) =>
+                                  handleAdditionalContactChange(contact.clientId, 'phone', event.target.value)
+                                }
+                                placeholder="+27 82 456 7890"
+                                disabled={saving}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label>Role</Label>
+                              <Input
+                                value={contact.role}
+                                onChange={(event) =>
+                                  handleAdditionalContactChange(contact.clientId, 'role', event.target.value)
+                                }
+                                placeholder="Accounts Contact"
+                                disabled={saving}
+                              />
+                            </div>
+                            <div className="space-y-1.5 sm:col-span-2">
+                              <Label>Contact email</Label>
+                              <Input
+                                type="email"
+                                value={contact.email}
+                                onChange={(event) =>
+                                  handleAdditionalContactChange(contact.clientId, 'email', event.target.value)
+                                }
+                                placeholder="john.banda@example.com"
+                                disabled={saving}
+                                className={
+                                  formErrors.fields[`contact_email_${contact.clientId}`]
+                                    ? 'border-red-300 focus-visible:ring-red-500'
+                                    : undefined
+                                }
+                              />
+                              {formErrors.fields[`contact_email_${contact.clientId}`] && (
+                                <p className="text-xs text-red-600">
+                                  {formErrors.fields[`contact_email_${contact.clientId}`]}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </section>
 
                 <section className={sectionCardClass}>

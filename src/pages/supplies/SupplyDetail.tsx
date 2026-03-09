@@ -49,12 +49,14 @@ interface SupplyLineItem {
 }
 
 interface SupplyBatchItem {
+  id?: number
   lot_no?: string
   product_id?: number
   product_name?: string
   product_sku?: string
   received_qty?: number
   accepted_qty?: number
+  rejected_qty?: number
   unit_id?: number | null
   quality_status?: string
   [key: string]: unknown
@@ -128,52 +130,52 @@ function SupplyDetail() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
 
-  const supply = (navigationState.supply ?? fetchedData?.supply) ?? null
-  const batches = Array.isArray(navigationState.supplyBatches)
-    ? navigationState.supplyBatches
-    : Array.isArray(fetchedData?.supplyBatches)
-      ? fetchedData!.supplyBatches
+  const supply = (fetchedData?.supply ?? navigationState.supply) ?? null
+  const batches = Array.isArray(fetchedData?.supplyBatches)
+    ? fetchedData!.supplyBatches
+    : Array.isArray(navigationState.supplyBatches)
+      ? navigationState.supplyBatches
       : []
-  const qualityChecks = Array.isArray(navigationState.supplyQualityChecks)
-    ? navigationState.supplyQualityChecks
-    : Array.isArray(fetchedData?.supplyQualityChecks)
-      ? fetchedData!.supplyQualityChecks
+  const qualityChecks = Array.isArray(fetchedData?.supplyQualityChecks)
+    ? fetchedData!.supplyQualityChecks
+    : Array.isArray(navigationState.supplyQualityChecks)
+      ? navigationState.supplyQualityChecks
       : []
-  const qualityItems = Array.isArray(navigationState.supplyQualityItems)
-    ? navigationState.supplyQualityItems
-    : Array.isArray(fetchedData?.supplyQualityItems)
-      ? fetchedData!.supplyQualityItems
+  const qualityItems = Array.isArray(fetchedData?.supplyQualityItems)
+    ? fetchedData!.supplyQualityItems
+    : Array.isArray(navigationState.supplyQualityItems)
+      ? navigationState.supplyQualityItems
       : []
   const qualityParameters =
-    Array.isArray(navigationState.qualityParameters) && navigationState.qualityParameters.length > 0
-      ? navigationState.qualityParameters
-      : (fetchedData?.qualityParameters?.length
-          ? fetchedData.qualityParameters
-          : SUPPLY_QUALITY_PARAMETERS) as QualityParameterWithId[]
-  const supplyDocuments = Array.isArray(navigationState.supplyDocuments)
-    ? navigationState.supplyDocuments
-    : Array.isArray(fetchedData?.supplyDocuments)
-      ? fetchedData!.supplyDocuments
+    (fetchedData?.qualityParameters?.length
+      ? fetchedData.qualityParameters
+      : Array.isArray(navigationState.qualityParameters) && navigationState.qualityParameters.length > 0
+        ? navigationState.qualityParameters
+        : SUPPLY_QUALITY_PARAMETERS) as QualityParameterWithId[]
+  const supplyDocuments = Array.isArray(fetchedData?.supplyDocuments)
+    ? fetchedData!.supplyDocuments
+    : Array.isArray(navigationState.supplyDocuments)
+      ? navigationState.supplyDocuments
       : []
-  const supplyActivities = Array.isArray(navigationState.supplyActivities)
-    ? navigationState.supplyActivities
-    : Array.isArray(fetchedData?.supplyActivities)
-      ? fetchedData!.supplyActivities
+  const supplyActivities = Array.isArray(fetchedData?.supplyActivities)
+    ? fetchedData!.supplyActivities
+    : Array.isArray(navigationState.supplyActivities)
+      ? navigationState.supplyActivities
       : []
-  const vehicleInspection = navigationState.vehicleInspection ?? fetchedData?.vehicleInspection ?? null
-  const packagingCheck = navigationState.packagingCheck ?? fetchedData?.packagingCheck ?? null
-  const packagingItems = Array.isArray(navigationState.packagingItems)
-    ? navigationState.packagingItems
-    : Array.isArray(fetchedData?.packagingItems)
-      ? fetchedData!.packagingItems
+  const vehicleInspection = fetchedData?.vehicleInspection ?? navigationState.vehicleInspection ?? null
+  const packagingCheck = fetchedData?.packagingCheck ?? navigationState.packagingCheck ?? null
+  const packagingItems = Array.isArray(fetchedData?.packagingItems)
+    ? fetchedData!.packagingItems
+    : Array.isArray(navigationState.packagingItems)
+      ? navigationState.packagingItems
       : []
-  const supplierSignOff = navigationState.supplierSignOff ?? fetchedData?.supplierSignOff ?? null
+  const supplierSignOff = fetchedData?.supplierSignOff ?? navigationState.supplierSignOff ?? null
   const [packagingParameters, setPackagingParameters] = useState<{ [key: number]: { code: string; name: string } }>({})
   const [documentTypes, setDocumentTypes] = useState<{ [key: string]: string }>({})
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
 
   const supplyId = supplyIdParam ? parseInt(supplyIdParam, 10) : null
-  const shouldFetch = !supply && supplyId != null && Number.isFinite(supplyId)
+  const shouldFetch = supplyId != null && Number.isFinite(supplyId)
 
   useEffect(() => {
     if (!shouldFetch) return
@@ -337,24 +339,24 @@ function SupplyDetail() {
   }, [packagingItems, supplyDocuments])
 
   const supplierLookup = useMemo(
-    () => new Map(Object.entries(navigationState.supplierLookup ?? fetchedData?.supplierLookup ?? {})),
-    [navigationState.supplierLookup, fetchedData?.supplierLookup],
+    () => new Map(Object.entries(fetchedData?.supplierLookup ?? navigationState.supplierLookup ?? {})),
+    [fetchedData?.supplierLookup, navigationState.supplierLookup],
   )
   const warehouseLookup = useMemo(
-    () => new Map(Object.entries(navigationState.warehouseLookup ?? fetchedData?.warehouseLookup ?? {})),
-    [navigationState.warehouseLookup, fetchedData?.warehouseLookup],
+    () => new Map(Object.entries(fetchedData?.warehouseLookup ?? navigationState.warehouseLookup ?? {})),
+    [fetchedData?.warehouseLookup, navigationState.warehouseLookup],
   )
   const productLookup = useMemo(
-    () => new Map(Object.entries(navigationState.productLookup ?? fetchedData?.productLookup ?? {})),
-    [navigationState.productLookup, fetchedData?.productLookup],
+    () => new Map(Object.entries(fetchedData?.productLookup ?? navigationState.productLookup ?? {})),
+    [fetchedData?.productLookup, navigationState.productLookup],
   )
   const unitLookup = useMemo(
-    () => new Map(Object.entries(navigationState.unitLookup ?? fetchedData?.unitLookup ?? {})),
-    [navigationState.unitLookup, fetchedData?.unitLookup],
+    () => new Map(Object.entries(fetchedData?.unitLookup ?? navigationState.unitLookup ?? {})),
+    [fetchedData?.unitLookup, navigationState.unitLookup],
   )
   const profileLookup = useMemo(
-    () => new Map(Object.entries(navigationState.profileLookup ?? fetchedData?.profileLookup ?? {})),
-    [navigationState.profileLookup, fetchedData?.profileLookup],
+    () => new Map(Object.entries(fetchedData?.profileLookup ?? navigationState.profileLookup ?? {})),
+    [fetchedData?.profileLookup, navigationState.profileLookup],
   )
 
   const qualityParameterLookup = useMemo(() => {
@@ -435,6 +437,108 @@ function SupplyDetail() {
     primaryQualityCheck?.overall_score !== undefined && primaryQualityCheck?.overall_score !== null
       ? Number(primaryQualityCheck.overall_score)
       : null
+
+  const qualityCheckGroups = useMemo(() => {
+    if (!Array.isArray(qualityChecks) || qualityChecks.length === 0) {
+      return []
+    }
+
+    const orderMap = new Map(
+      SUPPLY_QUALITY_PARAMETERS.map((parameter, index) => [parameter.code, index]),
+    )
+    const rowsByCheckId = new Map<number, Array<{
+      id: string | number
+      name: string
+      results: unknown
+      score: number | null
+      remarks: unknown
+      code: string | null
+      order: number
+    }>>()
+
+    ;(qualityItems as Record<string, unknown>[]).forEach((item) => {
+      const checkId = Number(item.quality_check_id)
+      if (!Number.isFinite(checkId)) {
+        return
+      }
+      const metadata =
+        qualityParameterLookup.get(String(item.parameter_id)) ||
+        (item.parameter_code ? qualityParameterLookup.get(String(item.parameter_code)) : undefined)
+
+      let scoreValue = item.score
+      if (typeof scoreValue !== 'number') {
+        const parsedScore = Number.parseInt(String(scoreValue ?? ''), 10)
+        scoreValue = Number.isFinite(parsedScore) ? parsedScore : null
+      }
+      if (scoreValue === null) {
+        scoreValue = 4
+      }
+
+      const code =
+        (item.parameter_code as string | undefined) ??
+        (metadata && 'code' in metadata ? String(metadata.code) : undefined)
+
+      const row = {
+        id: (item.id as string | number | undefined) ?? `${checkId}-${String(item.parameter_id ?? item.parameter_code ?? 'parameter')}`,
+        name: (item.parameter_name as string | undefined) ?? metadata?.name ?? 'Quality parameter',
+        results: item.results ?? '',
+        score: scoreValue as number | null,
+        remarks: item.remarks ?? '',
+        code: code ?? null,
+        order: code && orderMap.has(code) ? Number(orderMap.get(code)) : Number.MAX_SAFE_INTEGER,
+      }
+      const previousRows = rowsByCheckId.get(checkId) ?? []
+      previousRows.push(row)
+      rowsByCheckId.set(checkId, previousRows)
+    })
+
+    const sortedBatches = [...(batches as SupplyBatchItem[])].sort((a, b) => {
+      const aId = Number(a.id ?? 0)
+      const bId = Number(b.id ?? 0)
+      return aId - bId
+    })
+    const batchById = new Map<number, SupplyBatchItem>()
+    sortedBatches.forEach((batch) => {
+      const batchId = Number(batch.id)
+      if (Number.isFinite(batchId)) {
+        batchById.set(batchId, batch)
+      }
+    })
+
+    const sortedChecks = [...(qualityChecks as Record<string, unknown>[])]
+      .sort((a, b) => {
+        const aTime = a?.evaluated_at ? new Date(String(a.evaluated_at)).getTime() : 0
+        const bTime = b?.evaluated_at ? new Date(String(b.evaluated_at)).getTime() : 0
+        return bTime - aTime
+      })
+
+    const legacyChecks = sortedChecks.filter((check) => !Number.isFinite(Number(check.lot_id)))
+    const legacyBatchMap = new Map<number, SupplyBatchItem>()
+    if (legacyChecks.length === sortedBatches.length && legacyChecks.length > 0) {
+      legacyChecks.forEach((check, index) => {
+        const checkId = Number(check.id)
+        const matchedBatch = sortedBatches[index]
+        if (Number.isFinite(checkId) && matchedBatch) {
+          legacyBatchMap.set(checkId, matchedBatch)
+        }
+      })
+    }
+
+    return sortedChecks
+      .map((check) => {
+        const checkId = Number(check.id)
+        const lotId = Number(check.lot_id)
+        const batch = Number.isFinite(lotId) ? batchById.get(lotId) : legacyBatchMap.get(checkId)
+        const productMeta = batch?.product_id != null ? (productLookup.get(String(batch.product_id)) as ProductEntry | undefined) : undefined
+        const rows = (rowsByCheckId.get(checkId) ?? []).sort((a, b) => a.order - b.order)
+        return {
+          check,
+          rows,
+          lotLabel: batch?.lot_no ? String(batch.lot_no) : Number.isFinite(lotId) ? `Lot #${lotId}` : 'Legacy quality check',
+          productName: productMeta?.name?.trim() || batch?.product_name || 'Product',
+        }
+      })
+  }, [qualityChecks, qualityItems, qualityParameterLookup, batches, productLookup])
 
   const handleBack = () => {
     navigate('/supplies')
@@ -1032,6 +1136,19 @@ function SupplyDetail() {
     return unitLabel ? `${displayValue} ${unitLabel}` : displayValue
   }
 
+  const getBatchRejectedQty = (batch: SupplyBatchItem): number => {
+    const explicitRejected = Number(batch.rejected_qty)
+    if (Number.isFinite(explicitRejected) && explicitRejected >= 0) {
+      return explicitRejected
+    }
+    const received = Number(batch.received_qty)
+    const accepted = Number(batch.accepted_qty)
+    if (Number.isFinite(received) && Number.isFinite(accepted)) {
+      return Math.max(received - accepted, 0)
+    }
+    return 0
+  }
+
   const getProductMeta = (productId: string | number | null | undefined): ProductEntry | null => {
     if (productId === undefined || productId === null) {
       return null
@@ -1083,8 +1200,7 @@ function SupplyDetail() {
         <div>
           <p className="font-medium text-text-dark">{String(batch.lot_no ?? '')}</p>
           <p className="text-xs text-text-dark/60">
-            {getProductMeta(batch.product_id)?.name?.trim() ?? batch.product_name ?? 'Product'} ·{' '}
-            {getProductMeta(batch.product_id)?.sku?.trim() ?? batch.product_sku ?? 'No SKU'}
+            {getProductMeta(batch.product_id)?.name?.trim() ?? batch.product_name ?? 'Product'}
           </p>
         </div>
       ),
@@ -1092,32 +1208,31 @@ function SupplyDetail() {
         <div className="text-right">
           <p className="font-medium text-text-dark">{batch.lot_no}</p>
           <p className="text-xs text-text-dark/60">
-            {getProductMeta(batch.product_id)?.name?.trim() ?? batch.product_name ?? 'Product'} ·{' '}
-            {getProductMeta(batch.product_id)?.sku?.trim() ?? batch.product_sku ?? 'No SKU'}
+            {getProductMeta(batch.product_id)?.name?.trim() ?? batch.product_name ?? 'Product'}
           </p>
         </div>
       ),
     },
     {
       key: 'quantities',
-      header: 'Qty (Received / Accepted)',
+      header: 'Qty (Accepted / Rejected)',
       render: (batch: SupplyBatchItem) => (
         <div className="text-right">
           <p className="font-medium text-text-dark">
-            {formatQuantityWithUnit(batch.received_qty ?? 0, batch.unit_id)}
+            {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)}
           </p>
           <p className="text-xs text-text-dark/60">
-            Accepted {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)}
+            Rejected {formatQuantityWithUnit(getBatchRejectedQty(batch), batch.unit_id)} · Accepted {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)} / Total {formatQuantityWithUnit(batch.received_qty ?? 0, batch.unit_id)}
           </p>
         </div>
       ),
       mobileRender: (batch: SupplyBatchItem) => (
         <div className="text-right">
           <p className="font-medium text-text-dark">
-            {formatQuantityWithUnit(batch.received_qty ?? 0, batch.unit_id)}
+            {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)}
           </p>
           <p className="text-xs text-text-dark/60">
-            Accepted {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)}
+            Rejected {formatQuantityWithUnit(getBatchRejectedQty(batch), batch.unit_id)} · Accepted {formatQuantityWithUnit(batch.accepted_qty ?? 0, batch.unit_id)} / Total {formatQuantityWithUnit(batch.received_qty ?? 0, batch.unit_id)}
           </p>
         </div>
       ),
@@ -1330,92 +1445,90 @@ function SupplyDetail() {
 
         <Card className="border-olive-light/30 bg-white">
           <CardHeader>
-            <CardTitle className="text-text-dark">Quality checks</CardTitle>
+            <CardTitle className="text-text-dark">Quality checks by product</CardTitle>
             <CardDescription>Inspection results recorded during receiving.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {qualityEvaluationRows.length === 0 ? (
-              primaryQualityCheck ? (
-                <div className="space-y-3 text-sm text-text-dark/70">
-                  <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
-                    {primaryQualityCheck?.status ? (
-                      <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                        Status {primaryQualityCheck.status}
-                      </span>
-                    ) : null}
-                    {primaryQualityCheck?.result ? (
-                      <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                        Result {primaryQualityCheck.result}
-                      </span>
-                    ) : null}
-                        {primaryQualityCheck?.evaluated_at ? (
-                      <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                        Evaluated {formatDateTime(primaryQualityCheck.evaluated_at)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p>No parameter-level evaluations were recorded.</p>
-                </div>
-              ) : (
-                <p className="text-sm text-text-dark/70">No quality checks recorded.</p>
-              )
+            {qualityCheckGroups.length === 0 ? (
+              <p className="text-sm text-text-dark/70">No quality checks recorded.</p>
             ) : (
-              <>
-                <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
-                  {primaryQualityCheck?.status ? (
-                    <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                      Status {primaryQualityCheck.status}
-                    </span>
-                  ) : null}
-                  {primaryQualityCheck?.result ? (
-                    <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                      Result {primaryQualityCheck.result}
-                    </span>
-                  ) : null}
-                  {overallScoreValue !== null && Number.isFinite(overallScoreValue) ? (
-                    <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                      Overall score {overallScoreValue.toFixed(2)}
-                    </span>
-                  ) : null}
-                  {primaryQualityCheck?.evaluated_at ? (
-                    <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                      Evaluated {formatDateTime(primaryQualityCheck.evaluated_at)}
-                    </span>
-                  ) : null}
-                  <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
-                    {qualityEvaluationRows.length} parameter
-                    {qualityEvaluationRows.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  {qualityEvaluationRows.map((row) => (
-                    <div
-                      key={row.id}
-                      className="flex h-full flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-4 py-3"
-                    >
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="space-y-1">
-                            <p className="text-sm font-medium text-text-dark">{row.name}</p>
-                            {row.results ? (
-                              <p className="text-xs text-text-dark/60">{row.results}</p>
-                            ) : null}
-                          </div>
-                          <span className="text-sm font-semibold text-text-dark">
-                            {row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : Number.isFinite(row.score) ? row.score : 'Pending'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-text-dark/70">
-                          {row.remarks?.trim() ? row.remarks.trim() : 'No remarks reported'}
-                        </p>
+              qualityCheckGroups.map((group) => {
+                const statusValue = String(group.check?.status ?? '')
+                const resultValue = String(group.check?.result ?? '')
+                const scoreValue =
+                  group.check?.overall_score !== undefined && group.check?.overall_score !== null
+                    ? Number(group.check.overall_score)
+                    : null
+
+                return (
+                  <div key={`quality-group-${String(group.check?.id ?? group.lotLabel)}`} className="space-y-3 rounded-xl border border-olive-light/40 bg-olive-light/10 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-text-dark">Quality checks for {group.productName}</p>
+                        <p className="text-xs text-text-dark/60">{group.lotLabel}</p>
                       </div>
-                      <div className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-text-dark/50">
-                        Parameter code: {row.code ?? 'N/A'}
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
+                        {statusValue ? (
+                          <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
+                            Status {statusValue}
+                          </span>
+                        ) : null}
+                        {resultValue ? (
+                          <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
+                            Result {resultValue}
+                          </span>
+                        ) : null}
+                        {scoreValue !== null && Number.isFinite(scoreValue) ? (
+                          <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
+                            Overall score {scoreValue.toFixed(2)}
+                          </span>
+                        ) : null}
+                        {group.check?.evaluated_at ? (
+                          <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
+                            Evaluated {formatDateTime(String(group.check.evaluated_at))}
+                          </span>
+                        ) : null}
+                        <span className="inline-flex items-center rounded-full bg-olive-light/30 px-3 py-1">
+                          {group.rows.length} parameter{group.rows.length === 1 ? '' : 's'}
+                        </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </>
+
+                    {group.rows.length === 0 ? (
+                      <p className="text-sm text-text-dark/70">No parameter-level evaluations were recorded.</p>
+                    ) : (
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                        {group.rows.map((row) => (
+                          <div
+                            key={String(row.id)}
+                            className="flex h-full flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-4 py-3"
+                          >
+                            <div className="space-y-2">
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="space-y-1">
+                                  <p className="text-sm font-medium text-text-dark">{row.name}</p>
+                                  {row.results ? (
+                                    <p className="text-xs text-text-dark/60">{String(row.results)}</p>
+                                  ) : null}
+                                </div>
+                                <span className="text-sm font-semibold text-text-dark">
+                                  {row.score === null || row.score === undefined || row.score === 4 ? 'N/A' : Number.isFinite(row.score) ? row.score : 'Pending'}
+                                </span>
+                              </div>
+                              <p className="text-xs text-text-dark/70">
+                                {String(row.remarks ?? '').trim() ? String(row.remarks).trim() : 'No remarks reported'}
+                              </p>
+                            </div>
+                            <div className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-text-dark/50">
+                              Parameter code: {row.code ?? 'N/A'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })
             )}
           </CardContent>
         </Card>

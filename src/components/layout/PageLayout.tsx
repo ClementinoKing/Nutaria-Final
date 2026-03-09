@@ -46,7 +46,7 @@ function PageLayout({
   mainClassName,
   stickyHeader = true,
 }: PageLayoutProps) {
-  const { user, logout } = useAuth()
+  const { user, profile, logout } = useAuth()
   const getIsDesktop = () => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : false)
   const [isDesktop, setIsDesktop] = useState(() => getIsDesktop())
   const [sidebarOpen, setSidebarOpen] = useState(() => getIsDesktop())
@@ -179,6 +179,7 @@ function PageLayout({
         setSidebarOpen={setSidebarOpen}
         activeItem={activeItem}
         user={user}
+        profile={profile}
         onLogout={logout}
         isDesktop={isDesktop}
       />

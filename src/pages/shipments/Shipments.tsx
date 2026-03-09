@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, ChangeEvent, FormEvent, MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, ChangeEvent, FormEvent, MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import PageLayout from '@/components/layout/PageLayout'
@@ -136,6 +136,13 @@ interface CarrierOption {
   name: string
 }
 
+interface CarrierFormData {
+  name: string
+  contact_name: string
+  phone: string
+  email: string
+}
+
 const statusOptions = [
   { value: 'PENDING', label: 'Pending' },
   { value: 'READY', label: 'Ready' },
@@ -257,11 +264,20 @@ function Shipments() {
   const [customers, setCustomers] = useState<Array<{ id: number; name: string }>>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([])
   const [carriers, setCarriers] = useState<CarrierOption[]>([])
+  const [isCarrierModalOpen, setIsCarrierModalOpen] = useState(false)
+  const [carrierSaving, setCarrierSaving] = useState(false)
+  const [carrierFormData, setCarrierFormData] = useState<CarrierFormData>({
+    name: '',
+    contact_name: '',
+    phone: '',
+    email: '',
+  })
   const [formStep, setFormStep] = useState(1)
   const [packedEntries, setPackedEntries] = useState<PackedEntryOption[]>([])
   const [loadingPackedEntries, setLoadingPackedEntries] = useState(false)
   const [editingOriginalUnitsByAllocation, setEditingOriginalUnitsByAllocation] = useState<Record<number, number>>({})
   const [currentPage, setCurrentPage] = useState(1)
+  const submitRequestedRef = useRef(false)
   const pageSize = 20
   const location = useLocation()
   const navigate = useNavigate()
@@ -390,6 +406,52 @@ function Shipments() {
     setCarriers((carrierRes.data ?? []) as CarrierOption[])
   }, [])
 
+  const handleCreateCarrier = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      const trimmedName = carrierFormData.name.trim()
+      if (!trimmedName) {
+        toast.error('Carrier name is required')
+        return
+      }
+
+      setCarrierSaving(true)
+      const { data, error } = await supabase
+        .from('carriers')
+        .insert({
+          name: trimmedName,
+          contact_name: carrierFormData.contact_name.trim() || null,
+          phone: carrierFormData.phone.trim() || null,
+          email: carrierFormData.email.trim() || null,
+        })
+        .select('id, name')
+        .single()
+      setCarrierSaving(false)
+
+      if (error) {
+        if (error.code === '23505') {
+          toast.error('Carrier name must be unique')
+        } else {
+          toast.error(error.message ?? 'Failed to create carrier')
+        }
+        return
+      }
+
+      const createdCarrier = { id: data.id as number, name: String(data.name ?? trimmedName) }
+      const updatedCarriers = [...carriers, createdCarrier].sort((a, b) => a.name.localeCompare(b.name))
+      setCarriers(updatedCarriers)
+      setFormData((prev) => ({
+        ...prev,
+        carrier_id: String(createdCarrier.id),
+        carrier_name: createdCarrier.name,
+      }))
+      setIsCarrierModalOpen(false)
+      setCarrierFormData({ name: '', contact_name: '', phone: '', email: '' })
+      toast.success('Carrier added')
+    },
+    [carrierFormData, carriers]
+  )
+
   useEffect(() => {
     load()
   }, [load])
@@ -411,6 +473,13 @@ function Shipments() {
       })),
     [packedEntries]
   )
+  const selectedAllocationIds = useMemo(() => {
+    return new Set(
+      formData.allocations
+        .map((allocation) => Number(allocation.pack_entry_id))
+        .filter((allocationId) => Number.isFinite(allocationId) && allocationId > 0)
+    )
+  }, [formData.allocations])
 
   const allocationTotals = useMemo(() => {
     const byEntry = new Map<number, number>()
@@ -500,6 +569,7 @@ function Shipments() {
           pack_entry:process_packaging_pack_entries(
             id,
             product_id,
+            product:products(id, name, sku),
             pack_identifier,
             pack_size_kg,
             sorting_output:process_sorting_outputs(
@@ -556,6 +626,7 @@ function Shipments() {
         pack_entry: Array<{
           id: number
           product_id: number | null
+          product?: { id?: number; name?: string | null; sku?: string | null } | null
           pack_identifier: string
           pack_size_kg: number | null
           sorting_output: Array<{
@@ -581,10 +652,10 @@ function Shipments() {
         .map((allocation) => {
           const packEntry = unwrap(allocation.pack_entry)
           const sortingOutput = unwrap(packEntry?.sorting_output ?? null)
-          const productId = sortingOutput?.product_id
+          const productId = sortingOutput?.product_id ?? packEntry?.product_id
           if (!productId) return null
-          const productName = sortingOutput?.product?.name ?? 'Unknown'
-          const productSku = sortingOutput?.product?.sku ?? ''
+          const productName = sortingOutput?.product?.name ?? packEntry?.product?.name ?? 'Unknown'
+          const productSku = sortingOutput?.product?.sku ?? packEntry?.product?.sku ?? ''
           const packagingRun = unwrap(packEntry?.packaging_run ?? null)
           const stepRun = unwrap(packagingRun?.process_step_runs)
           const lotRun = unwrap(stepRun?.process_lot_runs)
@@ -595,7 +666,6 @@ function Shipments() {
             (Number(allocation.units_count) || 0) > 0
               ? (Number(allocation.total_quantity_kg) || 0) / (Number(allocation.units_count) || 1)
               : 0
-          if (availableUnits <= 0) return null
           return {
             id: allocation.id,
             packaging_allocation_id: allocation.id,
@@ -655,7 +725,7 @@ function Shipments() {
   const loadShipmentPackItems = useCallback(async (shipmentId: number) => {
     const { data } = await supabase
       .from('shipment_pack_items')
-      .select('id, packaging_allocation_id, units_count, pack_entry_id, pack_count, box_count, box_label')
+      .select('id, packaging_allocation_id, units_count, pack_entry_id, pack_count, box_label')
       .eq('shipment_id', shipmentId)
       .order('id')
 
@@ -665,7 +735,6 @@ function Shipments() {
       units_count: number | null
       pack_entry_id: number
       pack_count: number
-      box_count: number | null
       box_label: string | null
     }>
     const allocationMap = new Map<number, number>()
@@ -685,7 +754,6 @@ function Shipments() {
           ? items.map((item) => ({
               id: `pack-${item.id}`,
               pack_entry_id: String(item.packaging_allocation_id ?? ''),
-              box_count: item.box_count != null ? String(item.box_count) : '',
               pack_count: item.units_count != null ? String(item.units_count) : '',
               box_label: item.box_label ?? '',
             }))
@@ -844,11 +912,20 @@ function Shipments() {
     const {
       data: { user },
     } = await supabase.auth.getUser()
+    let actorProfileId: string | null = null
+    if (user?.id) {
+      const { data: profileRow } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle()
+      actorProfileId = (profileRow?.id as string | undefined) ?? null
+    }
     await supabase.from('shipment_activities').insert({
       shipment_id: shipmentId,
       type,
       description,
-      actor: user?.id ?? null,
+      actor: actorProfileId,
     })
   }, [])
 
@@ -928,6 +1005,17 @@ function Shipments() {
 
   const handleAllocationChange = (itemId: string, field: keyof ShipmentAllocationForm, value: string) => {
     setFormData((prev) => {
+      if (field === 'pack_entry_id' && value) {
+        const selectedId = Number(value)
+        const selectedByOtherRow = prev.allocations.some(
+          (allocation) => allocation.id !== itemId && Number(allocation.pack_entry_id) === selectedId
+        )
+        if (selectedByOtherRow) {
+          toast.error('This storage allocation is already selected. Choose a different one.')
+          return prev
+        }
+      }
+
       const nextAllocations = prev.allocations.map((item) => {
         if (item.id !== itemId) return item
         if (field === 'pack_entry_id') {
@@ -965,6 +1053,10 @@ function Shipments() {
   }
 
   const handleAddAllocation = () => {
+    if (selectedAllocationIds.size >= packedEntries.length && packedEntries.length > 0) {
+      toast.info('All storage allocations are already selected.')
+      return
+    }
     setFormData((prev) => ({
       ...prev,
       allocations: [...prev.allocations, createEmptyAllocation()],
@@ -1013,6 +1105,16 @@ function Shipments() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
+    if (!submitRequestedRef.current) {
+      if (formStep < TOTAL_STEPS) {
+        toast.error('Use Next to continue. Only Save Shipment can submit.')
+      } else {
+        toast.info('Click Save Shipment to submit.')
+      }
+      return
+    }
+    submitRequestedRef.current = false
+
     if (formStep < TOTAL_STEPS) {
       toast.error('Use Next to continue. Only Save Shipment can submit.')
       return
@@ -1042,9 +1144,20 @@ function Shipments() {
     }
 
     const allocationMap = new Map<number, number>()
+    const seenAllocationIds = new Set<number>()
     normalizedAllocations.forEach((item) => {
+      if (seenAllocationIds.has(item.packaging_allocation_id)) {
+        return
+      }
+      seenAllocationIds.add(item.packaging_allocation_id)
       allocationMap.set(item.packaging_allocation_id, (allocationMap.get(item.packaging_allocation_id) ?? 0) + item.units_count)
     })
+
+    if (seenAllocationIds.size !== normalizedAllocations.length) {
+      toast.error('Duplicate storage allocations are not allowed. Select each allocation only once.')
+      setSaving(false)
+      return
+    }
 
     if (allocationMap.size === 0) {
       toast.error('Add at least one stored-pack allocation before saving.')
@@ -1080,7 +1193,6 @@ function Shipments() {
         storage_type: allocation?.storage_type ?? null,
         pack_entry_id: allocation?.pack_entry_id ?? null,
         pack_count: packCount,
-        box_count: allocation?.storage_type === 'BOX' ? item.units_count : null,
         box_label: null as string | null,
       }
     })
@@ -1555,8 +1667,19 @@ function Shipments() {
                           }
                           placeholder="Select carrier"
                         />
+                        <div className="flex justify-end">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsCarrierModalOpen(true)}
+                          >
+                            <Plus className="mr-2 h-4 w-4" />
+                            Add Carrier
+                          </Button>
+                        </div>
                         {carriers.length === 0 ? (
-                          <p className="text-xs text-text-dark/50">No carriers found. Add carriers in Settings.</p>
+                          <p className="text-xs text-text-dark/50">No carriers found. Add carriers in Partner.</p>
                         ) : null}
                       </div>
                     </div>
@@ -1579,7 +1702,7 @@ function Shipments() {
                     )}
                     {!loadingPackedEntries && packedEntries.length > 0 && (
                       <div className="mt-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Dispatchable stock</p>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">Packed lots</p>
                         <div className="mt-2 max-h-40 space-y-1 overflow-y-auto pr-1 text-xs text-text-dark/80">
                           {packedEntries.map((entry) => (
                             <div key={`dispatchable-${entry.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded border border-olive-light/30 bg-white px-2 py-1">
@@ -1602,6 +1725,12 @@ function Shipments() {
                         const selectedEntry = allocation.pack_entry_id
                           ? packedEntries.find((entry) => entry.id === Number(allocation.pack_entry_id))
                           : null
+                        const rowSelectedId = Number(allocation.pack_entry_id)
+                        const rowOptions = allocationSelectOptions.filter((option) => {
+                          const optionId = Number(option.value)
+                          if (optionId === rowSelectedId) return true
+                          return !selectedAllocationIds.has(optionId)
+                        })
                         const entryId = selectedEntry?.id ?? 0
                         const allocatedOther = formData.allocations.reduce((sum, row) => {
                           if (row.id === allocation.id) return sum
@@ -1627,7 +1756,7 @@ function Shipments() {
                               <Label htmlFor={`allocation-entry-${allocation.id}`}>Storage allocation *</Label>
                               <SearchableSelect
                                 id={`allocation-entry-${allocation.id}`}
-                                options={[{ value: '', label: 'Select allocation to dispatch' }, ...allocationSelectOptions]}
+                                options={[{ value: '', label: 'Select allocation to dispatch' }, ...rowOptions]}
                                 value={allocation.pack_entry_id}
                                 onChange={(value) => handleAllocationChange(allocation.id, 'pack_entry_id', value)}
                                 placeholder="Select allocation to dispatch"
@@ -1806,7 +1935,10 @@ function Shipments() {
                 {formStep < TOTAL_STEPS ? (
                   <Button
                     type="button"
-                    onClick={() => setFormStep((s) => s + 1)}
+                    onClick={() => {
+                      submitRequestedRef.current = false
+                      setFormStep((s) => s + 1)
+                    }}
                     className="bg-olive hover:bg-olive-dark"
                   >
                     Next
@@ -1816,6 +1948,9 @@ function Shipments() {
                   <Button
                     type="submit"
                     form="shipment-form"
+                    onClick={() => {
+                      submitRequestedRef.current = true
+                    }}
                     className="bg-olive hover:bg-olive-dark"
                     disabled={saving}
                   >
@@ -1824,6 +1959,85 @@ function Shipments() {
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isCarrierModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-text-dark">Add Carrier</h2>
+                <p className="text-sm text-text-dark/70">Create a carrier and select it for this shipment.</p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsCarrierModalOpen(false)}
+                disabled={carrierSaving}
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+            <form onSubmit={handleCreateCarrier} className="space-y-4 px-6 py-6">
+              <div className="space-y-2">
+                <Label htmlFor="new-carrier-name">Carrier Name *</Label>
+                <Input
+                  id="new-carrier-name"
+                  value={carrierFormData.name}
+                  onChange={(event) =>
+                    setCarrierFormData((prev) => ({ ...prev, name: event.target.value }))
+                  }
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-carrier-contact">Contact Name</Label>
+                <Input
+                  id="new-carrier-contact"
+                  value={carrierFormData.contact_name}
+                  onChange={(event) =>
+                    setCarrierFormData((prev) => ({ ...prev, contact_name: event.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-carrier-phone">Phone</Label>
+                <Input
+                  id="new-carrier-phone"
+                  value={carrierFormData.phone}
+                  onChange={(event) =>
+                    setCarrierFormData((prev) => ({ ...prev, phone: event.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-carrier-email">Email</Label>
+                <Input
+                  id="new-carrier-email"
+                  type="email"
+                  value={carrierFormData.email}
+                  onChange={(event) =>
+                    setCarrierFormData((prev) => ({ ...prev, email: event.target.value }))
+                  }
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCarrierModalOpen(false)}
+                  disabled={carrierSaving}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={carrierSaving}>
+                  {carrierSaving ? 'Saving…' : 'Create Carrier'}
+                </Button>
+              </div>
+            </form>
           </div>
         </div>
       )}

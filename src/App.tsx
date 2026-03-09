@@ -4,8 +4,6 @@ import type { Location as RouterLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import {
   FEATURE_CARRIERS,
-  FEATURE_CYCLE_COUNTS,
-  FEATURE_INVENTORY_ADJUSTMENTS,
 } from './lib/features'
 
 const Login = lazy(() => import('./pages/Login'))
@@ -15,6 +13,7 @@ const MetalDetectorChecks = lazy(() => import('./pages/checks/MetalDetectorCheck
 const Units = lazy(() => import('./pages/inventory/Units'))
 const Warehouses = lazy(() => import('./pages/inventory/Warehouses'))
 const Products = lazy(() => import('./pages/inventory/Products'))
+const ProductDetailPage = lazy(() => import('./pages/inventory/ProductDetailPage'))
 const StockLevels = lazy(() => import('./pages/inventory/StockLevels'))
 const SupplyStockPage = lazy(() => import('./pages/inventory/SupplyStockPage'))
 const WIPStockPage = lazy(() => import('./pages/inventory/WIPStockPage'))
@@ -26,8 +25,6 @@ const WastePage = lazy(() => import('./pages/inventory/WastePage'))
 const WasteDetailsPage = lazy(() => import('./pages/inventory/WasteDetailsPage'))
 const OperationalSuppliesStockPage = lazy(() => import('./pages/inventory/OperationalSuppliesStockPage'))
 const StockMovements = lazy(() => import('./pages/inventory/StockMovements'))
-const InventoryAdjustments = lazy(() => import('./pages/inventory/InventoryAdjustments'))
-const CycleCounts = lazy(() => import('./pages/inventory/CycleCounts'))
 const Supplies = lazy(() => import('./pages/supplies/Supplies'))
 const SupplyDetail = lazy(() => import('./pages/supplies/SupplyDetail'))
 const OperationalSupplyDetail = lazy(() => import('./pages/supplies/OperationalSupplyDetail'))
@@ -46,6 +43,7 @@ const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
 const Suppliers = lazy(() => import('./pages/suppliers-customers/Suppliers'))
 const SupplierDetail = lazy(() => import('./pages/suppliers-customers/SupplierDetail'))
 const SupplierEdit = lazy(() => import('./pages/suppliers-customers/SupplierEdit'))
+const DocumentViewer = lazy(() => import('./pages/documents/DocumentViewer'))
 const Shipments = lazy(() => import('./pages/shipments/Shipments'))
 const ShipmentDetail = lazy(() => import('./pages/shipments/ShipmentDetail'))
 const UserManagement = lazy(() => import('./pages/users/UserManagement'))
@@ -158,6 +156,14 @@ function App() {
           }
         />
         <Route
+          path="/inventory/products/:productId"
+          element={
+            <ProtectedRoute>
+              <ProductDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/inventory/stock-levels"
           element={
             <ProtectedRoute>
@@ -245,26 +251,22 @@ function App() {
             </ProtectedRoute>
           }
         />
-        {FEATURE_INVENTORY_ADJUSTMENTS && (
-          <Route
-            path="/inventory/adjustments"
-            element={
-              <ProtectedRoute>
-                <InventoryAdjustments />
-              </ProtectedRoute>
-            }
-          />
-        )}
-        {FEATURE_CYCLE_COUNTS && (
-          <Route
-            path="/inventory/cycle-counts"
-            element={
-              <ProtectedRoute>
-                <CycleCounts />
-              </ProtectedRoute>
-            }
-          />
-        )}
+        <Route
+          path="/inventory/adjustments"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/inventory/stock-levels" replace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inventory/cycle-counts"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/inventory/stock-levels" replace />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/supplies"
           element={
@@ -395,10 +397,20 @@ function App() {
         />
         {FEATURE_CARRIERS && (
           <Route
-            path="/settings/carriers"
+            path="/suppliers-customers/carriers"
             element={
               <ProtectedRoute>
                 <Carriers />
+              </ProtectedRoute>
+            }
+          />
+        )}
+        {FEATURE_CARRIERS && (
+          <Route
+            path="/settings/carriers"
+            element={
+              <ProtectedRoute>
+                <Navigate to="/suppliers-customers/carriers" replace />
               </ProtectedRoute>
             }
           />
@@ -537,6 +549,14 @@ function App() {
           element={
             <ProtectedRoute>
               <SupplierEdit />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/documents/view"
+          element={
+            <ProtectedRoute>
+              <DocumentViewer />
             </ProtectedRoute>
           }
         />

@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
 import { ArrowLeft, Download } from 'lucide-react'
+import { getStoredFileUrl } from '@/lib/fileStorage'
 
 interface SupplyDetailRow {
   id: number
@@ -203,11 +204,8 @@ function PaymentDetail() {
         return
       }
 
-      const { data, error } = await supabase.storage.from('documents').download(trimmedReference)
-      if (error || !data) throw error ?? new Error('Proof file not found')
-      const objectUrl = URL.createObjectURL(data)
-      window.open(objectUrl, '_blank', 'noopener,noreferrer')
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+      const signedUrl = await getStoredFileUrl(trimmedReference)
+      window.open(signedUrl, '_blank', 'noopener,noreferrer')
     } catch (error) {
       console.error('Failed to open payment proof', error)
       toast.error('Failed to open payment proof.')

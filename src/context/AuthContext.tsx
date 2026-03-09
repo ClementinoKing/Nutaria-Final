@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react'
 import { User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabaseClient'
+import { classifyIdentifier, phoneToUsernameEmail } from '@/lib/authIdentifier'
 
 interface UserProfile {
   full_name: string | null
@@ -11,7 +12,7 @@ interface UserProfile {
 interface AuthContextType {
   user: User | null
   profile: UserProfile | null
-  login: (email: string, password: string) => Promise<{ error?: Error; user?: User }>
+  login: (identifier: string, password: string) => Promise<{ error?: Error; user?: User }>
   logout: () => Promise<{ error?: Error }>
   loading: boolean
   profileLoading: boolean
@@ -101,12 +102,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, [user?.id])
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (identifier: string, password: string) => {
+    const classified = classifyIdentifier(identifier)
+    if (!classified) {
+      return {
+        error: new Error('Enter valid phone (e.g. +265...) or email.')
+      }
+    }
+
     setAuthenticating(true)
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    })
+    const { data, error } =
+      classified.type === 'email'
+        ? await supabase.auth.signInWithPassword({
+            email: classified.value,
+            password
+          })
+        : await supabase.auth.signInWithPassword({
+            email: phoneToUsernameEmail(classified.value),
+            password
+          })
     setAuthenticating(false)
 
     if (error) {
@@ -150,4 +164,3 @@ export function useAuth(): AuthContextType {
   }
   return context
 }
-

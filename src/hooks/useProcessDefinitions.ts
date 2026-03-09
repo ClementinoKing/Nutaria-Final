@@ -18,6 +18,7 @@ interface ProcessStep {
 
 interface Supply {
   doc_no?: string
+  category_code?: 'PRODUCT' | 'SERVICE' | string | null
   received_at?: string
   supplier_id?: number
   warehouse_id?: number
@@ -130,6 +131,7 @@ export function useProcessDefinitions(options: UseProcessDefinitionsOptions = {}
         created_at,
         supplies (
           doc_no,
+          category_code,
           received_at,
           supplier_id,
           warehouse_id
@@ -157,7 +159,12 @@ export function useProcessDefinitions(options: UseProcessDefinitionsOptions = {}
       return { error: lotsError }
     }
 
-    return { data: data ?? [] }
+    const filteredLots = (data ?? []).filter((lot) => {
+      const categoryCode = String((lot as { supplies?: { category_code?: string | null } | null })?.supplies?.category_code ?? 'PRODUCT').toUpperCase()
+      return categoryCode !== 'SERVICE'
+    })
+
+    return { data: filteredLots }
   }, [includeProcessedLots])
 
   const refresh = useCallback(async () => {
@@ -211,4 +218,3 @@ export function useProcessDefinitions(options: UseProcessDefinitionsOptions = {}
     refresh,
   }
 }
-

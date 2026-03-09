@@ -13,6 +13,7 @@ import { useSuppliers } from '@/hooks/useSuppliers'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
+import { buildStorageObjectPath, getStoredFileUrl, uploadStoredFile } from '@/lib/fileStorage'
 
 interface Supply {
   id: number
@@ -123,6 +124,7 @@ function Payments() {
     proof_name: '',
     proof_type: '',
     proof_source: '' as '' | 'URL' | 'FILE_PATH' | 'STORAGE' | 'MANUAL',
+    proof_file: null as File | null,
   })
   const [lockedSupplyId, setLockedSupplyId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -389,11 +391,8 @@ function Payments() {
         return
       }
 
-      const { data, error } = await supabase.storage.from('documents').download(trimmedReference)
-      if (error || !data) throw error ?? new Error('Proof file not found')
-      const objectUrl = URL.createObjectURL(data)
-      window.open(objectUrl, '_blank', 'noopener,noreferrer')
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+      const signedUrl = await getStoredFileUrl(trimmedReference)
+      window.open(signedUrl, '_blank', 'noopener,noreferrer')
     } catch (error) {
       console.error('Failed to open payment proof', error)
       toast.error('Failed to open payment proof.')
@@ -421,10 +420,21 @@ function Payments() {
     }
     setSubmitting(true)
     try {
-      const proofReference = paymentForm.proof_url.trim() || null
-      const proofName = paymentForm.proof_name.trim() || null
-      const proofType = paymentForm.proof_type.trim() || null
-      const proofSource = paymentForm.proof_source || (proofReference ? 'MANUAL' : null)
+      let proofReference = paymentForm.proof_url.trim() || null
+      let proofName = paymentForm.proof_name.trim() || null
+      let proofType = paymentForm.proof_type.trim() || null
+      let proofSource = paymentForm.proof_source || (proofReference ? 'MANUAL' : null)
+
+      if (paymentForm.proof_file) {
+        if (!supplyId) {
+          throw new Error('Select a supply before uploading proof.')
+        }
+        proofReference = buildStorageObjectPath(`payments/${supplyId}`, paymentForm.proof_file.name)
+        await uploadStoredFile(proofReference, paymentForm.proof_file)
+        proofName = paymentForm.proof_file.name
+        proofType = paymentForm.proof_file.type || proofType
+        proofSource = 'STORAGE'
+      }
 
       const { error } = await supabase.from('supply_payments').insert({
         supply_id: supplyId,
@@ -988,7 +998,8 @@ function Payments() {
                         proof_url: selectedPath,
                         proof_name: selectedFile?.name ?? '',
                         proof_type: selectedFile?.type ?? '',
-                        proof_source: selectedPath ? 'FILE_PATH' : '',
+                        proof_source: selectedFile ? 'STORAGE' : selectedPath ? 'FILE_PATH' : '',
+                        proof_file: selectedFile ?? null,
                       }))
                     }}
                   />

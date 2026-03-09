@@ -16,6 +16,7 @@ import {
 } from '@/lib/processExecution'
 import { formatSecondsToHms } from '@/lib/metalDetectorTimer'
 import { useAuth } from '@/context/AuthContext'
+import { Eye, Trash2 } from 'lucide-react'
 
 interface Lot {
   id: number
@@ -26,6 +27,7 @@ interface Lot {
   process_status: string
   supplies?: {
     doc_no?: string
+    category_code?: 'PRODUCT' | 'SERVICE' | string | null
   } | null
   products?: {
     name?: string
@@ -61,6 +63,7 @@ function ProcessSteps() {
   const [loadingProcessingRuns, setLoadingProcessingRuns] = useState(false)
   const [deletingRunId, setDeletingRunId] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [productIdsWithFactoryProcess, setProductIdsWithFactoryProcess] = useState<number[]>([])
 
   const selectableLots = useMemo(
     () => (lots as Lot[]).filter((lot) => (lot.process_status ?? '').toUpperCase() === 'UNPROCESSED'),
@@ -188,6 +191,39 @@ function ProcessSteps() {
   }, [loadProcessingRuns])
 
   useEffect(() => {
+    const loadProductProcessAssignments = async () => {
+      const uniqueProductIds = Array.from(new Set((lots as Lot[]).map((lot) => Number(lot.product_id)).filter((id) => Number.isInteger(id) && id > 0)))
+      if (uniqueProductIds.length === 0) {
+        setProductIdsWithFactoryProcess([])
+        return
+      }
+
+      const { data, error } = await supabase
+        .from('product_processes')
+        .select('product_id')
+        .in('product_id', uniqueProductIds)
+
+      if (error) {
+        setProductIdsWithFactoryProcess([])
+        return
+      }
+
+      const assignedIds = Array.from(
+        new Set(
+          ((data ?? []) as Array<{ product_id: number | null }>)
+            .map((row) => Number(row.product_id))
+            .filter((id) => Number.isInteger(id) && id > 0)
+        )
+      )
+      setProductIdsWithFactoryProcess(assignedIds)
+    }
+
+    loadProductProcessAssignments().catch(() => {
+      setProductIdsWithFactoryProcess([])
+    })
+  }, [lots])
+
+  useEffect(() => {
     if (!activeMetalSession) return
     const intervalId = window.setInterval(() => {
       setNowMs(Date.now())
@@ -243,6 +279,48 @@ function ProcessSteps() {
     setStartingProcess(true)
     try {
       const uniqueProductIds = Array.from(new Set(selectedLots.map((lot) => lot.product_id)))
+
+      const { data: chainMembersData, error: chainMembersError } = await supabase
+        .from('product_processing_chain_members')
+        .select('product_id, chain_id')
+        .in('product_id', uniqueProductIds)
+
+      if (chainMembersError) {
+        throw chainMembersError
+      }
+
+      const chainIdsByProductId = new Map<number, Set<number>>()
+      ;((chainMembersData ?? []) as Array<{ product_id: number; chain_id: number }>).forEach((row) => {
+        if (!chainIdsByProductId.has(row.product_id)) {
+          chainIdsByProductId.set(row.product_id, new Set<number>())
+        }
+        chainIdsByProductId.get(row.product_id)!.add(row.chain_id)
+      })
+
+      for (const productId of uniqueProductIds) {
+        const chainIds = chainIdsByProductId.get(productId)
+        if (!chainIds || chainIds.size === 0) {
+          toast.error('Each selected lot product must be linked to a processing chain.')
+          return
+        }
+        if (chainIds.size > 1) {
+          toast.error('A selected product is linked to multiple chains. Keep lots within one processing chain.')
+          return
+        }
+      }
+
+      const selectedChainIds = uniqueProductIds
+        .map((productId) => {
+          const chainIds = chainIdsByProductId.get(productId)
+          return chainIds ? Array.from(chainIds)[0] : null
+        })
+        .filter((chainId): chainId is number => typeof chainId === 'number')
+
+      if (new Set(selectedChainIds).size > 1) {
+        toast.error('Selected lots must belong to the same processing chain.')
+        return
+      }
+
       const processIdEntries = await Promise.all(
         uniqueProductIds.map(async (productId) => ({
           productId,
@@ -381,6 +459,7 @@ function ProcessSteps() {
                   {allLots.map((lot) => {
                     const checked = selectedLotIds.includes(lot.id)
                     const isSelectable = (lot.process_status ?? '').toUpperCase() === 'UNPROCESSED'
+                    const hasFactoryProcess = productIdsWithFactoryProcess.includes(lot.product_id)
                     return (
                       <div key={lot.id} className="rounded-md border border-olive-light/40 p-3">
                         <div className="flex items-start gap-3">
@@ -393,7 +472,26 @@ function ProcessSteps() {
                             className="mt-0.5 h-4 w-4 accent-olive"
                           />
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold text-text-dark">{lot.lot_no}</p>
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <p className="text-sm font-semibold text-text-dark">{lot.lot_no}</p>
+                              {hasFactoryProcess ? (
+                                <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                                  Factory Process Assigned
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    navigate('/process/processes', {
+                                      state: { openCreateForProductId: lot.product_id },
+                                    })
+                                  }
+                                  className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800 transition-colors hover:bg-amber-200"
+                                >
+                                  No Factory Process
+                                </button>
+                              )}
+                            </div>
                             <p className="text-xs text-text-dark/60">{lot.supplies?.doc_no ?? 'Unknown document'}</p>
                             <p className="text-xs text-text-dark/70">
                               {lot.products?.name ?? 'Unnamed product'} ({lot.products?.sku ?? 'N/A'})
@@ -433,8 +531,8 @@ function ProcessSteps() {
             <div className="grid gap-3 md:grid-cols-2">
               {processingRuns.map((run) => (
                 <div key={run.id} className="rounded-md border border-olive-light/40 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-text-dark">
                         {run.process_name} <span className="text-text-dark/60">({run.process_code})</span>
                       </p>
@@ -458,21 +556,31 @@ function ProcessSteps() {
                         Started: {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
                       </p>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => navigate(`/process/process-steps/run/${run.id}`)}
-                    >
-                      Open
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleDeleteRun(run.id)}
-                      disabled={deletingRunId === run.id}
-                    >
-                      {deletingRunId === run.id ? 'Deleting...' : 'Delete Run'}
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-2 self-start">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-9 w-9 border-olive-light/40 text-text-dark hover:bg-olive-light/20"
+                        onClick={() => navigate(`/process/process-steps/run/${run.id}`)}
+                        aria-label={`Open process run ${run.process_name}`}
+                        title="Open process run"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-9 w-9 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                        onClick={() => handleDeleteRun(run.id)}
+                        disabled={deletingRunId === run.id}
+                        aria-label={`Delete process run ${run.process_name}`}
+                        title={deletingRunId === run.id ? 'Deleting...' : 'Delete process run'}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
               ))}

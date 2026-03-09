@@ -11,6 +11,10 @@ interface ImportMetaEnv {
   readonly VITE_FEATURE_ACTIVITY_TIMELINES?: string
   readonly VITE_FEATURE_SHIPMENT_LOT_ALLOCATIONS?: string
   readonly VITE_FEATURE_PROCESSING_PRODUCT_WIZARD?: string
+  readonly VITE_STORAGE_PROVIDER?: string
+  readonly VITE_CLOUDFLARE_R2_ENDPOINT?: string
+  readonly VITE_CLOUDFLARE_R2_PUBLIC_BASE_URL?: string
+  readonly VITE_CLOUDFLARE_R2_BUCKET?: string
   // Add more env variables as needed
   [key: string]: any
 }

@@ -104,12 +104,46 @@ export function SortingStep({
     let cancelled = false
 
     const loadProducts = async () => {
+      const loadMappedWipProducts = async () => {
+        const { data, error } = await supabase
+          .from('products')
+          .select(
+            `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
+          )
+          .eq('status', 'ACTIVE')
+          .eq('product_type', 'WIP')
+          .order('name', { ascending: true })
+
+        if (error || !data) {
+          if (!cancelled) setProducts([])
+          if (!cancelled) setAvailableByProduct({})
+          return
+        }
+
+        const rows = data as Array<{
+          id: number
+          name: string
+          sku: string | null
+          product_components?: { component_product_id?: number | null }[] | null
+        }>
+        let filtered = rows
+        if (lotProductId) {
+          filtered = filtered.filter((row) =>
+            (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
+          )
+        }
+
+        if (!cancelled) {
+          setProducts(filtered.map(({ id, name, sku }) => ({ id, name, sku })))
+          setAvailableByProduct({})
+        }
+      }
+
       // Sorting step should only allow products actually produced by grading in this run.
       if (mode === 'sorting') {
         const lotRunId = Number(stepRun.process_lot_run_id)
         if (!Number.isFinite(lotRunId) || lotRunId <= 0) {
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -120,8 +154,7 @@ export function SortingStep({
 
         if (lotStepRunsError) {
           console.error('Error loading process step runs for sorting products:', lotStepRunsError)
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -134,8 +167,7 @@ export function SortingStep({
         ) as number[]
 
         if (processStepIds.length === 0) {
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -146,8 +178,7 @@ export function SortingStep({
 
         if (processStepsError) {
           console.error('Error loading process steps for sorting products:', processStepsError)
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -160,8 +191,7 @@ export function SortingStep({
         ) as number[]
 
         if (stepNameIds.length === 0) {
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -172,8 +202,7 @@ export function SortingStep({
 
         if (stepNamesError) {
           console.error('Error loading step names for sorting products:', stepNamesError)
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -200,8 +229,7 @@ export function SortingStep({
           .map((row) => row.id)
 
         if (gradingStepRunIds.length === 0) {
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -212,8 +240,7 @@ export function SortingStep({
 
         if (gradingOutputsError) {
           console.error('Error loading grading outputs for sorting products:', gradingOutputsError)
-          if (!cancelled) setProducts([])
-          if (!cancelled) setAvailableByProduct({})
+          await loadMappedWipProducts()
           return
         }
 
@@ -235,6 +262,11 @@ export function SortingStep({
           }
         })
 
+        if (uniqueProducts.size === 0) {
+          await loadMappedWipProducts()
+          return
+        }
+
         if (!cancelled) {
           setProducts(Array.from(uniqueProducts.values()).sort((a, b) => a.name.localeCompare(b.name)))
           const nextAvailability: Record<number, number> = {}
@@ -247,38 +279,7 @@ export function SortingStep({
       }
 
       // Grading step keeps the original behavior: mapped WIP products by raw material composition.
-      const { data, error } = await supabase
-        .from('products')
-        .select(
-          `id, name, sku, product_components:product_components!product_components_parent_product_id_fkey (component_product_id)`
-        )
-        .eq('status', 'ACTIVE')
-        .eq('product_type', 'WIP')
-        .order('name', { ascending: true })
-
-      if (error || !data) {
-        if (!cancelled) setProducts([])
-        if (!cancelled) setAvailableByProduct({})
-        return
-      }
-
-      const rows = data as Array<{
-        id: number
-        name: string
-        sku: string | null
-        product_components?: { component_product_id?: number | null }[] | null
-      }>
-      let filtered = rows
-      if (lotProductId) {
-        filtered = filtered.filter((row) =>
-          (row.product_components ?? []).some((pc) => pc?.component_product_id === lotProductId)
-        )
-      }
-
-      if (!cancelled) {
-        setProducts(filtered.map(({ id, name, sku }) => ({ id, name, sku })))
-        setAvailableByProduct({})
-      }
+      await loadMappedWipProducts()
     }
 
     loadProducts().catch((error) => {
@@ -817,7 +818,11 @@ export function SortingStep({
                   <option value="">Select product</option>
                   {availableProducts.length === 0 ? (
                     <option value="" disabled>
-                      {editingOutputId ? 'No other products available' : 'All products already selected'}
+                      {products.length === 0
+                        ? 'No WIP products available for this lot'
+                        : editingOutputId
+                        ? 'No other products available'
+                        : 'All products already selected'}
                     </option>
                   ) : (
                     availableProducts.map((product) => (

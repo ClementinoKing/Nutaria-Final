@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -83,6 +83,20 @@ function parseNumericInput(value: string, integerOnly = false): number | null {
   return parsed
 }
 
+function extractNetWeightKgFromName(name: string): number | null {
+  const trimmed = name.trim()
+  if (!trimmed) return null
+
+  const match = /(\d+(?:\.\d+)?)\s*(kg|g)\b/i.exec(trimmed)
+  if (!match || !match[1] || !match[2]) return null
+
+  const rawValue = Number.parseFloat(match[1])
+  if (!Number.isFinite(rawValue) || rawValue <= 0) return null
+
+  const unit = match[2].toLowerCase()
+  return unit === 'g' ? rawValue / 1000 : rawValue
+}
+
 function formatKg(value: number | null): string {
   if (value === null) return '—'
   return `${value.toFixed(3)} kg`
@@ -153,6 +167,85 @@ function PackagingManagement() {
     return { total, active, packetCount, boxCount }
   }, [packagingUnits])
 
+  const existingUnitCodes = useMemo(
+    () => new Set(packagingUnits.map((unit) => (unit.code ?? '').trim().toUpperCase()).filter(Boolean)),
+    [packagingUnits],
+  )
+
+  const generatePackagingUnitCode = useCallback(
+    (draft: UnitFormData, currentCode?: string): string => {
+      const codePrefix =
+        draft.unit_type === 'BOX'
+          ? 'BOX'
+          : draft.packaging_type && draft.packaging_type !== 'BOX'
+            ? String(draft.packaging_type).trim().toUpperCase()
+            : 'PACK'
+
+      const weight = parseNumericInput(draft.net_weight_kg)
+      const weightToken =
+        weight !== null && weight > 0
+          ? `${String(weight).replace('.', 'P').replace(/[^0-9P]/g, '')}KG`
+          : ''
+
+      const cleanedName = draft.name
+        .trim()
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      const words = cleanedName.split(' ').filter(Boolean)
+      const nameToken =
+        words.length >= 2
+          ? words.map((word) => word[0]).join('').toUpperCase()
+          : words.length === 1
+            ? words[0]!.slice(0, 6).toUpperCase()
+            : 'UNIT'
+
+      const baseRaw = `${codePrefix}_${weightToken || nameToken}`
+      const baseCode = baseRaw
+        .toUpperCase()
+        .replace(/[^A-Z0-9_]/g, '')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '') || `${codePrefix}_UNIT`
+
+      const current = (currentCode ?? '').trim().toUpperCase()
+      let candidate = baseCode
+      let counter = 1
+
+      while (existingUnitCodes.has(candidate) && candidate !== current) {
+        counter += 1
+        candidate = `${baseCode}-${String(counter).padStart(2, '0')}`
+      }
+
+      return candidate
+    },
+    [existingUnitCodes],
+  )
+
+  useEffect(() => {
+    if (editingUnit) return
+
+    setUnitForm((previous) => {
+      const nextCode = generatePackagingUnitCode(previous)
+      if (previous.code === nextCode) return previous
+      return { ...previous, code: nextCode }
+    })
+
+    setUnitFormErrors((previous) => {
+      if (!previous.code) return previous
+      const next = { ...previous }
+      delete next.code
+      return next
+    })
+  }, [
+    editingUnit,
+    unitForm.name,
+    unitForm.unit_type,
+    unitForm.packaging_type,
+    unitForm.net_weight_kg,
+    generatePackagingUnitCode,
+  ])
+
   const handleOpenCreateUnit = () => {
     setEditingUnit(null)
     setUnitForm(defaultUnitForm)
@@ -205,7 +298,15 @@ function PackagingManagement() {
           unit_type: nextType,
           packaging_type: nextType === 'BOX' ? 'BOX' : previous.packaging_type === 'BOX' ? '' : previous.packaging_type,
           net_weight_kg: nextType === 'BOX' ? '' : previous.net_weight_kg,
-          operational_product_id: nextType === 'BOX' ? '' : previous.operational_product_id,
+        }
+      }
+      if (name === 'name') {
+        const parsedWeight = extractNetWeightKgFromName(value)
+        return {
+          ...previous,
+          name: value,
+          net_weight_kg:
+            previous.unit_type === 'PACKET' && parsedWeight !== null ? String(parsedWeight) : previous.net_weight_kg,
         }
       }
       return { ...previous, [name]: value }
@@ -264,7 +365,7 @@ function PackagingManagement() {
       length_mm: parseNumericInput(unitForm.length_mm, true),
       width_mm: parseNumericInput(unitForm.width_mm, true),
       height_mm: parseNumericInput(unitForm.height_mm, true),
-      operational_product_id: isBox ? null : Number.parseInt(unitForm.operational_product_id, 10) || null,
+      operational_product_id: Number.parseInt(unitForm.operational_product_id, 10) || null,
     }
   }
 
@@ -683,15 +784,16 @@ function PackagingManagement() {
             <form className="space-y-4 px-6 py-6" onSubmit={handleSubmitUnit}>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <Label htmlFor="pu-code">Code</Label>
+                  <Label htmlFor="pu-code">{editingUnit ? 'Code' : 'Code (auto-generated)'}</Label>
                   <Input
                     id="pu-code"
                     name="code"
                     value={unitForm.code}
                     onChange={handleUnitFieldChange}
-                    placeholder="e.g. VAC_10KG"
+                    placeholder="Auto-generated from unit details"
                     className="mt-1"
                     disabled={isSubmitting}
+                    readOnly={!editingUnit}
                   />
                   {unitFormErrors.code ? <p className="mt-1 text-sm text-red-600">{unitFormErrors.code}</p> : null}
                 </div>
@@ -772,9 +874,9 @@ function PackagingManagement() {
                   value={unitForm.operational_product_id}
                   onChange={handleUnitFieldChange}
                   className="mt-1 w-full rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark focus:border-olive focus:outline-none focus:ring-1 focus:ring-olive disabled:bg-gray-100"
-                  disabled={isSubmitting || unitForm.unit_type === 'BOX'}
+                  disabled={isSubmitting}
                 >
-                  <option value="">{unitForm.unit_type === 'PACKET' ? 'Select operational product' : 'Not required for box units'}</option>
+                  <option value="">Select operational product</option>
                   {operationalProducts.map((product) => (
                     <option key={product.id} value={product.id}>
                       {product.name}

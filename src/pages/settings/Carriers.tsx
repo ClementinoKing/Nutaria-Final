@@ -222,7 +222,7 @@ function Carriers() {
 
   if (loading) {
     return (
-      <PageLayout title="Carriers" activeItem="settings" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout title="Carriers" activeItem="suppliersCustomers" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
         <Spinner text="Loading carriers..." />
       </PageLayout>
     )
@@ -231,7 +231,7 @@ function Carriers() {
   return (
     <PageLayout
       title="Carriers"
-      activeItem="settings"
+      activeItem="suppliersCustomers"
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
       actions={
         <Button className="bg-olive hover:bg-olive-dark" onClick={openCreate}>

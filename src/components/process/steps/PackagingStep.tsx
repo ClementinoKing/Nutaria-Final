@@ -7,6 +7,7 @@ import { AlertTriangle, CheckCircle2, Plus, Trash2, Upload, XCircle, Package as 
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
+import { buildStorageObjectPath, deleteStoredFile, getStoredFileUrls, uploadStoredFile } from '@/lib/fileStorage'
 import type {
   ProcessStepRun,
   ProcessPackagingRun,
@@ -58,6 +59,16 @@ interface PackagingUnitOption {
 interface SupplyBatchStockRow {
   product_id: number | null
   accepted_qty: number | null
+}
+
+interface PackEntryStockRow {
+  id: number
+  packaging_run_id: number | null
+  packet_unit_code: string | null
+  pack_identifier: string | null
+  pack_count: number | null
+  quantity_kg: number | null
+  pack_size_kg: number | null
 }
 
 interface BoxPackRuleOption {
@@ -158,7 +169,6 @@ const PEST_STATUS_OPTIONS = ['', 'None', 'Minor', 'Major']
 const FOREIGN_OBJECT_STATUS_OPTIONS = ['', 'None', 'Detected']
 const MOULD_STATUS_OPTIONS = ['', 'None', 'Present']
 const KERNEL_DAMAGE_OPTIONS = ['', '0', '0.5', '1', '2', '5', '10']
-const NITROGEN_USED_OPTIONS = ['', '0', '0.25', '0.5', '1', '2', '3']
 const STORAGE_TYPE_OPTIONS: Array<{ value: '' | 'BOX' | 'SHOP_PACKING'; label: string }> = [
   { value: '', label: 'Select type' },
   { value: 'BOX', label: 'Box' },
@@ -188,7 +198,7 @@ const mapPackagingRunToFormData = (run: ProcessPackagingRun): PackagingFormData 
   mould_status: run.mould_status || '',
   damaged_kernels_pct: run.damaged_kernels_pct?.toString() || '',
   insect_damaged_kernels_pct: run.insect_damaged_kernels_pct?.toString() || '',
-  nitrogen_used: run.nitrogen_used?.toString() || '',
+  nitrogen_used: '',
   nitrogen_batch_number: run.nitrogen_batch_number || '',
   primary_packaging_type: run.primary_packaging_type || '',
   primary_packaging_batch: run.primary_packaging_batch || '',
@@ -210,7 +220,6 @@ const isSamePackagingFormData = (a: PackagingFormData, b: PackagingFormData) =>
   a.mould_status === b.mould_status &&
   a.damaged_kernels_pct === b.damaged_kernels_pct &&
   a.insect_damaged_kernels_pct === b.insect_damaged_kernels_pct &&
-  a.nitrogen_used === b.nitrogen_used &&
   a.nitrogen_batch_number === b.nitrogen_batch_number &&
   a.primary_packaging_type === b.primary_packaging_type &&
   a.primary_packaging_batch === b.primary_packaging_batch &&
@@ -560,6 +569,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       setOpStockLoading(true)
       try {
         const packetOperationalProductByCode = new Map<string, number>()
+        const boxOperationalProductByCode = new Map<string, number>()
         packagingUnits
           .filter((unit) => normalizeUnitType(unit.unit_type) === 'PACKET')
           .forEach((unit) => {
@@ -569,6 +579,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             if (codeKey) packetOperationalProductByCode.set(codeKey, productId)
             const nameKey = normalizeUnitCode(unit.name)
             if (nameKey) packetOperationalProductByCode.set(nameKey, productId)
+          })
+        packagingUnits
+          .filter((unit) => normalizeUnitType(unit.unit_type) === 'BOX')
+          .forEach((unit) => {
+            const productId = Number(unit.operational_product_id) || 0
+            if (!productId) return
+            const codeKey = normalizeUnitCode(unit.code)
+            if (codeKey) boxOperationalProductByCode.set(codeKey, productId)
+            const nameKey = normalizeUnitCode(unit.name)
+            if (nameKey) boxOperationalProductByCode.set(nameKey, productId)
           })
 
         const acceptedByProductId: Record<number, number> = {}
@@ -598,7 +618,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
         const { data: packEntriesData } = await supabase
           .from('process_packaging_pack_entries')
-          .select('packaging_run_id, packet_unit_code, pack_identifier, pack_count, quantity_kg, pack_size_kg')
+          .select('id, packaging_run_id, packet_unit_code, pack_identifier, pack_count, quantity_kg, pack_size_kg')
 
         const packagingRunIds = Array.from(
           new Set(
@@ -703,14 +723,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           }
 
           const packagingRunToStepRunId = new Map(packagingRuns.map((row) => [row.id, Number(row.process_step_run_id) || 0]))
-          ;((packEntriesData ?? []) as Array<{
-            packaging_run_id: number | null
-            packet_unit_code: string | null
-            pack_identifier: string | null
-            pack_count: number | null
-            quantity_kg: number | null
-            pack_size_kg: number | null
-          }>).forEach((entry) => {
+          ;((packEntriesData ?? []) as PackEntryStockRow[]).forEach((entry) => {
             const packagingRunId = Number(entry.packaging_run_id) || 0
             if (!packagingRunId) return
 
@@ -731,6 +744,47 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             if (derivedPackCount <= 0) return
 
             consumedByProductId[operationalProductId] = (consumedByProductId[operationalProductId] || 0) + derivedPackCount
+          })
+
+          const packEntryToPackagingRunId = new Map<number, number>()
+          ;((packEntriesData ?? []) as PackEntryStockRow[]).forEach((entry) => {
+            const packEntryId = Number(entry.id) || 0
+            const packagingRunId = Number(entry.packaging_run_id) || 0
+            if (packEntryId > 0 && packagingRunId > 0) {
+              packEntryToPackagingRunId.set(packEntryId, packagingRunId)
+            }
+          })
+
+          const { data: storageAllocationsData } = await supabase
+            .from('process_packaging_storage_allocations')
+            .select('pack_entry_id, storage_type, box_unit_code, units_count')
+
+          ;((storageAllocationsData ?? []) as Array<{
+            pack_entry_id: number | null
+            storage_type: string | null
+            box_unit_code: string | null
+            units_count: number | null
+          }>).forEach((allocation) => {
+            if (String(allocation.storage_type ?? '').toUpperCase() !== 'BOX') return
+
+            const packEntryId = Number(allocation.pack_entry_id) || 0
+            if (!packEntryId) return
+            const packagingRunId = packEntryToPackagingRunId.get(packEntryId) || 0
+            if (!packagingRunId) return
+
+            const stepRunId = packagingRunToStepRunId.get(packagingRunId) || 0
+            const lotRunId = Number(stepRunToLotRunId.get(stepRunId)) || 0
+            if (!lotRunId) return
+            if (lotRunWarehouseIdMap.get(lotRunId) !== warehouseId) return
+
+            const boxKey = normalizeUnitCode(allocation.box_unit_code)
+            if (!boxKey) return
+            const operationalProductId = boxOperationalProductByCode.get(boxKey)
+            if (!operationalProductId) return
+
+            const usedUnits = Number(allocation.units_count) || 0
+            if (usedUnits <= 0) return
+            consumedByProductId[operationalProductId] = (consumedByProductId[operationalProductId] || 0) + usedUnits
           })
         }
 
@@ -914,7 +968,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       insect_damaged_kernels_pct: fd.insect_damaged_kernels_pct
         ? parseFloat(fd.insect_damaged_kernels_pct)
         : null,
-      nitrogen_used: fd.nitrogen_used ? parseFloat(fd.nitrogen_used) : null,
+      nitrogen_used: null,
       nitrogen_batch_number: fd.nitrogen_batch_number.trim() || null,
       primary_packaging_type: fd.primary_packaging_type.trim() || null,
       primary_packaging_batch: fd.primary_packaging_batch.trim() || null,
@@ -945,7 +999,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         insect_damaged_kernels_pct: formData.insect_damaged_kernels_pct
           ? parseFloat(formData.insect_damaged_kernels_pct)
           : null,
-        nitrogen_used: formData.nitrogen_used ? parseFloat(formData.nitrogen_used) : null,
+        nitrogen_used: null,
         nitrogen_batch_number: formData.nitrogen_batch_number.trim() || null,
         primary_packaging_type: formData.primary_packaging_type.trim() || null,
         primary_packaging_batch: formData.primary_packaging_batch.trim() || null,
@@ -1121,18 +1175,11 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         return
       }
 
-      const pairs = await Promise.all(
-        photos.map(async (photo) => {
-          if (!photo.file_path) {
-            return [photo.id, ''] as const
-          }
-          const { data, error } = await supabase.storage.from('documents').createSignedUrl(photo.file_path, 3600)
-          if (error) {
-            return [photo.id, ''] as const
-          }
-          return [photo.id, data.signedUrl] as const
-        })
+      const pathMap = await getStoredFileUrls(
+        photos.map((photo) => photo.file_path).filter((path): path is string => Boolean(path)),
+        3600
       )
+      const pairs = photos.map((photo) => [photo.id, photo.file_path ? pathMap[photo.file_path] ?? '' : ''] as const)
 
       if (!cancelled) {
         setPhotoPreviewUrls(Object.fromEntries(pairs))
@@ -1164,12 +1211,16 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
     const fileExt = file.name.includes('.') ? file.name.split('.').pop() : 'jpg'
     const safeExt = String(fileExt ?? 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '')
-    const storagePath = `process/packaging/${packagingRun.id}/${photoType}-${Date.now()}.${safeExt || 'jpg'}`
+    const storagePath = buildStorageObjectPath(
+      `process/packaging/${packagingRun.id}`,
+      `${photoType}.${safeExt || 'jpg'}`
+    )
 
     setSaving(true)
-    const { error: uploadError } = await supabase.storage.from('documents').upload(storagePath, file, { upsert: false })
-    if (uploadError) {
-      toast.error(uploadError.message)
+    try {
+      await uploadStoredFile(storagePath, file)
+    } catch (uploadError) {
+      toast.error(uploadError instanceof Error ? uploadError.message : 'Failed to upload photo')
       setSaving(false)
       e.target.value = ''
       return
@@ -1179,7 +1230,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       await addPhoto({ photo_type: photoType, file_path: storagePath })
       toast.success(`${photoType[0].toUpperCase()}${photoType.slice(1)} photo uploaded`)
     } catch (error) {
-      await supabase.storage.from('documents').remove([storagePath])
+      await deleteStoredFile(storagePath).catch(() => undefined)
       toast.error(error instanceof Error ? error.message : 'Failed to save photo metadata')
     } finally {
       setSaving(false)
@@ -1229,7 +1280,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
           {
             const photo = photos.find((entry) => entry.id === deleteTarget.id)
             if (photo?.file_path) {
-              await supabase.storage.from('documents').remove([photo.file_path])
+              await deleteStoredFile(photo.file_path)
             }
           }
           await deletePhoto(deleteTarget.id)
@@ -1317,13 +1368,24 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     },
     [opAcceptedByProductId, opConsumedByProductId]
   )
+  const getAvailableBoxesForBoxUnit = useCallback(
+    (
+      boxUnit: PackagingUnitOption | null,
+      acceptedByProductId = opAcceptedByProductId,
+      consumedByProductId = opConsumedByProductId
+    ): number => {
+      if (!boxUnit) return 0
+      const operationalProductId = Number(boxUnit.operational_product_id) || 0
+      if (!operationalProductId) return 0
+      const accepted = Number(acceptedByProductId[operationalProductId]) || 0
+      const consumed = Number(consumedByProductId[operationalProductId]) || 0
+      return Math.max(0, Math.floor(accepted - consumed))
+    },
+    [opAcceptedByProductId, opConsumedByProductId]
+  )
   const selectedPacketUnitAvailablePacks = useMemo(
     () => getAvailablePacksForPacketUnit(selectedPacketUnitForPackEntry),
     [getAvailablePacksForPacketUnit, selectedPacketUnitForPackEntry]
-  )
-  const autoSelectedFinishedProduct = useMemo(
-    () => (finishedProducts.length > 0 ? finishedProducts[0] ?? null : null),
-    [finishedProducts]
   )
   useEffect(() => {
     setPackEntryForm((prev) => {
@@ -1331,17 +1393,25 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         if (!prev.product_id) return prev
         return { ...prev, product_id: '' }
       }
-      const nextProductId = autoSelectedFinishedProduct ? String(autoSelectedFinishedProduct.id) : ''
+      const selectedStillValid = finishedProducts.some((product) => String(product.id) === prev.product_id)
+      if (selectedStillValid) return prev
+      const nextProductId = finishedProducts.length > 0 ? String(finishedProducts[0].id) : ''
       if (prev.product_id === nextProductId) return prev
       return { ...prev, product_id: nextProductId }
     })
-  }, [selectedWipForPackEntry, autoSelectedFinishedProduct])
+  }, [selectedWipForPackEntry, finishedProducts])
   useEffect(() => {
     if (!showPackEntryForm || !packEntryForm.packet_unit_code || !runWarehouseId) return
     loadOperationalPackagingStockSnapshot().catch((error) => {
       console.error('Failed to refresh OP stock after packet unit selection:', error)
     })
   }, [showPackEntryForm, packEntryForm.packet_unit_code, packEntries.length, runWarehouseId, loadOperationalPackagingStockSnapshot])
+  useEffect(() => {
+    if (!runWarehouseId) return
+    loadOperationalPackagingStockSnapshot(runWarehouseId).catch((error) => {
+      console.error('Failed to refresh OP stock for storage allocation:', error)
+    })
+  }, [runWarehouseId, storageAllocations.length, loadOperationalPackagingStockSnapshot])
   const selectedWipUsedKg = useMemo(() => {
     if (!selectedWipForPackEntry) return 0
     return packEntries
@@ -1457,6 +1527,21 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     const suggested = Math.floor(selectedStorageAvailablePacks / computedPacksPerUnit)
     return suggested > 0 ? String(suggested) : ''
   }, [selectedStoragePackEntryId, computedPacksPerUnit, selectedStorageAvailablePacks])
+  const selectedStorageAvailableBoxes = useMemo(() => {
+    if (!selectedStorageBoxUnit) return 0
+    if (!editingStorageAllocationId) {
+      return getAvailableBoxesForBoxUnit(selectedStorageBoxUnit)
+    }
+    const existing = storageAllocations.find((row) => row.id === editingStorageAllocationId)
+    if (!existing) return getAvailableBoxesForBoxUnit(selectedStorageBoxUnit)
+    if (existing.storage_type !== 'BOX') return getAvailableBoxesForBoxUnit(selectedStorageBoxUnit)
+    const existingBoxCode = normalizeUnitCode(existing.box_unit_code)
+    const selectedBoxCode = normalizeUnitCode(selectedStorageBoxUnit.code)
+    if (!existingBoxCode || existingBoxCode !== selectedBoxCode) {
+      return getAvailableBoxesForBoxUnit(selectedStorageBoxUnit)
+    }
+    return getAvailableBoxesForBoxUnit(selectedStorageBoxUnit) + (Number(existing.units_count) || 0)
+  }, [selectedStorageBoxUnit, editingStorageAllocationId, storageAllocations, getAvailableBoxesForBoxUnit])
 
   useEffect(() => {
     if (!storageUnitsAutoPrefillEnabled) return
@@ -2024,6 +2109,39 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       toast.error('No active box pack rule found for selected packet and box')
       return
     }
+    if (storageType === 'BOX' && !selectedStorageBoxUnit) {
+      toast.error('Selected box unit is invalid')
+      return
+    }
+
+    if (storageType === 'BOX') {
+      if (!runWarehouseId) {
+        toast.error('Unable to determine run warehouse for box stock validation.')
+        return
+      }
+      const snapshot = await loadOperationalPackagingStockSnapshot(runWarehouseId)
+      let availableBoxesForValidation = getAvailableBoxesForBoxUnit(
+        selectedStorageBoxUnit,
+        snapshot.accepted,
+        snapshot.consumed
+      )
+
+      if (editingStorageAllocationId) {
+        const existing = storageAllocations.find((row) => row.id === editingStorageAllocationId)
+        if (existing && existing.storage_type === 'BOX') {
+          const existingBoxCode = normalizeUnitCode(existing.box_unit_code)
+          const selectedBoxCode = normalizeUnitCode(selectedStorageBoxUnit.code)
+          if (existingBoxCode && existingBoxCode === selectedBoxCode) {
+            availableBoxesForValidation += Number(existing.units_count) || 0
+          }
+        }
+      }
+
+      if (unitsCount > availableBoxesForValidation) {
+        toast.error(`Allocation exceeds available box inventory (${availableBoxesForValidation}) for selected box unit`)
+        return
+      }
+    }
 
     const totalPacks = unitsCount * packsPerUnit
     if (editingStorageAllocationId) {
@@ -2315,18 +2433,33 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                   </div>
                   <div className="space-y-2">
                     <Label>Finished product being packed *</Label>
-                    <Input
-                      type="text"
-                      readOnly
-                      value={
-                        autoSelectedFinishedProduct
-                          ? `${autoSelectedFinishedProduct.name}${autoSelectedFinishedProduct.sku ? ` (${autoSelectedFinishedProduct.sku})` : ''}`
-                          : selectedWipForPackEntry
-                          ? 'No finished product mapped from composition'
-                          : 'Select WIP first'
+                    <select
+                      value={packEntryForm.product_id}
+                      onChange={(e) =>
+                        setPackEntryForm((prev) => ({
+                          ...prev,
+                          product_id: e.target.value,
+                        }))
                       }
+                      required
                       disabled={saving || externalLoading}
-                    />
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    >
+                      {!selectedWipForPackEntry ? (
+                        <option value="">Select WIP first</option>
+                      ) : finishedProducts.length === 0 ? (
+                        <option value="">No finished product mapped from composition</option>
+                      ) : (
+                        <>
+                          <option value="">Select finished product</option>
+                          {finishedProducts.map((product) => (
+                            <option key={product.id} value={product.id}>
+                              {product.name} {product.sku ? `(${product.sku})` : ''}
+                            </option>
+                          ))}
+                        </>
+                      )}
+                    </select>
                   </div>
                   <div className="space-y-2">
                     <Label>Packet unit *</Label>
@@ -2994,23 +3127,6 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             <h4 className="text-sm font-semibold text-text-dark mb-4">Nitrogen</h4>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="nitrogen_used">Nitrogen Used</Label>
-                <select
-                  id="nitrogen_used"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={formData.nitrogen_used}
-                  onChange={(e) => setFormData({ ...formData, nitrogen_used: e.target.value })}
-                  disabled={saving || externalLoading}
-                >
-                  {NITROGEN_USED_OPTIONS.map((option) => (
-                    <option key={option || 'empty'} value={option}>
-                      {option || 'Select amount'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
                 <Label htmlFor="nitrogen_batch_number">Nitrogen Batch Number</Label>
                 <Input
                   id="nitrogen_batch_number"
@@ -3253,6 +3369,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       </select>
                       {selectedStoragePacketCode && matchingBoxUnitsForSelectedPacket.length === 0 ? (
                         <p className="text-xs text-red-600">No active box pack rule found for this packet unit.</p>
+                      ) : null}
+                      {selectedStorageBoxUnit ? (
+                        <p className="text-xs text-text-dark/60">
+                          {opStockLoading
+                            ? 'Checking box stock...'
+                            : !selectedStorageBoxUnit.operational_product_id
+                            ? 'This box unit is not mapped to an operational product.'
+                            : `Available boxes: ${selectedStorageAvailableBoxes}`}
+                        </p>
                       ) : null}
                     </div>
                   )}
