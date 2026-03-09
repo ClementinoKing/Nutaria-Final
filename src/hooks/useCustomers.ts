@@ -9,7 +9,9 @@ interface CustomerContact {
 export interface Customer {
   [key: string]: unknown
   customer_contacts?: CustomerContact[]
+  customer_addresses?: Array<Record<string, unknown>>
   contacts?: CustomerContact[]
+  addresses?: Array<Record<string, unknown>>
 }
 
 interface UseCustomersReturn {
@@ -31,7 +33,7 @@ export function useCustomers(): UseCustomersReturn {
 
     const { data, error: fetchError } = await supabase
       .from('customers')
-      .select('*, customer_contacts(*)')
+      .select('*, customer_contacts(*), customer_addresses(*)')
       .order('created_at', { ascending: false })
 
     if (fetchError) {
@@ -42,7 +44,8 @@ export function useCustomers(): UseCustomersReturn {
 
     const normalized = (data ?? []).map((customer) => ({
       ...customer,
-      contacts: customer.customer_contacts ?? []
+      contacts: customer.customer_contacts ?? [],
+      addresses: customer.customer_addresses ?? [],
     }))
 
     setCustomers(normalized)
@@ -62,4 +65,3 @@ export function useCustomers(): UseCustomersReturn {
     refresh: fetchCustomers
   }
 }
-

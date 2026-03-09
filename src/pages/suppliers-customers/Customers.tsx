@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import PageLayout from '@/components/layout/PageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -28,6 +29,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  createCustomerAddressEntry,
+  getAdditionalCustomerAddresses,
+  getPrimaryCustomerAddress,
+  normalizeCustomerAddresses,
+  type CustomerAddressFormEntry,
+  type CustomerAddressRecord,
+} from '@/lib/customerAddresses'
 
 const createUniqueId = (prefix: string): string => `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now()}`
 
@@ -36,6 +45,8 @@ const createEmptyForm = () => ({
   country: 'South Africa',
   billing_address: '',
   shipping_address: '',
+  additional_billing_addresses: [] as CustomerAddressFormEntry[],
+  additional_shipping_addresses: [] as CustomerAddressFormEntry[],
   phone_dial_code: DEFAULT_COUNTRY_DIAL_CODE,
   phone: '',
   email: '',
@@ -94,6 +105,10 @@ const populateFormFromCustomer = (customer: Customer | null | undefined) => {
     return createEmptyForm()
   }
 
+  const addresses = Array.isArray(customer?.addresses)
+    ? (customer.addresses as CustomerAddressRecord[])
+    : []
+
   const contacts =
     customer.contacts && customer.contacts.length > 0
       ? customer.contacts.map((contact) => {
@@ -124,8 +139,10 @@ const populateFormFromCustomer = (customer: Customer | null | undefined) => {
   return {
     name: String(customer.name ?? ''),
     country: String(customer.country ?? '') || 'South Africa',
-    billing_address: String(customer.billing_address ?? ''),
-    shipping_address: String(customer.shipping_address ?? ''),
+    billing_address: getPrimaryCustomerAddress(addresses, 'BILLING', String(customer.billing_address ?? '')),
+    shipping_address: getPrimaryCustomerAddress(addresses, 'SHIPPING', String(customer.shipping_address ?? '')),
+    additional_billing_addresses: getAdditionalCustomerAddresses(addresses, 'BILLING'),
+    additional_shipping_addresses: getAdditionalCustomerAddresses(addresses, 'SHIPPING'),
     phone: parsedCustomerPhone.localPhone,
     phone_dial_code: parsedCustomerPhone.dialCode,
     email: String(customer.email ?? ''),
@@ -137,12 +154,13 @@ function Customers() {
   const BULK_NO_CHANGE = '__NO_CHANGE__'
   const { customers, setCustomers, loading, error, refresh } = useCustomers()
   const { user } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
 
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [formData, setFormData] = useState(createEmptyForm())
   const [formErrors, setFormErrors] = useState(createFormErrors())
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | number | null>(null)
   const [editingCustomerId, setEditingCustomerId] = useState<string | number | null>(null)
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Array<string | number>>([])
   const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
@@ -170,10 +188,18 @@ function Customers() {
     }
   }, [error])
 
-  const selectedCustomer = useMemo(
-    () => customers.find((customer) => customer.id === selectedCustomerId) ?? null,
-    [customers, selectedCustomerId]
-  )
+  useEffect(() => {
+    const editCustomerId = (location.state as { editCustomerId?: string | number } | null)?.editCustomerId
+    if (!editCustomerId) {
+      return
+    }
+
+    const customer = customers.find((entry) => entry.id === editCustomerId)
+    if (customer) {
+      handleOpenModal(customer)
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [customers, location.pathname, location.state, navigate])
 
   const summary = useMemo(() => {
     const totalContacts = customers.reduce((count, customer) => count + (customer.contacts?.length ?? 0), 0)
@@ -275,6 +301,40 @@ function Customers() {
     })
   }
 
+  const handleAdditionalAddressChange = (
+    addressType: 'BILLING' | 'SHIPPING',
+    clientId: string,
+    field: keyof CustomerAddressFormEntry,
+    value: string
+  ) => {
+    const key =
+      addressType === 'BILLING' ? 'additional_billing_addresses' : 'additional_shipping_addresses'
+    setFormData((prev) => ({
+      ...prev,
+      [key]: prev[key].map((entry: CustomerAddressFormEntry) =>
+        entry.clientId === clientId ? { ...entry, [field]: value } : entry
+      ),
+    }))
+  }
+
+  const handleAddAddress = (addressType: 'BILLING' | 'SHIPPING') => {
+    const key =
+      addressType === 'BILLING' ? 'additional_billing_addresses' : 'additional_shipping_addresses'
+    setFormData((prev) => ({
+      ...prev,
+      [key]: [...prev[key], createCustomerAddressEntry()],
+    }))
+  }
+
+  const handleRemoveAddress = (addressType: 'BILLING' | 'SHIPPING', clientId: string) => {
+    const key =
+      addressType === 'BILLING' ? 'additional_billing_addresses' : 'additional_shipping_addresses'
+    setFormData((prev) => ({
+      ...prev,
+      [key]: prev[key].filter((entry: CustomerAddressFormEntry) => entry.clientId !== clientId),
+    }))
+  }
+
   const validateForm = (data: ReturnType<typeof createEmptyForm>) => {
     const errors = createFormErrors()
 
@@ -329,11 +389,22 @@ function Customers() {
     }
 
     setIsSubmitting(true)
+    const billingAddresses = normalizeCustomerAddresses(
+      'BILLING',
+      formData.billing_address,
+      formData.additional_billing_addresses
+    )
+    const shippingAddresses = normalizeCustomerAddresses(
+      'SHIPPING',
+      formData.shipping_address,
+      formData.additional_shipping_addresses
+    )
+
     const payload = {
       name: formData.name.trim(),
       country: formData.country?.trim() || null,
-      billing_address: formData.billing_address?.trim() || null,
-      shipping_address: formData.shipping_address?.trim() || null,
+      billing_address: billingAddresses[0]?.address ?? null,
+      shipping_address: shippingAddresses[0]?.address ?? null,
       phone: formatPhoneForStorage(formData.phone_dial_code || DEFAULT_COUNTRY_DIAL_CODE, formData.phone),
       email: formData.email?.trim() || null
     }
@@ -361,6 +432,15 @@ function Customers() {
         if (deleteContactsError) {
           console.error('Failed to clear existing contacts', deleteContactsError)
         }
+
+        const { error: deleteAddressesError } = await supabase
+          .from('customer_addresses')
+          .delete()
+          .eq('customer_id', editingCustomerId)
+
+        if (deleteAddressesError) {
+          console.error('Failed to clear existing addresses', deleteAddressesError)
+        }
       } else {
         const { data: insertedCustomer, error: insertError } = await supabase
           .from('customers')
@@ -375,6 +455,7 @@ function Customers() {
       }
 
       let persistedContacts = []
+      let persistedAddresses = []
       const contactsToInsert = formData.contacts
         .filter((contact) => contact.name && contact.name.trim())
         .map((contact) => ({
@@ -400,20 +481,40 @@ function Customers() {
         persistedContacts = contactData ?? []
       }
 
+      const addressesToInsert = [...billingAddresses, ...shippingAddresses].map((entry) => ({
+        customer_id: customerRecord.id,
+        address_type: entry.address_type,
+        label: entry.label,
+        address: entry.address,
+        is_primary: entry.is_primary,
+      }))
+
+      if (addressesToInsert.length > 0) {
+        const { data: addressData, error: addressesError } = await supabase
+          .from('customer_addresses')
+          .insert(addressesToInsert)
+          .select()
+
+        if (addressesError) {
+          throw addressesError
+        }
+
+        persistedAddresses = addressData ?? []
+      }
+
       const customerWithContacts = {
         ...customerRecord,
-        contacts: persistedContacts
+        contacts: persistedContacts,
+        addresses: persistedAddresses,
       }
 
       if (editingCustomerId) {
         setCustomers((prev = []) =>
           prev.map((customer) => (customer.id === editingCustomerId ? customerWithContacts : customer))
         )
-        setSelectedCustomerId(editingCustomerId)
         toast.success('Customer updated')
       } else {
         setCustomers((prev = []) => [customerWithContacts, ...prev])
-        setSelectedCustomerId(customerRecord.id)
         toast.success('Customer added')
       }
 
@@ -514,7 +615,6 @@ function Customers() {
 
       await refresh()
       setSelectedCustomerIds([])
-      setSelectedCustomerId(null)
       setBulkDeleteAlertOpen(false)
       toast.success(`Deleted ${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'}.`)
     } catch (bulkDeleteError) {
@@ -657,170 +757,94 @@ function Customers() {
           </Card>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="border-olive-light/30 bg-white lg:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-text-dark">Customer Directory</CardTitle>
-              <CardDescription>Manage billing relationships and points of contact.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {loading ? (
-                <div className="flex items-center justify-center py-12 text-sm text-text-dark/60">
-                  Loading customers from Supabase…
-                </div>
-              ) : customers.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-                  <Users className="h-10 w-10 text-olive" />
-                  <p className="text-sm font-medium text-text-dark">No customers captured yet.</p>
-                  <p className="text-xs text-text-dark/60">Add your first customer to build the CRM directory.</p>
-                  <Button size="sm" className="bg-olive hover:bg-olive-dark" onClick={() => handleOpenModal(null)}>
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    Add Customer
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 px-4 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-sm text-text-dark/70">
-                        {selectedCustomerCount > 0
-                          ? `${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'} selected`
-                          : 'No customers selected'}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleToggleSelectAll(!allSelected)}
-                          disabled={customers.length === 0 || isBulkActionSubmitting}
-                        >
-                          {allSelected ? 'Deselect All' : 'Select All'}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedCustomerIds([])}
-                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
-                        >
-                          Clear
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={openBulkEditModal}
-                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
-                        >
-                          <Edit className="mr-2 h-4 w-4" />
-                          Bulk Edit
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="bg-red-600 text-white hover:bg-red-700"
-                          onClick={() => setBulkDeleteAlertOpen(true)}
-                          disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete Selected
-                        </Button>
-                      </div>
+        <Card className="border-olive-light/30 bg-white">
+          <CardHeader>
+            <CardTitle className="text-text-dark">Customer Directory</CardTitle>
+            <CardDescription>Manage billing relationships, addresses, and customer contacts.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="flex items-center justify-center py-12 text-sm text-text-dark/60">
+                Loading customers from Supabase…
+              </div>
+            ) : customers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                <Users className="h-10 w-10 text-olive" />
+                <p className="text-sm font-medium text-text-dark">No customers captured yet.</p>
+                <p className="text-xs text-text-dark/60">Add your first customer to build the CRM directory.</p>
+                <Button size="sm" className="bg-olive hover:bg-olive-dark" onClick={() => handleOpenModal(null)}>
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Add Customer
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-olive-light/40 bg-olive-light/10 px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-text-dark/70">
+                      {selectedCustomerCount > 0
+                        ? `${selectedCustomerCount} customer${selectedCustomerCount === 1 ? '' : 's'} selected`
+                        : 'No customers selected'}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleToggleSelectAll(!allSelected)}
+                        disabled={customers.length === 0 || isBulkActionSubmitting}
+                      >
+                        {allSelected ? 'Deselect All' : 'Select All'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedCustomerIds([])}
+                        disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                      >
+                        Clear
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={openBulkEditModal}
+                        disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                      >
+                        <Edit className="mr-2 h-4 w-4" />
+                        Bulk Edit
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="bg-red-600 text-white hover:bg-red-700"
+                        onClick={() => setBulkDeleteAlertOpen(true)}
+                        disabled={selectedCustomerCount === 0 || isBulkActionSubmitting}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete Selected
+                      </Button>
                     </div>
                   </div>
-                  <ResponsiveTable
-                    columns={columns}
-                    data={customers}
-                    rowKey="id"
-                    tableClassName=""
-                    mobileCardClassName=""
-                    getRowClassName={() => ''}
-                    onRowClick={(customer: Customer) => setSelectedCustomerId((customer.id as string | number | null) ?? null)}
-                  />
                 </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-olive-light/30 bg-white">
-            <CardHeader className="flex flex-col gap-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-text-dark">Customer Snapshot</CardTitle>
-                  <CardDescription>
-                    {selectedCustomer ? 'Active account details' : 'Select a customer to see details'}
-                  </CardDescription>
-                </div>
-                {selectedCustomer ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleOpenModal(selectedCustomer)}
-                    className="shrink-0"
-                  >
-                    Edit
-                  </Button>
-                ) : null}
+                <ResponsiveTable
+                  columns={columns}
+                  data={customers}
+                  rowKey="id"
+                  tableClassName=""
+                  mobileCardClassName=""
+                  getRowClassName={() => ''}
+                  onRowClick={(customer: Customer) => {
+                    const customerId = customer.id as string | number | null
+                    if (customerId == null) return
+                    navigate(`/suppliers-customers/customers/${customerId}`)
+                  }}
+                />
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm text-text-dark">
-              {selectedCustomer ? (
-                <>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Customer</p>
-                    <p className="text-base font-medium text-text-dark">{String(selectedCustomer.name ?? '')}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Main contact</p>
-                    <p className="text-sm text-text-dark/80">{String(selectedCustomer.email ?? '') || '—'}</p>
-                    <p className="text-sm text-text-dark/80">{String(selectedCustomer.phone ?? '') || '—'}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Country</p>
-                    <p className="text-sm text-text-dark/80">{String(selectedCustomer.country ?? '') || 'Not provided'}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Billing address</p>
-                    <p className="text-sm text-text-dark/80">
-                      {String(selectedCustomer.billing_address ?? '') || 'Not provided'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Shipping address</p>
-                    <p className="text-sm text-text-dark/80">
-                      {String(selectedCustomer.shipping_address ?? '') || 'Not provided'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-text-dark/60">Contacts</p>
-                    {selectedCustomer.contacts?.length ? (
-                      <ul className="space-y-2">
-                        {selectedCustomer.contacts.map((contact) => (
-                          <li
-                            key={String(contact.id ?? contact.name ?? '')}
-                            className="rounded-lg border border-olive-light/30 bg-olive-light/20 px-3 py-2"
-                          >
-                            <p className="text-sm font-medium text-text-dark">{String(contact.name ?? '')}</p>
-                            <p className="text-xs text-text-dark/60">{String(contact.role ?? '') || 'No role recorded'}</p>
-                            <p className="text-xs text-text-dark/60">{String(contact.email ?? '') || 'No email provided'}</p>
-                            <p className="text-xs text-text-dark/60">{String(contact.phone ?? '') || 'No phone provided'}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-text-dark/70">No contacts recorded yet.</p>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-text-dark/70">
-                  Choose a customer from the directory to preview billing information and contact details.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {isModalOpen && (
@@ -918,8 +942,14 @@ function Customers() {
                         />
                       </div>
                     </div>
-                    <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="billing_address">Billing address</Label>
+                    <div className="space-y-3 sm:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label htmlFor="billing_address">Primary billing address</Label>
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleAddAddress('BILLING')} disabled={isSubmitting}>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Add Billing Address
+                        </Button>
+                      </div>
                       <textarea
                         id="billing_address"
                         name="billing_address"
@@ -930,9 +960,41 @@ function Customers() {
                         disabled={isSubmitting}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
+                      {formData.additional_billing_addresses.map((entry, index) => (
+                        <div key={entry.clientId} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-medium text-text-dark">Billing address {index + 2}</p>
+                            <Button type="button" variant="ghost" size="icon" onClick={() => handleRemoveAddress('BILLING', entry.clientId)} disabled={isSubmitting}>
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="space-y-3">
+                            <Input
+                              value={entry.label}
+                              onChange={(event) => handleAdditionalAddressChange('BILLING', entry.clientId, 'label', event.target.value)}
+                              placeholder="Label e.g. Finance office"
+                              disabled={isSubmitting}
+                            />
+                            <textarea
+                              value={entry.address}
+                              onChange={(event) => handleAdditionalAddressChange('BILLING', entry.clientId, 'address', event.target.value)}
+                              rows={3}
+                              placeholder="Street, City, Postal Code"
+                              disabled={isSubmitting}
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="space-y-2 sm:col-span-2">
-                      <Label htmlFor="shipping_address">Shipping address</Label>
+                    <div className="space-y-3 sm:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label htmlFor="shipping_address">Primary shipping address</Label>
+                        <Button type="button" variant="outline" size="sm" onClick={() => handleAddAddress('SHIPPING')} disabled={isSubmitting}>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Add Shipping Address
+                        </Button>
+                      </div>
                       <textarea
                         id="shipping_address"
                         name="shipping_address"
@@ -943,6 +1005,32 @@ function Customers() {
                         disabled={isSubmitting}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
+                      {formData.additional_shipping_addresses.map((entry, index) => (
+                        <div key={entry.clientId} className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-medium text-text-dark">Shipping address {index + 2}</p>
+                            <Button type="button" variant="ghost" size="icon" onClick={() => handleRemoveAddress('SHIPPING', entry.clientId)} disabled={isSubmitting}>
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="space-y-3">
+                            <Input
+                              value={entry.label}
+                              onChange={(event) => handleAdditionalAddressChange('SHIPPING', entry.clientId, 'label', event.target.value)}
+                              placeholder="Label e.g. Durban warehouse"
+                              disabled={isSubmitting}
+                            />
+                            <textarea
+                              value={entry.address}
+                              onChange={(event) => handleAdditionalAddressChange('SHIPPING', entry.clientId, 'address', event.target.value)}
+                              rows={3}
+                              placeholder="Street, City, Postal Code"
+                              disabled={isSubmitting}
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </section>

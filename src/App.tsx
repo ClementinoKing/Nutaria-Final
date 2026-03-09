@@ -40,6 +40,7 @@ const LegacyProcessStepsRedirect = lazy(() => import('./pages/process/LegacyProc
 const CompletedProcessesList = lazy(() => import('./pages/process/CompletedProcessesList'))
 const CompletedProcessDetail = lazy(() => import('./pages/process/CompletedProcessDetail'))
 const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
+const CustomerDetail = lazy(() => import('./pages/suppliers-customers/CustomerDetail'))
 const Suppliers = lazy(() => import('./pages/suppliers-customers/Suppliers'))
 const SupplierDetail = lazy(() => import('./pages/suppliers-customers/SupplierDetail'))
 const SupplierEdit = lazy(() => import('./pages/suppliers-customers/SupplierEdit'))
@@ -525,6 +526,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Customers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/suppliers-customers/customers/:customerId"
+          element={
+            <ProtectedRoute>
+              <CustomerDetail />
             </ProtectedRoute>
           }
         />
