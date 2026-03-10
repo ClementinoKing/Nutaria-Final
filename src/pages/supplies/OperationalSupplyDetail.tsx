@@ -20,8 +20,10 @@ interface UnitLookup {
 
 interface SupplyBatchRow {
   id: number
+  lot_no?: string
   product: string
   unit: string
+  outer_expression: string
   received_qty: number
   accepted_qty: number
 }
@@ -76,6 +78,9 @@ function OperationalSupplyDetail() {
   const [warehouseLookup, setWarehouseLookup] = useState<Record<string, string>>({})
   const [productLookup, setProductLookup] = useState<Record<string, ProductLookup>>({})
   const [unitLookup, setUnitLookup] = useState<Record<string, UnitLookup>>({})
+  const [packagingChecks, setPackagingChecks] = useState<Record<string, unknown>[]>([])
+  const [packagingItems, setPackagingItems] = useState<Record<string, unknown>[]>([])
+  const [packagingParameters, setPackagingParameters] = useState<Record<number, { name: string; code: string }>>({})
 
   const supplyIdNumber = useMemo(() => {
     const parsed = Number.parseInt(supplyId ?? '', 10)
@@ -119,6 +124,9 @@ function OperationalSupplyDetail() {
         warehousesResponse,
         productsResponse,
         unitsResponse,
+        packagingChecksResponse,
+        packagingItemsResponse,
+        packagingParametersResponse,
       ] = await Promise.all([
         supabase
           .from('supplies')
@@ -132,12 +140,15 @@ function OperationalSupplyDetail() {
           .maybeSingle(),
         supabase
           .from('supply_batches')
-          .select('id, product_id, unit_id, received_qty, accepted_qty')
+          .select('id, lot_no, product_id, unit_id, outer_unit_id, outer_unit_qty, inner_units_per_outer, received_qty, accepted_qty')
           .eq('supply_id', supplyIdNumber),
         supabase.from('suppliers').select('id, name'),
         supabase.from('warehouses').select('id, name'),
         supabase.from('products').select('id, name, sku'),
         supabase.from('units').select('id, name, symbol'),
+        supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyIdNumber),
+        supabase.from('supply_packaging_quality_check_items').select('*'),
+        supabase.from('packaging_quality_parameters').select('id, name, code'),
       ])
 
       if (cancelled) return
@@ -159,10 +170,35 @@ function OperationalSupplyDetail() {
         setLoading(false)
         return
       }
+      if (packagingChecksResponse.error) {
+        setError(packagingChecksResponse.error.message || 'Failed to load packaging checks.')
+        setLoading(false)
+        return
+      }
+      if (packagingItemsResponse.error) {
+        setError(packagingItemsResponse.error.message || 'Failed to load packaging check items.')
+        setLoading(false)
+        return
+      }
 
       setSupply(supplyResponse.data as SupplyRecord)
       setOperationalEntry((entryResponse.data as OperationalEntry | null) ?? null)
       setSupplyBatches((batchesResponse.data as Record<string, unknown>[]) ?? [])
+      const packagingChecksRows = (packagingChecksResponse.data as Record<string, unknown>[]) ?? []
+      setPackagingChecks(packagingChecksRows)
+      const packagingCheckIds = packagingChecksRows
+        .map((row) => Number((row as { id?: number | null }).id))
+        .filter((id) => Number.isFinite(id))
+      setPackagingItems(
+        ((packagingItemsResponse.data as Record<string, unknown>[]) ?? []).filter((item) =>
+          packagingCheckIds.includes(Number((item as { packaging_check_id?: number | null }).packaging_check_id)),
+        ),
+      )
+      const packagingParamMap: Record<number, { name: string; code: string }> = {}
+      ;((packagingParametersResponse.data as Array<{ id: number; name: string; code: string }>) ?? []).forEach((row) => {
+        packagingParamMap[row.id] = { name: row.name, code: row.code }
+      })
+      setPackagingParameters(packagingParamMap)
 
       const supplierMap: Record<string, string> = {}
       ;(suppliersResponse.data ?? []).forEach((row) => {
@@ -210,17 +246,49 @@ function OperationalSupplyDetail() {
       supplyBatches.map((line) => {
         const productId = String((line.product_id as number | null) ?? '')
         const unitId = String((line.unit_id as number | null) ?? '')
+        const outerUnitId = String((line.outer_unit_id as number | null) ?? '')
         const product = productLookup[productId]
         const unit = unitLookup[unitId]
+        const outerUnit = unitLookup[outerUnitId]
+        const outerQty =
+          line.outer_unit_qty != null && Number.isFinite(Number(line.outer_unit_qty)) ? Number(line.outer_unit_qty) : null
+        const innerUnitsPerOuter =
+          line.inner_units_per_outer != null && Number.isFinite(Number(line.inner_units_per_outer))
+            ? Number(line.inner_units_per_outer)
+            : null
         return {
           id: Number(line.id ?? 0),
+          lot_no: String((line.lot_no as string | null) ?? ''),
           product: product ? `${product.name}${product.sku ? ` (${product.sku})` : ''}` : '—',
           unit: unit ? `${unit.name}${unit.symbol ? ` (${unit.symbol})` : ''}` : '—',
+          outer_expression:
+            outerUnit && outerQty != null && innerUnitsPerOuter != null
+              ? `${formatNumber(outerQty)} ${outerUnit.name}${outerUnit.symbol ? ` (${outerUnit.symbol})` : ''} x ${formatNumber(innerUnitsPerOuter)}`
+              : 'Direct inner-unit receipt',
           received_qty: Number(line.received_qty ?? 0),
           accepted_qty: Number(line.accepted_qty ?? 0),
         }
       }),
     [productLookup, supplyBatches, unitLookup]
+  )
+
+  const packagingByBatch = useMemo(
+    () =>
+      packagingChecks
+        .map((check) => {
+          const checkId = Number((check as { id?: number | null }).id)
+          const lotId = Number((check as { lot_id?: number | null }).lot_id)
+          const batch = rows.find((row) => row.id === lotId)
+          return {
+            check,
+            batch,
+            items: packagingItems.filter(
+              (item) => Number((item as { packaging_check_id?: number | null }).packaging_check_id) === checkId,
+            ),
+          }
+        })
+        .filter((entry) => entry.batch && entry.items.length > 0),
+    [packagingChecks, packagingItems, rows],
   )
 
   const totalReceived = useMemo(
@@ -345,10 +413,19 @@ function OperationalSupplyDetail() {
           <ResponsiveTable
             columns={[
               { key: 'product', header: 'Product', accessor: 'product' },
-              { key: 'unit', header: 'Unit', accessor: 'unit' },
+              {
+                key: 'received_as',
+                header: 'Received As',
+                render: (row: SupplyBatchRow) => (
+                  <div>
+                    <div className="font-medium text-text-dark">{row.outer_expression}</div>
+                    <div className="text-xs text-text-dark/60">Stock unit: {row.unit}</div>
+                  </div>
+                ),
+              },
               {
                 key: 'received_qty',
-                header: 'Received',
+                header: 'Total Items',
                 render: (row: SupplyBatchRow) => formatNumber(row.received_qty),
                 cellClassName: 'text-right',
                 mobileValueClassName: 'text-right',
@@ -369,6 +446,54 @@ function OperationalSupplyDetail() {
           />
         </CardContent>
       </Card>
+
+      {packagingByBatch.length > 0 ? (
+        <Card className="mt-6 border-olive-light/30">
+          <CardHeader>
+            <CardTitle className="text-text-dark">Packaging Quality Parameters</CardTitle>
+            <CardDescription>Packaging quality captured for each operational batch.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {packagingByBatch.map(({ check, batch, items }) => (
+              <div
+                key={`packaging-batch-${String((check as { id?: number | null }).id ?? 'unknown')}`}
+                className="rounded-xl border border-olive-light/30 bg-white p-4"
+              >
+                <div className="mb-4">
+                  <p className="text-sm font-semibold text-text-dark">
+                    {batch?.product ?? 'Unknown product'}
+                    {batch?.lot_no ? ` • ${batch.lot_no}` : ''}
+                  </p>
+                  <p className="text-xs text-text-dark/70">
+                    Qty: {formatNumber(batch?.received_qty)} {batch?.unit !== '—' ? batch?.unit : ''}
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {items.map((item) => {
+                    const parameterId = Number((item as { parameter_id?: number | null }).parameter_id)
+                    const parameter = packagingParameters[parameterId]
+                    const value = (item as { value?: string | null }).value
+                    const numericValue = (item as { numeric_value?: number | null }).numeric_value
+                    return (
+                      <div
+                        key={`packaging-item-${String((item as { id?: number | null }).id ?? `${parameterId}`)}`}
+                        className="rounded-lg border border-olive-light/30 bg-olive-light/10 px-3 py-2"
+                      >
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                          {parameter?.name ?? 'Unknown Parameter'}
+                        </p>
+                        <p className="mt-1 text-sm font-medium text-text-dark">
+                          {value || (numericValue != null ? String(numericValue) : 'Not recorded')}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
     </PageLayout>
   )
 }

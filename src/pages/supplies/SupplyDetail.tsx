@@ -109,7 +109,7 @@ interface FetchedDetailData {
   supplyDocuments: Record<string, unknown>[]
   supplyActivities: Record<string, unknown>[]
   vehicleInspection: Record<string, unknown> | null
-  packagingCheck: Record<string, unknown> | null
+  packagingChecks: Record<string, unknown>[]
   packagingItems: Record<string, unknown>[]
   supplierSignOff: Record<string, unknown> | null
   supplierLookup: Record<string, unknown>
@@ -163,7 +163,11 @@ function SupplyDetail() {
       ? navigationState.supplyActivities
       : []
   const vehicleInspection = fetchedData?.vehicleInspection ?? navigationState.vehicleInspection ?? null
-  const packagingCheck = fetchedData?.packagingCheck ?? navigationState.packagingCheck ?? null
+  const packagingChecks = Array.isArray(fetchedData?.packagingChecks)
+    ? fetchedData.packagingChecks
+    : Array.isArray(navigationState.packagingChecks)
+      ? navigationState.packagingChecks
+      : []
   const packagingItems = Array.isArray(fetchedData?.packagingItems)
     ? fetchedData!.packagingItems
     : Array.isArray(navigationState.packagingItems)
@@ -226,10 +230,12 @@ function SupplyDetail() {
           return
         }
         const supplyObj = supplyRow as Record<string, unknown>
-        const packagingCheckRow = (packagingChecksData as Record<string, unknown>[])?.[0] ?? null
-        const packagingCheckId = packagingCheckRow ? (packagingCheckRow as { id: number }).id : null
+        const packagingChecksRows = (packagingChecksData ?? []) as Record<string, unknown>[]
+        const packagingCheckIds = packagingChecksRows
+          .map((check) => Number((check as { id?: number | null }).id))
+          .filter((id) => Number.isFinite(id))
         const packagingItemsFiltered = (packagingItemsData ?? []).filter(
-          (i: { packaging_check_id?: number }) => i.packaging_check_id === packagingCheckId,
+          (i: { packaging_check_id?: number }) => packagingCheckIds.includes(Number(i.packaging_check_id)),
         ) as Record<string, unknown>[]
         const qualityChecksArr = (qualityChecksData ?? []) as { id: number }[]
         const qualityCheckIds = qualityChecksArr.map((c) => c.id)
@@ -269,7 +275,7 @@ function SupplyDetail() {
           supplyDocuments: (docsData ?? []) as Record<string, unknown>[],
           supplyActivities: (supplyActivitiesData ?? []) as Record<string, unknown>[],
           vehicleInspection: vehicleData as Record<string, unknown> | null,
-          packagingCheck: packagingCheckRow as Record<string, unknown> | null,
+          packagingChecks: packagingChecksRows,
           packagingItems: packagingItemsFiltered,
           supplierSignOff: signOffData as Record<string, unknown> | null,
           supplierLookup,
@@ -358,6 +364,29 @@ function SupplyDetail() {
     () => new Map(Object.entries(fetchedData?.profileLookup ?? navigationState.profileLookup ?? {})),
     [fetchedData?.profileLookup, navigationState.profileLookup],
   )
+
+  const packagingChecksWithItems = useMemo(() => {
+    return packagingChecks
+      .map((check) => {
+        const checkId = Number((check as { id?: number | null }).id)
+        const lotId = Number((check as { lot_id?: number | null }).lot_id)
+        const batch = Number.isFinite(lotId)
+          ? batches.find((entry) => Number((entry as { id?: number | null }).id) === lotId)
+          : null
+        const batchProductId = batch ? Number((batch as { product_id?: number | null }).product_id) : NaN
+        const product = Number.isFinite(batchProductId)
+          ? (productLookup.get(String(batchProductId)) as ProductEntry | undefined)
+          : undefined
+
+        return {
+          check,
+          items: packagingItems.filter((item) => Number((item as { packaging_check_id?: number | null }).packaging_check_id) === checkId),
+          batch,
+          product,
+        }
+      })
+      .filter((entry) => entry.items.length > 0)
+  }, [batches, packagingChecks, packagingItems, productLookup])
 
   const qualityParameterLookup = useMemo(() => {
     const lookup = new Map()
@@ -770,57 +799,76 @@ function SupplyDetail() {
       }
 
       /* ================= SECTION 4 ================= */
-      if (packagingCheck && packagingItems.length > 0) {
+      if (packagingChecksWithItems.length > 0) {
         section(sectionNum++, 'Packaging Quality Parameters')
-        pdf.setFontSize(9)
-        pdf.setFont('helvetica', 'normal')
-        pdf.setTextColor(textDark[0], textDark[1], textDark[2])
-
-        if (packagingCheck.checked_at) {
-          pageBreak(6)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
-          pdf.text('Checked At:', margin, y)
+        packagingChecksWithItems.forEach(({ check, items, batch, product }, entryIndex) => {
+          pdf.setFontSize(9)
           pdf.setFont('helvetica', 'normal')
           pdf.setTextColor(textDark[0], textDark[1], textDark[2])
-          pdf.text(formatDateTime(packagingCheck.checked_at as string | Date | number | null | undefined), margin + 35, y)
-          y += 6
-        }
 
-        packagingItems.forEach((item: { [key: string]: unknown }) => {
           pageBreak(8)
-          const parameterId = item.parameter_id as number | undefined
-          const param = parameterId ? packagingParameters[parameterId] : null
-          const paramName = param?.name ?? 'Unknown Parameter'
-          let displayValue = 'Not recorded'
+          pdf.setFont('helvetica', 'bold')
+          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+          pdf.text('Batch:', margin, y)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+          pdf.text(
+            `${product?.name ?? 'Packaging check'}${(batch as { lot_no?: string | null } | null)?.lot_no ? ` • ${String((batch as { lot_no?: string | null }).lot_no)}` : ''}`,
+            margin + 35,
+            y,
+          )
+          y += 6
 
-          if (item.value) {
-            displayValue = String(item.value)
-          } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
-            displayValue = String(item.numeric_value)
+          if ((check as { checked_at?: string | Date | number | null }).checked_at) {
+            pageBreak(6)
+            pdf.setFont('helvetica', 'bold')
+            pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+            pdf.text('Checked At:', margin, y)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+            pdf.text(formatDateTime((check as { checked_at?: string | Date | number | null }).checked_at), margin + 35, y)
+            y += 6
           }
 
-          pdf.setFont('helvetica', 'bold')
-          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
-          pdf.text(`${paramName}:`, margin, y)
-          pdf.setFont('helvetica', 'normal')
-          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
-          const valueLines = pdf.splitTextToSize(displayValue, pageWidth - margin * 2 - 35)
-          pdf.text(valueLines, margin + 35, y)
-          y += valueLines.length * 5 + 1
-        })
+          items.forEach((item: { [key: string]: unknown }) => {
+            pageBreak(8)
+            const parameterId = item.parameter_id as number | undefined
+            const param = parameterId ? packagingParameters[parameterId] : null
+            const paramName = param?.name ?? 'Unknown Parameter'
+            let displayValue = 'Not recorded'
 
-        if (packagingCheck.remarks) {
-          pageBreak(8)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
-          pdf.text('Remarks:', margin, y)
-          pdf.setFont('helvetica', 'normal')
-          pdf.setTextColor(textDark[0], textDark[1], textDark[2])
-          const remarksLines = pdf.splitTextToSize(String(packagingCheck.remarks), pageWidth - margin * 2 - 35)
-          pdf.text(remarksLines, margin + 35, y)
-          y += remarksLines.length * 5 + 1
-        }
+            if (item.value) {
+              displayValue = String(item.value)
+            } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
+              displayValue = String(item.numeric_value)
+            }
+
+            pdf.setFont('helvetica', 'bold')
+            pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+            pdf.text(`${paramName}:`, margin, y)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+            const valueLines = pdf.splitTextToSize(displayValue, pageWidth - margin * 2 - 35)
+            pdf.text(valueLines, margin + 35, y)
+            y += valueLines.length * 5 + 1
+          })
+
+          if ((check as { remarks?: string | null }).remarks) {
+            pageBreak(8)
+            pdf.setFont('helvetica', 'bold')
+            pdf.setTextColor(textMuted[0], textMuted[1], textMuted[2])
+            pdf.text('Remarks:', margin, y)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setTextColor(textDark[0], textDark[1], textDark[2])
+            const remarksLines = pdf.splitTextToSize(String((check as { remarks?: string | null }).remarks), pageWidth - margin * 2 - 35)
+            pdf.text(remarksLines, margin + 35, y)
+            y += remarksLines.length * 5 + 1
+          }
+
+          if (entryIndex < packagingChecksWithItems.length - 1) {
+            y += 2
+          }
+        })
       }
 
       /* ================= SECTION 5 ================= */
@@ -1661,7 +1709,7 @@ function SupplyDetail() {
           </Card>
         )}
 
-        {packagingCheck && packagingItems.length > 0 && (
+        {packagingChecksWithItems.length > 0 && (
           <Card className="border-olive-light/30 bg-white">
             <CardHeader>
               <CardTitle className="text-text-dark">Packaging Quality Parameters</CardTitle>
@@ -1669,45 +1717,59 @@ function SupplyDetail() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {packagingCheck.checked_at && (
-                  <div className="text-xs font-semibold uppercase tracking-wide text-text-dark/70">
-                    Checked {formatDateTime(packagingCheck.checked_at)}
-                  </div>
-                )}
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {packagingItems.map((item: { [key: string]: unknown }) => {
-                    const parameterId = item.parameter_id as number | undefined
-                    const param = parameterId ? packagingParameters[parameterId] : null
-                    const paramName = param?.name ?? 'Unknown Parameter'
-                    let displayValue = 'Not recorded'
-
-                    if (item.value) {
-                      displayValue = String(item.value)
-                    } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
-                      displayValue = String(item.numeric_value)
-                    }
-
-                    return (
-                      <div
-                        key={`packaging-${item.id}`}
-                        className="flex flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-4 py-3"
-                      >
-                        <div className="space-y-1">
-                          <p className="text-sm font-medium text-text-dark">{paramName}</p>
-                          <p className="text-sm font-semibold text-text-dark">{displayValue}</p>
-                        </div>
+                {packagingChecksWithItems.map(({ check, items, batch, product }) => (
+                  <div key={`packaging-check-${String((check as { id?: number | null }).id ?? 'unknown')}`} className="rounded-xl border border-olive-light/40 bg-white p-4">
+                    <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-text-dark">
+                          {product?.name ?? 'Packaging check'}
+                          {(batch as { lot_no?: string | null } | null)?.lot_no ? ` • ${String((batch as { lot_no?: string | null }).lot_no)}` : ''}
+                        </p>
+                        {(check as { checked_at?: string | Date | number | null }).checked_at ? (
+                          <p className="text-xs text-text-dark/70">
+                            Checked {formatDateTime((check as { checked_at?: string | Date | number | null }).checked_at)}
+                          </p>
+                        ) : null}
                       </div>
-                    )
-                  })}
-                </div>
-                {packagingCheck.remarks && (
-                  <div className="space-y-1">
-                    <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
-                      Remarks
-                    </dt>
-                    <dd className="text-sm text-text-dark/70">{String(packagingCheck.remarks)}</dd>
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                      {items.map((item: { [key: string]: unknown }) => {
+                        const parameterId = item.parameter_id as number | undefined
+                        const param = parameterId ? packagingParameters[parameterId] : null
+                        const paramName = param?.name ?? 'Unknown Parameter'
+                        let displayValue = 'Not recorded'
+
+                        if (item.value) {
+                          displayValue = String(item.value)
+                        } else if (item.numeric_value !== null && item.numeric_value !== undefined) {
+                          displayValue = String(item.numeric_value)
+                        }
+
+                        return (
+                          <div
+                            key={`packaging-${item.id}`}
+                            className="flex flex-col justify-between rounded-xl border border-olive-light/40 bg-white px-4 py-3"
+                          >
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium text-text-dark">{paramName}</p>
+                              <p className="text-sm font-semibold text-text-dark">{displayValue}</p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {(check as { remarks?: string | null }).remarks ? (
+                      <div className="mt-4 space-y-1">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">
+                          Remarks
+                        </dt>
+                        <dd className="text-sm text-text-dark/70">{String((check as { remarks?: string | null }).remarks)}</dd>
+                      </div>
+                    ) : null}
                   </div>
-                )}
+                ))}
               </div>
             </CardContent>
           </Card>

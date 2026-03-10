@@ -96,6 +96,7 @@ interface Product {
   name: string
   sku?: string
   product_type?: 'RAW' | 'WIP' | 'FINISHED' | 'OP' | null
+  base_unit_id?: number | null
   [key: string]: unknown
 }
 
@@ -114,8 +115,13 @@ interface UserProfile {
 }
 
 interface OperationalSupplyLine {
+  temp_key?: string
+  batch_id?: number | null
   product_id: string
   unit_id: string
+  received_as_unit_id: string
+  outer_unit_qty: string
+  inner_units_per_outer: string
   qty: string
   unit_price: string
   amount_paid: string
@@ -290,6 +296,7 @@ const OPERATIONAL_STEPS = [
   'Supply category',
   'Receiving checklist',
   'Operational supply batches',
+  'Packaging quality parameters',
   'Review',
 ]
 
@@ -387,13 +394,47 @@ function resolvePackagingParameterId(
 
 function createEmptyOperationalSupplyLine(): OperationalSupplyLine {
   return {
+    temp_key: createBatchTempKey(),
+    batch_id: null,
     product_id: '',
     unit_id: '',
+    received_as_unit_id: '',
+    outer_unit_qty: '',
+    inner_units_per_outer: '',
     qty: '',
     unit_price: '',
     amount_paid: '',
     notes: '',
   }
+}
+
+function normalizeUnitDescriptor(value: string | null | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '')
+}
+
+function isOuterPackagingUnit(unit: Unit | null | undefined): boolean {
+  if (!unit) return false
+  const name = normalizeUnitDescriptor(unit.name)
+  const symbol = normalizeUnitDescriptor(unit.symbol)
+  return name === 'BOX' || name === 'BALE' || symbol === 'BOX' || symbol === 'BALE'
+}
+
+function computeOperationalInnerQuantity(line: OperationalSupplyLine, units: Unit[]): number | null {
+  const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+  if (isOuterPackagingUnit(receivedAsUnit)) {
+    const outerQty = Number.parseFloat(line.outer_unit_qty)
+    const innerPerOuter = Number.parseFloat(line.inner_units_per_outer)
+    if (!Number.isFinite(outerQty) || outerQty <= 0 || !Number.isFinite(innerPerOuter) || innerPerOuter <= 0) {
+      return null
+    }
+    return Math.round(outerQty * innerPerOuter * 100) / 100
+  }
+
+  const qty = Number.parseFloat(line.qty)
+  return Number.isFinite(qty) && qty > 0 ? qty : null
 }
 
 function calculateAverageScore(entries: QualityEntries): number | null {
@@ -409,6 +450,43 @@ function calculateAverageScore(entries: QualityEntries): number | null {
 
   const total = scores.reduce((sum, value) => sum + value, 0)
   return Math.round((total / scores.length) * 100) / 100
+}
+
+function createEmptyPackagingQuality(): PackagingQuality {
+  return {
+    inaccurateLabelling: '',
+    visibleDamage: '',
+    specifiedQuantity: '',
+    odor: '',
+    strengthIntegrity: '',
+  }
+}
+
+function isPackagingQualityComplete(packaging: PackagingQuality): boolean {
+  return (
+    packaging.inaccurateLabelling !== '' &&
+    packaging.visibleDamage !== '' &&
+    packaging.specifiedQuantity !== '' &&
+    packaging.odor !== '' &&
+    packaging.strengthIntegrity !== ''
+  )
+}
+
+function getOperationalLineKey(line: OperationalSupplyLine, index: number): string {
+  if (line.batch_id != null && Number.isFinite(Number(line.batch_id))) {
+    return `batch:${String(line.batch_id)}`
+  }
+  return `temp:${line.temp_key ?? index}`
+}
+
+function normalizePackagingQualityState(packaging: PackagingQuality): PackagingQuality {
+  return {
+    inaccurateLabelling: toYesNoNa(packaging.inaccurateLabelling),
+    visibleDamage: toYesNoNa(packaging.visibleDamage),
+    specifiedQuantity: packaging.specifiedQuantity ?? '',
+    odor: toYesNoNa(packaging.odor),
+    strengthIntegrity: toStrengthIntegrity(packaging.strengthIntegrity),
+  }
 }
 
 function evaluateBatchQuality(entries: QualityEntries): { hasQualityIssues: boolean; checkStatus: 'PASS' | 'FAIL'; overallScore: number | null } {
@@ -498,6 +576,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     odor: '',
     strengthIntegrity: '',
   }))
+  const [operationalPackagingQualityByLineKey, setOperationalPackagingQualityByLineKey] = useState<
+    Record<string, PackagingQuality>
+  >({})
   const [supplierSignOff, setSupplierSignOff] = useState<SupplierSignOff>(() => ({
     signatureType: '',
     signatureData: null,
@@ -567,6 +648,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     packagingQuality.odor,
     packagingQuality.specifiedQuantity,
   ])
+
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
   const [operationalDeliveryReference, setOperationalDeliveryReference] = useState('')
@@ -647,6 +729,36 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     () => new Set(operationalMappedProducts.map((product) => String(product.id))),
     [operationalMappedProducts]
   )
+
+  useEffect(() => {
+    if (!isOperationalFlow) {
+      setOperationalPackagingQualityByLineKey({})
+      return
+    }
+
+    setOperationalPackagingQualityByLineKey((previous) => {
+      const next: Record<string, PackagingQuality> = {}
+      let changed = false
+
+      operationalSupplyLines.forEach((line, index) => {
+        const lineKey = getOperationalLineKey(line, index)
+        const existing = previous[lineKey]
+        const normalized = normalizePackagingQualityState(existing ?? createEmptyPackagingQuality())
+        next[lineKey] = normalized
+        if (!existing || existing !== normalized) {
+          changed = true
+        }
+      })
+
+      Object.keys(previous).forEach((lineKey) => {
+        if (!(lineKey in next)) {
+          changed = true
+        }
+      })
+
+      return changed ? next : previous
+    })
+  }, [isOperationalFlow, operationalSupplyLines])
 
   const supplierList = useMemo(() => (Array.isArray(supplierOptions) ? supplierOptions : []), [supplierOptions])
 
@@ -750,6 +862,28 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   }, [units])
 
   const rawProducts = useMemo(() => products.filter((product) => product.product_type === 'RAW'), [products])
+  const operationalProductMap = useMemo(
+    () => new Map(operationalMappedProducts.map((product) => [String(product.id), product])),
+    [operationalMappedProducts],
+  )
+
+  useEffect(() => {
+    operationalSupplyLines.forEach((line, index) => {
+      if (!line.product_id) return
+
+      const product = operationalProductMap.get(line.product_id)
+      const baseUnitId = product?.base_unit_id ?? null
+      const baseUnit = baseUnitId != null ? units.find((entry) => entry.id === baseUnitId) ?? null : null
+
+      console.debug('[Operational supply stock unit lookup]', {
+        lineIndex: index,
+        productId: line.product_id,
+        productName: product?.name ?? null,
+        baseUnitId,
+        baseUnit,
+      })
+    })
+  }, [operationalProductMap, operationalSupplyLines, units])
   const rawProductOptions = useMemo(
     () =>
       rawProducts.map((product) => ({
@@ -1312,8 +1446,39 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     value: string
   ) => {
     setOperationalSupplyLines((previous) =>
-      previous.map((line, i) => (i === index ? { ...line, [field]: value } : line))
+      previous.map((line, i) => {
+        if (i !== index) {
+          return line
+        }
+
+        const nextLine = { ...line, [field]: value }
+
+        if (field === 'product_id') {
+          const product = operationalProductMap.get(value)
+          nextLine.unit_id = product?.base_unit_id != null ? String(product.base_unit_id) : ''
+        }
+
+        if (field === 'received_as_unit_id') {
+          const unit = units.find((entry) => String(entry.id) === value)
+          if (!isOuterPackagingUnit(unit)) {
+            nextLine.outer_unit_qty = ''
+            nextLine.inner_units_per_outer = ''
+          }
+        }
+
+        const computedQty = computeOperationalInnerQuantity(nextLine, units)
+        nextLine.qty = computedQty != null ? String(computedQty) : ''
+        return nextLine
+      }),
     )
+  }
+
+  const handleOperationalPackagingQualityChange = (lineKey: string, packaging: PackagingQuality) => {
+    const normalized = normalizePackagingQualityState(packaging)
+    setOperationalPackagingQualityByLineKey((previous) => ({
+      ...previous,
+      [lineKey]: normalized,
+    }))
   }
 
   const validateStep = useCallback(
@@ -1347,20 +1512,55 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             return false
           }
           const invalidLine = operationalSupplyLines.find((line) => {
-            const qty = Number.parseFloat(line.qty)
+            const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+            const isOuterUnit = isOuterPackagingUnit(receivedAsUnit)
+            const qty = computeOperationalInnerQuantity(line, units)
             const unitPrice = Number.parseFloat(line.unit_price)
+            const product = operationalProductMap.get(line.product_id)
             return (
               !line.product_id ||
-              !line.unit_id ||
+              !line.received_as_unit_id ||
               !operationalMappedProductIdSet.has(line.product_id) ||
-              !Number.isFinite(qty) ||
-              qty <= 0 ||
+              qty == null ||
               !Number.isFinite(unitPrice) ||
-              unitPrice <= 0
+              unitPrice <= 0 ||
+              (isOuterUnit && (
+                product?.base_unit_id == null ||
+                !Number.isFinite(Number.parseFloat(line.outer_unit_qty)) ||
+                Number.parseFloat(line.outer_unit_qty) <= 0 ||
+                !Number.isFinite(Number.parseFloat(line.inner_units_per_outer)) ||
+                Number.parseFloat(line.inner_units_per_outer) <= 0
+              ))
             )
           })
           if (invalidLine) {
-            toast.error('Each operational batch must include an OP product, unit, quantity, and unit price greater than zero.')
+            toast.error('Each operational batch must include a received unit, valid quantity, and unit price. Box and bale receipts also require a stock unit and inner quantity.')
+            return false
+          }
+        }
+        if (step === 3) {
+          const invalidLine = operationalSupplyLines.find((line, index) => {
+            const qty = computeOperationalInnerQuantity(line, units)
+            const unitPrice = Number.parseFloat(line.unit_price)
+            if (
+              !line.product_id ||
+              !line.received_as_unit_id ||
+              !operationalMappedProductIdSet.has(line.product_id) ||
+              qty == null ||
+              !Number.isFinite(unitPrice) ||
+              unitPrice <= 0
+            ) {
+              return false
+            }
+            const lineKey = getOperationalLineKey(line, index)
+            return !isPackagingQualityComplete(
+              normalizePackagingQualityState(
+                operationalPackagingQualityByLineKey[lineKey] ?? createEmptyPackagingQuality(),
+              ),
+            )
+          })
+          if (invalidLine) {
+            toast.error('Complete packaging quality parameters for every operational supply line before continuing.')
             return false
           }
         }
@@ -1532,12 +1732,15 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       operationalDeliveryReference,
       operationalMappedProductIdSet,
       operationalMappedProducts.length,
+      operationalProductMap,
+      operationalPackagingQualityByLineKey,
       operationalSupplyLines,
       packagingQuality,
       qualityEntriesByBatchKey,
       qualityParameters,
       supplierSignOff,
       supplyDocuments,
+      units,
       vehicleInspection,
     ],
   )
@@ -1575,20 +1778,33 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
     const mappedLines = operationalSupplyLines
       .map((line) => {
-        const qty = Number.parseFloat(line.qty)
+        const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+        const computedQty = computeOperationalInnerQuantity(line, units)
         const unitPrice = Number.parseFloat(line.unit_price)
         const amountPaid = Number.parseFloat(line.amount_paid)
+        const outerUnitQty = Number.parseFloat(line.outer_unit_qty)
+        const innerUnitsPerOuter = Number.parseFloat(line.inner_units_per_outer)
+        const product = operationalProductMap.get(line.product_id)
         return {
           ...line,
-          qty_number: Number.isFinite(qty) ? qty : NaN,
+          qty_number: computedQty ?? NaN,
           unit_price_number: Number.isFinite(unitPrice) ? unitPrice : null,
           amount_paid_number: Number.isFinite(amountPaid) ? amountPaid : 0,
+          outer_unit_qty_number: Number.isFinite(outerUnitQty) ? outerUnitQty : null,
+          inner_units_per_outer_number: Number.isFinite(innerUnitsPerOuter) ? innerUnitsPerOuter : null,
+          received_as_unit_id_number: line.received_as_unit_id ? Number.parseInt(line.received_as_unit_id, 10) : null,
+          stock_unit_id_number:
+            product?.base_unit_id != null && isOuterPackagingUnit(receivedAsUnit)
+              ? Number(product.base_unit_id)
+              : line.unit_id
+                ? Number.parseInt(line.unit_id, 10)
+                : null,
         }
       })
       .filter(
         (line) =>
           Boolean(line.product_id) &&
-          Boolean(line.unit_id) &&
+          Boolean(line.received_as_unit_id) &&
           operationalMappedProductIdSet.has(line.product_id) &&
           Number.isFinite(line.qty_number) &&
           line.qty_number > 0
@@ -1602,6 +1818,19 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const invalidPriceLine = mappedLines.find((line) => !Number.isFinite(line.unit_price_number) || (line.unit_price_number ?? 0) <= 0)
     if (invalidPriceLine) {
       toast.error('Unit price is required for every operational batch and must be greater than zero.')
+      return
+    }
+
+    const invalidPackagingLine = mappedLines.find((line, index) => {
+      const lineKey = getOperationalLineKey(line, index)
+      return !isPackagingQualityComplete(
+        normalizePackagingQualityState(
+          operationalPackagingQualityByLineKey[lineKey] ?? createEmptyPackagingQuality(),
+        ),
+      )
+    })
+    if (invalidPackagingLine) {
+      toast.error('Complete packaging quality parameters for every operational supply line before saving.')
       return
     }
 
@@ -1674,7 +1903,10 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         supply_id: insertedSupplyId,
         lot_no: `LOT-${insertedSupplyId}-${String(index + 1).padStart(3, '0')}`,
         product_id: parseInt(line.product_id, 10),
-        unit_id: line.unit_id ? parseInt(line.unit_id, 10) : null,
+        unit_id: Number.isFinite(line.stock_unit_id_number) ? line.stock_unit_id_number : null,
+        outer_unit_id: Number.isFinite(line.received_as_unit_id_number) ? line.received_as_unit_id_number : null,
+        outer_unit_qty: line.outer_unit_qty_number,
+        inner_units_per_outer: line.inner_units_per_outer_number,
         received_qty: line.qty_number,
         accepted_qty: line.qty_number,
         rejected_qty: 0,
@@ -1684,9 +1916,155 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         created_at: nowISO,
       }))
 
-      const { error: batchesError } = await supabase.from('supply_batches').insert(supplyBatchRows)
+      const { data: insertedBatches, error: batchesError } = await supabase
+        .from('supply_batches')
+        .insert(supplyBatchRows)
+        .select('id, product_id, received_qty, lot_no')
       if (batchesError) {
         throw batchesError
+      }
+
+      const savedBatches = (insertedBatches ?? []) as Array<{
+        id: number
+        product_id: number
+        received_qty: number | null
+        lot_no?: string | null
+      }>
+
+      const { data: existingPackagingChecks, error: existingPackagingChecksError } = await supabase
+        .from('supply_packaging_quality_checks')
+        .select('id, lot_id')
+        .eq('supply_id', insertedSupplyId)
+      if (existingPackagingChecksError) {
+        throw existingPackagingChecksError
+      }
+
+      const legacyPackagingCheckIds = (existingPackagingChecks ?? [])
+        .filter((row) => (row as { lot_id?: number | null }).lot_id == null)
+        .map((row) => Number((row as { id?: number | null }).id))
+        .filter((id) => Number.isFinite(id))
+      if (legacyPackagingCheckIds.length > 0) {
+        const { error: deleteLegacyPackagingChecksError } = await supabase
+          .from('supply_packaging_quality_checks')
+          .delete()
+          .in('id', legacyPackagingCheckIds)
+        if (deleteLegacyPackagingChecksError) {
+          throw deleteLegacyPackagingChecksError
+        }
+      }
+
+      const existingPackagingCheckMap = new Map<number, number>()
+      ;(existingPackagingChecks ?? []).forEach((row) => {
+        const lotId = Number((row as { lot_id?: number | null }).lot_id)
+        const id = Number((row as { id?: number | null }).id)
+        if (Number.isFinite(lotId) && Number.isFinite(id)) {
+          existingPackagingCheckMap.set(lotId, id)
+        }
+      })
+
+      const { data: packagingParams, error: packagingParamsError } = await supabase
+        .from('packaging_quality_parameters')
+        .select('id, code, name')
+      if (packagingParamsError) {
+        throw packagingParamsError
+      }
+
+      const packagingParamsMap = new Map<string, number>()
+      ;(packagingParams ?? []).forEach((p: { id: number; code: string | null; name?: string | null }) => {
+        packagingParamsMap.set(normalizePackagingParameterCode(p.code), p.id)
+        packagingParamsMap.set(normalizePackagingParameterCode(p.name), p.id)
+      })
+
+      for (const [index, line] of mappedLines.entries()) {
+        const savedBatch = savedBatches[index]
+        if (!savedBatch?.id) {
+          continue
+        }
+
+        const lineKey = getOperationalLineKey(line, index)
+        const packaging = normalizePackagingQualityState(
+          operationalPackagingQualityByLineKey[lineKey] ?? createEmptyPackagingQuality(),
+        )
+
+        let packagingCheckId = existingPackagingCheckMap.get(Number(savedBatch.id))
+        if (!packagingCheckId) {
+          const { data: newPackagingCheck, error: newPackagingCheckError } = await supabase
+            .from('supply_packaging_quality_checks')
+            .insert({
+              supply_id: insertedSupplyId,
+              lot_id: savedBatch.id,
+              checked_by: profileId ?? null,
+              remarks: line.notes?.trim() || null,
+            })
+            .select('id')
+            .single()
+          if (newPackagingCheckError) {
+            throw newPackagingCheckError
+          }
+          packagingCheckId = Number(newPackagingCheck.id)
+        } else {
+          const { error: updatePackagingCheckError } = await supabase
+            .from('supply_packaging_quality_checks')
+            .update({
+              checked_by: profileId ?? null,
+              checked_at: nowISO,
+              remarks: line.notes?.trim() || null,
+            })
+            .eq('id', packagingCheckId)
+          if (updatePackagingCheckError) {
+            throw updatePackagingCheckError
+          }
+
+          const { error: deletePackagingItemsError } = await supabase
+            .from('supply_packaging_quality_check_items')
+            .delete()
+            .eq('packaging_check_id', packagingCheckId)
+          if (deletePackagingItemsError) {
+            throw deletePackagingItemsError
+          }
+        }
+
+        const packagingItemsPayload = [
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'INACCURATE_LABELLING'),
+            value: packaging.inaccurateLabelling,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'VISIBLE_DAMAGE'),
+            value: packaging.visibleDamage,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'SPECIFIED_QUANTITY', 'SPECIFIED_QUANTITY_UNITS'),
+            value: null,
+            numeric_value: parseNullableNumber(packaging.specifiedQuantity),
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'ODOR', 'ODOUR'),
+            value: packaging.odor,
+            numeric_value: null,
+          },
+          {
+            packaging_check_id: packagingCheckId,
+            parameter_id: resolvePackagingParameterId(packagingParamsMap, 'STRENGTH_INTEGRITY'),
+            value: packaging.strengthIntegrity,
+            numeric_value: null,
+          },
+        ].filter((item) => item.parameter_id != null)
+
+        if (packagingItemsPayload.length > 0) {
+          const { error: packagingItemsError } = await supabase
+            .from('supply_packaging_quality_check_items')
+            .insert(packagingItemsPayload)
+          if (packagingItemsError) {
+            throw packagingItemsError
+          }
+        }
       }
 
       const { error: opEntryError } = await supabase
@@ -2936,7 +3314,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           supabase.from('supply_batches').select('*').eq('supply_id', supplyId),
           supabase.from('supply_documents').select('*').eq('supply_id', supplyId),
           supabase.from('supply_vehicle_inspections').select('*').eq('supply_id', supplyId).maybeSingle(),
-          supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId).maybeSingle(),
+          supabase.from('supply_packaging_quality_checks').select('*').eq('supply_id', supplyId),
           supabase.from('supply_packaging_quality_check_items').select('*'),
           supabase.from('supply_quality_checks').select('*').eq('supply_id', supplyId).order('id', { ascending: false }),
           supabase.from('supply_quality_check_items').select('*'),
@@ -2955,6 +3333,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           lot_no?: string | null
           product_id: number
           unit_id: number | null
+          outer_unit_id?: number | null
+          outer_unit_qty?: number | null
+          inner_units_per_outer?: number | null
           received_qty?: number
           accepted_qty?: number
           rejected_qty?: number
@@ -2977,10 +3358,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
         const docs = (docsData ?? []) as { document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null }[]
         const vehicle = vehicleData as Record<string, unknown> | null
-        const packagingCheck = packagingChecksData?.[0] ?? null
+        const packagingChecks = (packagingChecksData ?? []) as Array<{ id: number; lot_id?: number | null }>
+        const packagingCheckIds = packagingChecks.map((check) => Number(check.id)).filter((id) => Number.isFinite(id))
         const packagingItems = (packagingItemsData ?? []).filter(
-          (i: { packaging_check_id?: number }) => packagingCheck && i.packaging_check_id === (packagingCheck as { id: number }).id,
-        ) as { parameter_id: number; value: string | null; numeric_value: number | null }[]
+          (i: { packaging_check_id?: number }) => packagingCheckIds.includes(Number(i.packaging_check_id)),
+        ) as Array<{ packaging_check_id: number; parameter_id: number; value: string | null; numeric_value: number | null }>
         const { data: packagingParamsData } = await supabase
           .from('packaging_quality_parameters')
           .select('id, code, name')
@@ -3033,18 +3415,73 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           setOperationalDeliveryReference(String(operationalEntry?.delivery_reference ?? ''))
           setOperationalCondition((operationalEntry?.received_condition as 'PASS' | 'HOLD' | 'REJECT' | '') ?? '')
           setOperationalRemarks(String(operationalEntry?.remarks ?? ''))
-          setOperationalSupplyLines(
+          const paramByCode: Record<string, keyof PackagingQuality> = {
+            INACCURATE_LABELLING: 'inaccurateLabelling',
+            VISIBLE_DAMAGE: 'visibleDamage',
+            SPECIFIED_QUANTITY: 'specifiedQuantity',
+            SPECIFIED_QUANTITY_UNITS: 'specifiedQuantity',
+            ODOR: 'odor',
+            ODOUR: 'odor',
+            STRENGTH_INTEGRITY: 'strengthIntegrity',
+          }
+          const packagingEntriesByCheckId = new Map<number, PackagingQuality>()
+          packagingChecks.forEach((check) => {
+            packagingEntriesByCheckId.set(Number(check.id), createEmptyPackagingQuality())
+          })
+          packagingItems.forEach((item) => {
+            const packaging = packagingEntriesByCheckId.get(Number(item.packaging_check_id)) ?? createEmptyPackagingQuality()
+            const code = normalizePackagingParameterCode(packagingParamMap.get(item.parameter_id))
+            const field = paramByCode[code]
+            if (field) {
+              ;(packaging[field] as string) = item.value ?? (item.numeric_value != null ? String(item.numeric_value) : '')
+              packagingEntriesByCheckId.set(Number(item.packaging_check_id), packaging)
+            }
+          })
+          const packagingByLotId = new Map<number, PackagingQuality>()
+          packagingChecks.forEach((check) => {
+            const lotId = Number(check.lot_id)
+            if (Number.isFinite(lotId)) {
+              packagingByLotId.set(
+                lotId,
+                normalizePackagingQualityState(
+                  packagingEntriesByCheckId.get(Number(check.id)) ?? createEmptyPackagingQuality(),
+                ),
+              )
+            }
+          })
+
+          const operationalLines =
             batches.length > 0
               ? batches.map((batch) => ({
+                  batch_id: Number(batch.id),
+                  temp_key: `operational_${String(batch.id)}`,
                   product_id: String(batch.product_id ?? ''),
                   unit_id: batch.unit_id != null ? String(batch.unit_id) : '',
+                  received_as_unit_id:
+                    batch.outer_unit_id != null
+                      ? String(batch.outer_unit_id)
+                      : batch.unit_id != null
+                        ? String(batch.unit_id)
+                        : '',
+                  outer_unit_qty:
+                    batch.outer_unit_qty != null ? String(batch.outer_unit_qty) : '',
+                  inner_units_per_outer:
+                    batch.inner_units_per_outer != null ? String(batch.inner_units_per_outer) : '',
                   qty: String(batch.received_qty ?? 0),
                   unit_price: batch.unit_price != null ? String(batch.unit_price) : '',
                   amount_paid: '',
                   notes: '',
                 }))
               : [createEmptyOperationalSupplyLine()]
-          )
+          setOperationalSupplyLines(operationalLines)
+          const operationalPackagingByKey: Record<string, PackagingQuality> = {}
+          operationalLines.forEach((line, index) => {
+            const lineKey = getOperationalLineKey(line, index)
+            const batchId = Number(line.batch_id)
+            operationalPackagingByKey[lineKey] =
+              (Number.isFinite(batchId) ? packagingByLotId.get(batchId) : undefined) ?? createEmptyPackagingQuality()
+          })
+          setOperationalPackagingQualityByLineKey(operationalPackagingByKey)
           setEditLoadDone(true)
           return
         }
@@ -3137,6 +3574,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           odor: toYesNoNa(packagingMap.odor),
           strengthIntegrity: toStrengthIntegrity(packagingMap.strengthIntegrity),
         })
+        setOperationalPackagingQualityByLineKey({})
         const entriesByQualityCheckId = new Map<number, QualityEntries>()
         qualityChecks.forEach((check) => {
           entriesByQualityCheckId.set(Number(check.id), createInitialQualityEntries(qualityParameters))
@@ -3238,6 +3676,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       odor: '',
       strengthIntegrity: '',
     })
+    setOperationalPackagingQualityByLineKey({})
     setSupplierSignOff({
       signatureType: '',
       signatureData: null,
@@ -3278,9 +3717,10 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       })
     const supplyDocumentsForSupply = fetchedSupplyDocuments.filter((doc) => doc.supply_id === supply.id)
     const vehicleInspectionForSupply = vehicleInspections.find((insp) => insp.supply_id === supply.id)
-    const packagingCheckForSupply = packagingChecks.find((check) => check.supply_id === supply.id)
-    const packagingItemsForSupply = packagingItems.filter((item) => 
-      packagingCheckForSupply && item.packaging_check_id === packagingCheckForSupply.id
+    const packagingChecksForSupply = packagingChecks.filter((check) => check.supply_id === supply.id)
+    const packagingCheckIdsForSupply = packagingChecksForSupply.map((check) => Number(check.id)).filter((id) => Number.isFinite(id))
+    const packagingItemsForSupply = packagingItems.filter((item) =>
+      packagingCheckIdsForSupply.includes(Number(item.packaging_check_id)),
     )
     const supplierSignOffForSupply = supplierSignOffs.find((signOff) => signOff.supply_id === supply.id)
     const supplierLookup = Object.fromEntries(supplierLabelMap.entries())
@@ -3323,7 +3763,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         qualityParameters,
         supplyDocuments: supplyDocumentsForSupply,
         vehicleInspection: vehicleInspectionForSupply,
-        packagingCheck: packagingCheckForSupply,
+        packagingChecks: packagingChecksForSupply,
         packagingItems: packagingItemsForSupply,
         supplierSignOff: supplierSignOffForSupply,
         supplierLookup,
@@ -3364,6 +3804,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       odor: '',
       strengthIntegrity: '',
     })
+    setOperationalPackagingQualityByLineKey({})
     setSupplierSignOff({
       signatureType: '',
       signatureData: null,
@@ -3434,6 +3875,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         name: String(product.name ?? ''),
         sku: String(product.sku ?? ''),
         product_type: 'OP',
+        base_unit_id: product.base_unit_id != null ? Number(product.base_unit_id) : null,
       }))
     setOperationalMappedProducts(opProducts)
   }, [isOperationalFlow, products])
@@ -3480,7 +3922,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         supplierTypesResponse,
       ] = await Promise.all([
         supabase.from('warehouses').select('id, name').order('name', { ascending: true }),
-        supabase.from('products').select('id, name, sku, product_type').order('name', { ascending: true }),
+        supabase.from('products').select('id, name, sku, product_type, base_unit_id').order('name', { ascending: true }),
         supabase.from('units').select('id, name, symbol').order('name', { ascending: true }),
         supabase.from('quality_parameters').select('id, code, name').order('id', {
           ascending: true,
@@ -4109,6 +4551,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                 setOperationalCondition('')
                                 setOperationalRemarks('')
                                 setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
+                                setOperationalPackagingQualityByLineKey({})
                               }
                             }
                             disabled={isSubmitting}
@@ -4417,12 +4860,12 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                               />
                             </div>
                             <div className="space-y-2 lg:col-span-3">
-                              <Label htmlFor={`operational_line_unit_${index}`}>Unit *</Label>
+                              <Label htmlFor={`operational_line_unit_${index}`}>Received as *</Label>
                               <select
                                 id={`operational_line_unit_${index}`}
                                 className={baseFieldClass}
-                                value={line.unit_id}
-                                onChange={(event) => updateOperationalSupplyLine(index, 'unit_id', event.target.value)}
+                                value={line.received_as_unit_id}
+                                onChange={(event) => updateOperationalSupplyLine(index, 'received_as_unit_id', event.target.value)}
                                 disabled={isSubmitting}
                               >
                                 <option value="">Select unit</option>
@@ -4435,22 +4878,110 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                               </select>
                             </div>
                             <div className="space-y-2 lg:col-span-4">
-                              <Label htmlFor={`operational_line_qty_${index}`}>Quantity *</Label>
-                              <Input
-                                id={`operational_line_qty_${index}`}
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                className={baseFieldClass}
-                                value={line.qty}
-                                onChange={(event) => updateOperationalSupplyLine(index, 'qty', event.target.value)}
-                                placeholder="e.g. 120"
-                                disabled={isSubmitting}
-                              />
+                              {(() => {
+                                const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+                                const isOuterUnit = isOuterPackagingUnit(receivedAsUnit)
+                                if (isOuterUnit) {
+                                  return (
+                                    <>
+                                      <Label htmlFor={`operational_line_outer_qty_${index}`}>Outer units received *</Label>
+                                      <Input
+                                        id={`operational_line_outer_qty_${index}`}
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        className={baseFieldClass}
+                                        value={line.outer_unit_qty}
+                                        onChange={(event) => updateOperationalSupplyLine(index, 'outer_unit_qty', event.target.value)}
+                                        placeholder="e.g. 3"
+                                        disabled={isSubmitting}
+                                      />
+                                    </>
+                                  )
+                                }
+
+                                return (
+                                  <>
+                                    <Label htmlFor={`operational_line_qty_${index}`}>Quantity *</Label>
+                                    <Input
+                                      id={`operational_line_qty_${index}`}
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      className={baseFieldClass}
+                                      value={line.qty}
+                                      onChange={(event) => updateOperationalSupplyLine(index, 'qty', event.target.value)}
+                                      placeholder="e.g. 120"
+                                      disabled={isSubmitting}
+                                    />
+                                  </>
+                                )
+                              })()}
                             </div>
+                            {(() => {
+                              const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+                              const isOuterUnit = isOuterPackagingUnit(receivedAsUnit)
+                              if (!isOuterUnit) {
+                                return null
+                              }
+
+                              const product = operationalProductMap.get(line.product_id)
+                              const hasConfiguredBaseUnit = product?.base_unit_id != null
+                              const stockUnit =
+                                hasConfiguredBaseUnit
+                                  ? units.find((entry) => entry.id === product.base_unit_id)
+                                  : null
+                              const computedQty = computeOperationalInnerQuantity(line, units)
+                              const stockUnitDisplay = stockUnit
+                                ? `${String(stockUnit.name)}${stockUnit.symbol ? ` (${String(stockUnit.symbol)})` : ''}`
+                                : hasConfiguredBaseUnit
+                                  ? `Configured base unit #${String(product?.base_unit_id)} not found in units`
+                                  : 'No base unit configured on this product'
+
+                              return (
+                                <>
+                                  <div className="space-y-2 lg:col-span-4">
+                                    <Label htmlFor={`operational_line_inner_units_${index}`}>
+                                      Items per {receivedAsUnit?.name?.toLowerCase() || 'outer unit'} *
+                                    </Label>
+                                    <Input
+                                      id={`operational_line_inner_units_${index}`}
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      className={baseFieldClass}
+                                      value={line.inner_units_per_outer}
+                                      onChange={(event) => updateOperationalSupplyLine(index, 'inner_units_per_outer', event.target.value)}
+                                      placeholder="e.g. 50"
+                                      disabled={isSubmitting}
+                                    />
+                                  </div>
+                                  <div className="space-y-2 lg:col-span-4">
+                                    <Label>Stock unit</Label>
+                                    <Input
+                                      value={stockUnitDisplay}
+                                      readOnly
+                                      className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
+                                    />
+                                  </div>
+                                  <div className="space-y-2 lg:col-span-4">
+                                    <Label>Total inner items</Label>
+                                    <Input
+                                      value={
+                                        computedQty != null
+                                          ? `${String(computedQty)} ${stockUnit?.symbol || stockUnit?.name || ''}`.trim()
+                                          : '—'
+                                      }
+                                      readOnly
+                                      className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70`}
+                                    />
+                                  </div>
+                                </>
+                              )
+                            })()}
                             <div className="space-y-2 lg:col-span-4">
                               <Label htmlFor={`operational_line_unit_price_${index}`}>
-                                Unit price {getUnitPriceSuffix(line.unit_id) || '/unit'} *
+                                Unit price {getUnitPriceSuffix(line.received_as_unit_id || line.unit_id) || '/unit'} *
                               </Label>
                               <Input
                                 id={`operational_line_unit_price_${index}`}
@@ -4479,6 +5010,21 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                 disabled={isSubmitting}
                               />
                             </div>
+                            {(() => {
+                              const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+                              const isOuterUnit = isOuterPackagingUnit(receivedAsUnit)
+                              if (!isOuterUnit) {
+                                return null
+                              }
+
+                              return (
+                                <div className="lg:col-span-12">
+                                  <p className="text-xs text-text-dark/60">
+                                    Record the received outer pack and the number of items inside each {receivedAsUnit?.name?.toLowerCase() || 'outer unit'} so stock can be tracked in inner units.
+                                  </p>
+                                </div>
+                              )
+                            })()}
                             <div className="space-y-2 lg:col-span-12">
                               <Label htmlFor={`operational_line_notes_${index}`}>Line notes</Label>
                               <Input
@@ -4509,6 +5055,60 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 3 && isOperationalFlow && (
+                  <section className="space-y-6">
+                    <div className={sectionCardClass}>
+                      <div className="mb-6">
+                        <h3 className="text-lg font-semibold text-text-dark">Packaging quality parameters</h3>
+                        <p className="text-sm text-text-dark/70">
+                          Capture packaging quality for each operational supply line before review.
+                        </p>
+                      </div>
+
+                      <div className="space-y-4">
+                        {operationalSupplyLines.map((line, index) => {
+                          const product = products.find((entry) => String(entry.id) === line.product_id)
+                          const unit = units.find((entry) => String(entry.id) === line.unit_id)
+                          const lineKey = getOperationalLineKey(line, index)
+                          const packaging = normalizePackagingQualityState(
+                            operationalPackagingQualityByLineKey[lineKey] ?? createEmptyPackagingQuality(),
+                          )
+
+                          return (
+                            <div key={`operational-packaging-${lineKey}`} className="rounded-xl border border-olive-light/40 bg-white p-4">
+                              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                  <p className="text-sm font-semibold text-text-dark">
+                                    Line {index + 1} {product?.name ? `• ${product.name}` : ''}
+                                  </p>
+                                  <p className="text-xs text-text-dark/70">
+                                    Qty: {line.qty || '0'} {unit?.symbol || unit?.name || ''}
+                                  </p>
+                                </div>
+                                {isPackagingQualityComplete(packaging) ? (
+                                  <span className="inline-flex rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700">
+                                    Completed
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                                    Pending
+                                  </span>
+                                )}
+                              </div>
+
+                              <PackagingQualityStep
+                                packaging={packaging}
+                                onChange={(nextPackaging) => handleOperationalPackagingQualityChange(lineKey, nextPackaging)}
+                                disabled={isSubmitting}
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {currentStep === 4 && isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Operational supply review</h3>
@@ -4552,6 +5152,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                         {operationalSupplyLines.map((line, index) => {
                           const product = products.find((entry) => String(entry.id) === line.product_id)
                           const unit = units.find((entry) => String(entry.id) === line.unit_id)
+                          const receivedAsUnit = units.find((entry) => String(entry.id) === line.received_as_unit_id)
+                          const isOuterUnit = isOuterPackagingUnit(receivedAsUnit)
+                          const computedQty = computeOperationalInnerQuantity(line, units)
+                          const lineKey = getOperationalLineKey(line, index)
+                          const packaging = normalizePackagingQualityState(
+                            operationalPackagingQualityByLineKey[lineKey] ?? createEmptyPackagingQuality(),
+                          )
                           return (
                             <div key={`review-line-${index}`} className="flex flex-col gap-1 rounded-lg border border-olive-light/30 bg-olive-light/10 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                               <div className="text-sm text-text-dark">
@@ -4559,10 +5166,20 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                               </div>
                               <div className="text-sm font-medium text-text-dark sm:text-right">
                                 <div>
-                                  {line.qty || '0'} {unit?.symbol || unit?.name || ''}
+                                  {computedQty ?? 0} {unit?.symbol || unit?.name || ''}
+                                </div>
+                                <div className="text-xs font-normal text-text-dark/70">
+                                  Received as:{' '}
+                                  {isOuterUnit
+                                    ? `${line.outer_unit_qty || '0'} ${receivedAsUnit?.name || 'outer'} x ${line.inner_units_per_outer || '0'}`
+                                    : `${line.qty || '0'} ${receivedAsUnit?.symbol || receivedAsUnit?.name || ''}`}{' '}
+                                  | Stock unit: {unit?.symbol || unit?.name || '—'}
                                 </div>
                                 <div className="text-xs font-normal text-text-dark/70">
                                   Unit price: {line.unit_price || '—'} | Amount paid: {line.amount_paid || '—'}
+                                </div>
+                                <div className="text-xs font-normal text-text-dark/70">
+                                  Packaging: Labelling {packaging.inaccurateLabelling || '—'}, Damage {packaging.visibleDamage || '—'}, Odor {packaging.odor || '—'}, Qty {packaging.specifiedQuantity || '—'}, Strength {packaging.strengthIntegrity || '—'}
                                 </div>
                               </div>
                             </div>
@@ -4604,7 +5221,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                   </section>
                 )}
 
-                {currentStep === 4 && (
+                {currentStep === 4 && !isOperationalFlow && (
                   <section className={sectionCardClass}>
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>

@@ -22,8 +22,11 @@ interface SupplyBatchRow {
   supply_id: number
   product_id: number | null
   unit_id: number | null
+  outer_unit_id: number | null
+  inner_units_per_outer: number | null
   accepted_qty: number | null
   rejected_qty: number | null
+  current_qty: number | null
 }
 
 interface ProductRow {
@@ -54,6 +57,11 @@ interface OperationalStockRow {
   warehouse_id: number | null
   warehouse_name: string
   unit: string
+  outer_unit: string
+  inner_units_per_outer: number | null
+  full_outer_units: number | null
+  loose_inner_units: number | null
+  total_inner_units: number
   on_hand: number
   rejected: number
   receipt_count: number
@@ -71,6 +79,8 @@ interface AggregateRecord {
   product_id: number
   warehouse_id: number | null
   unit_id: number | null
+  outer_unit_id: number | null
+  inner_units_per_outer: number | null
   on_hand: number
   rejected: number
   receipt_ids: Set<number>
@@ -163,7 +173,7 @@ function OperationalSuppliesStockPage() {
         const supplyIds = supplies.map((supply) => supply.id)
         const { data: batchData, error: batchError } = await supabase
           .from('supply_batches')
-          .select('supply_id, product_id, unit_id, accepted_qty, rejected_qty')
+          .select('supply_id, product_id, unit_id, outer_unit_id, inner_units_per_outer, accepted_qty, rejected_qty, current_qty')
           .in('supply_id', supplyIds)
 
         if (batchError) {
@@ -224,7 +234,7 @@ function OperationalSuppliesStockPage() {
         const unitIds = Array.from(
           new Set(
             batches
-              .map((line) => line.unit_id)
+              .flatMap((line) => [line.unit_id, line.outer_unit_id])
               .filter((unitId): unitId is number => unitId !== null && unitId !== undefined)
           )
         )
@@ -266,7 +276,7 @@ function OperationalSuppliesStockPage() {
           }
 
           const warehouseId = supply.warehouse_id ?? null
-          const key = `${line.product_id}-${warehouseId ?? 'none'}`
+          const key = `${line.product_id}-${warehouseId ?? 'none'}-${line.outer_unit_id ?? 'inner'}-${line.inner_units_per_outer ?? 'none'}`
 
           if (!aggregated.has(key)) {
             aggregated.set(key, {
@@ -274,6 +284,8 @@ function OperationalSuppliesStockPage() {
               product_id: line.product_id,
               warehouse_id: warehouseId,
               unit_id: line.unit_id ?? null,
+              outer_unit_id: line.outer_unit_id ?? null,
+              inner_units_per_outer: line.inner_units_per_outer ?? null,
               on_hand: 0,
               rejected: 0,
               receipt_ids: new Set<number>(),
@@ -286,7 +298,7 @@ function OperationalSuppliesStockPage() {
           const record = aggregated.get(key)
           if (!record) return
 
-          record.on_hand += toNumber(line.accepted_qty)
+          record.on_hand += toNumber(line.current_qty ?? line.accepted_qty)
           record.rejected += toNumber(line.rejected_qty)
           record.receipt_ids.add(line.supply_id)
 
@@ -302,9 +314,18 @@ function OperationalSuppliesStockPage() {
           const product = productMap.get(record.product_id)
           const warehouse = record.warehouse_id ? warehouseMap.get(record.warehouse_id) : null
           const unit = record.unit_id ? unitMap.get(record.unit_id) : null
+          const outerUnit = record.outer_unit_id ? unitMap.get(record.outer_unit_id) : null
           const reorderPoint = product?.reorder_point ?? null
           const safetyStock = product?.safety_stock ?? null
           const onHand = Math.max(record.on_hand, 0)
+          const innerUnitsPerOuter =
+            record.inner_units_per_outer != null && Number.isFinite(record.inner_units_per_outer)
+              ? Number(record.inner_units_per_outer)
+              : null
+          const fullOuterUnits =
+            innerUnitsPerOuter && innerUnitsPerOuter > 0 ? Math.floor(onHand / innerUnitsPerOuter) : null
+          const looseInnerUnits =
+            innerUnitsPerOuter && innerUnitsPerOuter > 0 ? Math.round((onHand % innerUnitsPerOuter) * 100) / 100 : null
 
           return {
             id: record.id,
@@ -314,6 +335,11 @@ function OperationalSuppliesStockPage() {
             warehouse_id: record.warehouse_id,
             warehouse_name: warehouse?.name ?? '—',
             unit: unit?.symbol ?? unit?.name ?? '',
+            outer_unit: outerUnit?.symbol ?? outerUnit?.name ?? '—',
+            inner_units_per_outer: innerUnitsPerOuter,
+            full_outer_units: fullOuterUnits,
+            loose_inner_units: looseInnerUnits,
+            total_inner_units: Math.round(onHand * 100) / 100,
             on_hand: Math.round(onHand * 100) / 100,
             rejected: Math.round(Math.max(record.rejected, 0) * 100) / 100,
             receipt_count: record.receipt_ids.size,
@@ -439,12 +465,38 @@ function OperationalSuppliesStockPage() {
         cellClassName: 'text-text-dark/70',
       },
       {
+        key: 'outer_unit',
+        header: 'Outer Unit',
+        render: (row: OperationalStockRow) => (
+          <div>
+            <div className="font-medium text-text-dark">{row.outer_unit}</div>
+            <div className="text-xs text-text-dark/60">
+              {row.inner_units_per_outer != null ? `${formatQty(row.inner_units_per_outer)} inner / outer` : 'Direct inner receipt'}
+            </div>
+          </div>
+        ),
+      },
+      {
         key: 'on_hand',
-        header: 'Available Pool',
+        header: 'Available Packs',
         render: (row: OperationalStockRow) => (
           <div className="text-right">
             <div className="font-medium text-text-dark">
-              {formatQty(row.on_hand)} {row.unit}
+              {row.full_outer_units != null ? `${formatQty(row.full_outer_units)} ${row.outer_unit}` : '—'}
+            </div>
+            <div className="text-[11px] text-text-dark/60">
+              {row.loose_inner_units != null ? `${formatQty(row.loose_inner_units)} loose ${row.unit}` : `Across ${row.receipt_count} receipts`}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'inner_total',
+        header: 'Total Inner Units',
+        render: (row: OperationalStockRow) => (
+          <div className="text-right">
+            <div className="font-medium text-text-dark">
+              {formatQty(row.total_inner_units)} {row.unit}
             </div>
             <div className="text-[11px] text-text-dark/60">Across {row.receipt_count} receipts</div>
           </div>
