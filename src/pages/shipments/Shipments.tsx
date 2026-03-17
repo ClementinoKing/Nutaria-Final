@@ -1563,7 +1563,7 @@ function Shipments() {
                           name="doc_no"
                           value={formData.doc_no}
                           onChange={handleChange}
-                          placeholder="Automatically assigned if left blank"
+                          placeholder="Leave blank to auto-assign"
                         />
                       </div>
                       <div className="space-y-2">

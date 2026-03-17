@@ -3,12 +3,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, X, Pencil, Trash2 } from 'lucide-react'
+import { Plus, RefreshCcw, X, Pencil, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
+import SettingsTour from '@/components/tour/SettingsTour'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import {
   usePackagingSettings,
   type BoxPackRule,
@@ -30,6 +32,8 @@ interface UnitFormData {
   height_mm: string
   operational_product_id: string
 }
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface RuleFormData {
   box_unit_id: string
@@ -548,9 +552,19 @@ function PackagingManagement() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (row: PackagingUnit) => (
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" className="text-blue-600 hover:bg-blue-50" onClick={() => handleOpenEditUnit(row)}>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className={tableEditButtonClass}
+              onClick={() => handleOpenEditUnit(row)}
+              title={`Edit ${row.name ?? 'packaging unit'}`}
+              aria-label={`Edit ${row.name ?? 'packaging unit'}`}
+            >
               <Pencil className="h-4 w-4" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => handleToggleUnit(row)}>
@@ -560,7 +574,14 @@ function PackagingManagement() {
         ),
         mobileRender: (row: PackagingUnit) => (
           <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" className="text-blue-600 hover:bg-blue-50" onClick={() => handleOpenEditUnit(row)}>
+            <Button
+              variant="outline"
+              size="icon"
+              className={tableEditButtonClass}
+              onClick={() => handleOpenEditUnit(row)}
+              title={`Edit ${row.name ?? 'packaging unit'}`}
+              aria-label={`Edit ${row.name ?? 'packaging unit'}`}
+            >
               <Pencil className="h-4 w-4" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => handleToggleUnit(row)}>
@@ -615,34 +636,217 @@ function PackagingManagement() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (row: BoxPackRule) => (
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" className="text-blue-600 hover:bg-blue-50" onClick={() => handleOpenEditRule(row)}>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className={tableEditButtonClass}
+              onClick={() => handleOpenEditRule(row)}
+              title="Edit box pack rule"
+              aria-label="Edit box pack rule"
+            >
               <Pencil className="h-4 w-4" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => handleToggleRule(row)}>
               {row.is_active ? 'Deactivate' : 'Activate'}
             </Button>
-            <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50" onClick={() => handleDeleteRule(row)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={tableDeleteButtonClass}
+              onClick={() => handleDeleteRule(row)}
+              title="Delete box pack rule"
+              aria-label="Delete box pack rule"
+            >
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
         ),
         mobileRender: (row: BoxPackRule) => (
           <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" className="text-blue-600 hover:bg-blue-50" onClick={() => handleOpenEditRule(row)}>
+            <Button
+              variant="outline"
+              size="icon"
+              className={tableEditButtonClass}
+              onClick={() => handleOpenEditRule(row)}
+              title="Edit box pack rule"
+              aria-label="Edit box pack rule"
+            >
               <Pencil className="h-4 w-4" />
             </Button>
             <Button variant="ghost" size="sm" onClick={() => handleToggleRule(row)}>
               {row.is_active ? 'Deactivate' : 'Activate'}
             </Button>
-            <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50" onClick={() => handleDeleteRule(row)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={tableDeleteButtonClass}
+              onClick={() => handleDeleteRule(row)}
+              title="Delete box pack rule"
+              aria-label="Delete box pack rule"
+            >
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
         ),
       },
     ]
+
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Packaging settings overview',
+        description:
+          'Use this page to manage packaging units and the box-pack rules that define how packets fit into boxes.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="packaging-search"]',
+        title: 'Search packaging units',
+        description:
+          'Search by code, name, unit type, or packaging type before creating or editing units.',
+        placement: 'bottom',
+      },
+      {
+        id: 'units-results',
+        target: '[data-tour="packaging-units-results"]',
+        title: 'Review packaging units',
+        description:
+          'This table shows the packet and box units already configured for packaging operations.',
+        placement: 'top',
+      },
+      {
+        id: 'add-unit',
+        target: '[data-tour="packaging-add-unit-button"]',
+        title: 'Add a packaging unit',
+        description:
+          'Use this action to create a new packet or box unit definition.',
+        placement: 'left',
+      },
+      {
+        id: 'unit-type',
+        target: '[data-tour="packaging-unit-type-field"]',
+        title: 'Choose the unit type',
+        description:
+          'Select whether the unit is a packet or a box before filling in the rest of the form.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenCreateUnit()
+        },
+      },
+      {
+        id: 'unit-name',
+        target: '[data-tour="packaging-unit-name-field"]',
+        title: 'Enter the unit name',
+        description:
+          'Add a clear packaging unit name so the team can recognize it in inventory and packaging screens.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenCreateUnit()
+        },
+      },
+      {
+        id: 'unit-operational-product',
+        target: '[data-tour="packaging-unit-operational-product-field"]',
+        title: 'Link the operational product',
+        description:
+          'Packet units should be linked to the operational product they represent.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenCreateUnit()
+        },
+      },
+      {
+        id: 'unit-save',
+        target: '[data-tour="packaging-unit-save-button"]',
+        title: 'Save the packaging unit',
+        description:
+          'Save when the unit details are ready to add it to the packaging catalog.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenCreateUnit()
+        },
+      },
+      {
+        id: 'rules-results',
+        target: '[data-tour="packaging-rules-results"]',
+        title: 'Review box pack rules',
+        description:
+          'These rules define how many packets fit inside each configured box unit.',
+        placement: 'top',
+      },
+      {
+        id: 'add-rule',
+        target: '[data-tour="packaging-add-rule-button"]',
+        title: 'Add a box pack rule',
+        description:
+          'Use this action to connect a box unit, a packet unit, and the quantity per box.',
+        placement: 'left',
+      },
+      {
+        id: 'rule-box',
+        target: '[data-tour="packaging-rule-box-field"]',
+        title: 'Choose the box unit',
+        description:
+          'Select the box unit that will hold the packet unit in this rule.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenCreateRule()
+        },
+      },
+      {
+        id: 'rule-packet',
+        target: '[data-tour="packaging-rule-packet-field"]',
+        title: 'Choose the packet unit',
+        description:
+          'Select the packet unit that belongs inside the box.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenCreateRule()
+        },
+      },
+      {
+        id: 'rule-quantity',
+        target: '[data-tour="packaging-rule-quantity-field"]',
+        title: 'Set packets per box',
+        description:
+          'Enter how many packets fit in the box to complete the rule.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenCreateRule()
+        },
+      },
+      {
+        id: 'rule-save',
+        target: '[data-tour="packaging-rule-save-button"]',
+        title: 'Save the rule',
+        description:
+          'Save when the box, packet, and quantity are correct so the rule is available in packaging operations.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenCreateRule()
+        },
+      },
+    ],
+    [boxPackRules.length, filteredUnits.length]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
 
   if (loading && packagingUnits.length === 0) {
     return (
@@ -658,11 +862,11 @@ function PackagingManagement() {
       activeItem="settings"
       actions={
         <>
-          <Button type="button" variant="outline" onClick={refresh} disabled={loading}>
-            <RefreshCcw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
+          <Button type="button" variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
           </Button>
-          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateUnit}>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateUnit} data-tour="packaging-add-unit-button">
             <Plus className="mr-2 h-4 w-4" />
             Add Unit
           </Button>
@@ -708,6 +912,7 @@ function PackagingManagement() {
               <Label htmlFor="pkg-search">Search</Label>
               <Input
                 id="pkg-search"
+                data-tour="packaging-search"
                 className="mt-1"
                 placeholder="Search by code, name, unit type, or packaging type"
                 value={searchTerm}
@@ -722,16 +927,18 @@ function PackagingManagement() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={unitColumns}
-            data={filteredUnits}
-            rowKey="id"
-            emptyMessage={loading ? 'Loading packaging units…' : 'No packaging units found.'}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="packaging-units-results">
+            <ResponsiveTable
+              columns={unitColumns}
+              data={filteredUnits}
+              rowKey="id"
+              emptyMessage={loading ? 'Loading packaging units…' : 'No packaging units found.'}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -741,22 +948,24 @@ function PackagingManagement() {
             <CardTitle className="text-text-dark">Box Pack Rules</CardTitle>
             <CardDescription>Define how many packets fit into each box.</CardDescription>
           </div>
-          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateRule}>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateRule} data-tour="packaging-add-rule-button">
             <Plus className="mr-2 h-4 w-4" />
             Add Rule
           </Button>
         </CardHeader>
         <CardContent>
-          <ResponsiveTable
-            columns={ruleColumns}
-            data={boxPackRules}
-            rowKey="id"
-            emptyMessage={loading ? 'Loading box pack rules…' : 'No rules found.'}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="packaging-rules-results">
+            <ResponsiveTable
+              columns={ruleColumns}
+              data={boxPackRules}
+              rowKey="id"
+              emptyMessage={loading ? 'Loading box pack rules…' : 'No rules found.'}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -790,7 +999,7 @@ function PackagingManagement() {
                     name="code"
                     value={unitForm.code}
                     onChange={handleUnitFieldChange}
-                    placeholder="Auto-generated from unit details"
+                    placeholder="Generated automatically"
                     className="mt-1"
                     disabled={isSubmitting}
                     readOnly={!editingUnit}
@@ -801,10 +1010,11 @@ function PackagingManagement() {
                   <Label htmlFor="pu-name">Name</Label>
                   <Input
                     id="pu-name"
+                    data-tour="packaging-unit-name-field"
                     name="name"
                     value={unitForm.name}
                     onChange={handleUnitFieldChange}
-                    placeholder="e.g. Vacuum Silver Bag 10kg"
+                    placeholder="Enter packaging name"
                     className="mt-1"
                     disabled={isSubmitting}
                   />
@@ -817,6 +1027,7 @@ function PackagingManagement() {
                   <Label htmlFor="pu-unit-type">Unit Type</Label>
                   <select
                     id="pu-unit-type"
+                    data-tour="packaging-unit-type-field"
                     name="unit_type"
                     value={unitForm.unit_type}
                     onChange={handleUnitFieldChange}
@@ -870,6 +1081,7 @@ function PackagingManagement() {
                 <Label htmlFor="pu-operational-product">Operational Product {unitForm.unit_type === 'PACKET' ? '*' : ''}</Label>
                 <select
                   id="pu-operational-product"
+                  data-tour="packaging-unit-operational-product-field"
                   name="operational_product_id"
                   value={unitForm.operational_product_id}
                   onChange={handleUnitFieldChange}
@@ -935,7 +1147,7 @@ function PackagingManagement() {
                 <Button type="button" variant="outline" onClick={() => setIsUnitModalOpen(false)} disabled={isSubmitting}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting} data-tour="packaging-unit-save-button">
                   {isSubmitting ? 'Saving...' : editingUnit ? 'Save Changes' : 'Create Unit'}
                 </Button>
               </div>
@@ -970,6 +1182,7 @@ function PackagingManagement() {
                 <Label htmlFor="rule-box">Box Unit</Label>
                 <select
                   id="rule-box"
+                  data-tour="packaging-rule-box-field"
                   name="box_unit_id"
                   value={ruleForm.box_unit_id}
                   onChange={handleRuleFieldChange}
@@ -992,6 +1205,7 @@ function PackagingManagement() {
                 <Label htmlFor="rule-packet">Packet Unit</Label>
                 <select
                   id="rule-packet"
+                  data-tour="packaging-rule-packet-field"
                   name="packet_unit_id"
                   value={ruleForm.packet_unit_id}
                   onChange={handleRuleFieldChange}
@@ -1014,6 +1228,7 @@ function PackagingManagement() {
                 <Label htmlFor="rule-qty">Packets Per Box</Label>
                 <Input
                   id="rule-qty"
+                  data-tour="packaging-rule-quantity-field"
                   name="packets_per_box"
                   type="number"
                   min="1"
@@ -1031,7 +1246,7 @@ function PackagingManagement() {
                 <Button type="button" variant="outline" onClick={() => setIsRuleModalOpen(false)} disabled={isSubmitting}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting} data-tour="packaging-rule-save-button">
                   {isSubmitting ? 'Saving...' : editingRule ? 'Save Changes' : 'Create Rule'}
                 </Button>
               </div>
@@ -1039,6 +1254,17 @@ function PackagingManagement() {
           </div>
         </div>
       ) : null}
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

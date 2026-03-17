@@ -24,6 +24,8 @@ interface FormData {
   name: string
   description: string
 }
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface FormErrors {
   name?: string
@@ -344,28 +346,31 @@ function ProcessStepNames() {
             <Button
               type="button"
               variant="outline"
-              size="sm"
+              size="icon"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'process step'}`}
+              aria-label={`Edit ${row.name ?? 'process step'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 handleEdit(row)
               }}
             >
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit
+              <Pencil className="h-4 w-4" />
             </Button>
             <Button
               type="button"
               variant="ghost"
-              size="sm"
-              className="text-red-600 hover:bg-red-50"
+              size="icon"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'process step'}`}
+              aria-label={`Delete ${row.name ?? 'process step'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 handleDeleteClick(row)
               }}
               disabled={isDeleting}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
+              <Trash2 className="h-4 w-4" />
             </Button>
           </div>
         ),
@@ -374,28 +379,31 @@ function ProcessStepNames() {
             <Button
               type="button"
               variant="outline"
-              size="sm"
+              size="icon"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'process step'}`}
+              aria-label={`Edit ${row.name ?? 'process step'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 handleEdit(row)
               }}
             >
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit
+              <Pencil className="h-4 w-4" />
             </Button>
             <Button
               type="button"
               variant="ghost"
-              size="sm"
-              className="text-red-600 hover:bg-red-50"
+              size="icon"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'process step'}`}
+              aria-label={`Delete ${row.name ?? 'process step'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 handleDeleteClick(row)
               }}
               disabled={isDeleting}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
+              <Trash2 className="h-4 w-4" />
             </Button>
           </div>
         ),
@@ -635,7 +643,7 @@ function ProcessStepNames() {
                     <Input
                       id="psn-name"
                       name="name"
-                      placeholder="e.g. Sorting & Grading"
+                      placeholder="Enter step name"
                       value={formData.name}
                       onChange={handleFormChange}
                       className="mt-1"

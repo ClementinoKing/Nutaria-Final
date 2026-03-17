@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import PageLayout from '@/components/layout/PageLayout'
-import { Plus, Banknote, X, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Plus, Banknote, X, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { useSuppliers } from '@/hooks/useSuppliers'
@@ -14,6 +14,8 @@ import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { buildStorageObjectPath, getStoredFileUrl, uploadStoredFile } from '@/lib/fileStorage'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import SettingsTour from '@/components/tour/SettingsTour'
 
 interface Supply {
   id: number
@@ -475,6 +477,95 @@ function Payments() {
     return Math.max(0, supply.balance)
   }, [paymentForm.supply_id, suppliesWithTotals])
 
+  const openPaymentTourModal = () => {
+    setActiveTab('supplies')
+    handleOpenPaymentModal()
+  }
+
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'summary',
+        target: '[data-tour="payments-summary"]',
+        title: 'Payments summary',
+        description: 'Track expected totals, paid amounts, and outstanding balances.',
+        placement: 'bottom',
+      },
+      {
+        id: 'tabs',
+        target: '[data-tour="payments-tabs"]',
+        title: 'Switch payment views',
+        description: 'Move between all supplies, recent payments, and fully paid supplies.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          setActiveTab('supplies')
+        },
+      },
+      {
+        id: 'filters',
+        target: '[data-tour="payments-filters"]',
+        title: 'Filter payments',
+        description: 'Search and use reconciliation filters to narrow the list.',
+        placement: 'top',
+        beforeEnter: () => {
+          setActiveTab('supplies')
+        },
+      },
+      {
+        id: 'table',
+        target: '[data-tour="payments-table"]',
+        title: 'Supplies and balances',
+        description: 'Each row shows expected vs paid totals and links to the payment detail.',
+        placement: 'top',
+        beforeEnter: () => {
+          setActiveTab('supplies')
+        },
+      },
+      {
+        id: 'add',
+        target: '[data-tour="payments-add-button"]',
+        title: 'Record a payment',
+        description: 'Use this action to log new supply payments.',
+        placement: 'left',
+        beforeEnter: () => {
+          setActiveTab('supplies')
+        },
+      },
+      {
+        id: 'modal',
+        target: '[data-tour="payments-modal"]',
+        title: 'Payment details',
+        description: 'Select the supply, amount, and proof of payment before saving.',
+        placement: 'top',
+        beforeEnter: () => {
+          openPaymentTourModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="payments-save-button"]',
+        title: 'Save the payment',
+        description: 'Submit the payment once the details are complete.',
+        placement: 'top',
+        beforeEnter: () => {
+          openPaymentTourModal()
+        },
+      },
+    ],
+    [openPaymentTourModal]
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading) {
     return (
       <PageLayout title="Payments" activeItem="payments" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
@@ -488,15 +579,21 @@ function Payments() {
       title="Payments"
       activeItem="payments"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenPaymentModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add payment
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenPaymentModal} data-tour="payments-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add payment
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="space-y-6">
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-3" data-tour="payments-summary">
           <Card className="border-olive-light/30">
             <CardHeader className="pb-2">
               <CardDescription>Total expected (filtered)</CardDescription>
@@ -524,7 +621,7 @@ function Payments() {
         </div>
 
         <Card className="bg-white border-olive-light/30">
-          <div className="border-b border-olive-light/40">
+          <div className="border-b border-olive-light/40" data-tour="payments-tabs">
             <nav className="flex gap-0" aria-label="Tabs">
               <button
                 type="button"
@@ -566,7 +663,7 @@ function Payments() {
           </div>
           <CardContent className="pt-4">
             {activeTab === 'supplies' && (
-              <div className="space-y-4">
+              <div className="space-y-4" data-tour="payments-filters">
                 <p className="text-sm text-text-dark/70 dark:text-slate-400">
                   Each payment is linked to a supply. Track partial or full payments per supply. Expected total is from supply line unit prices × accepted quantity.
                 </p>
@@ -604,7 +701,7 @@ function Payments() {
                   ))}
                 </div>
 
-                <div className="overflow-x-auto rounded-lg border border-olive-light/40">
+                <div className="overflow-x-auto rounded-lg border border-olive-light/40" data-tour="payments-table">
                   <table className="w-full min-w-[640px] text-left text-sm">
                     <thead className="border-b border-olive-light/40 bg-olive-light/20 text-text-dark">
                       <tr>
@@ -909,7 +1006,7 @@ function Payments() {
       {/* Add payment modal */}
       {paymentModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-md bg-white shadow-xl">
+          <Card className="w-full max-w-md bg-white shadow-xl" data-tour="payments-modal">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
               <CardTitle className="text-text-dark">Record payment</CardTitle>
               <Button variant="ghost" size="icon" onClick={handleClosePaymentModal}>
@@ -977,7 +1074,7 @@ function Payments() {
                   <Label htmlFor="payment-reference">Reference (optional)</Label>
                   <Input
                     id="payment-reference"
-                    placeholder="Auto-filled from supply invoice"
+                    placeholder="Filled automatically"
                     value={paymentForm.reference}
                     readOnly
                     disabled
@@ -1015,6 +1112,7 @@ function Payments() {
                   type="submit"
                   className="bg-olive hover:bg-olive-dark"
                   disabled={submitting || selectedSupplyOutstanding === 0}
+                  data-tour="payments-save-button"
                 >
                   {submitting ? 'Saving...' : 'Save payment'}
                 </Button>
@@ -1027,6 +1125,16 @@ function Payments() {
           </Card>
         </div>
       )}
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={closeTour}
+      />
     </PageLayout>
   )
 }

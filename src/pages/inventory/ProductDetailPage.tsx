@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Spinner } from '@/components/ui/spinner'
 import { supabase } from '@/lib/supabaseClient'
@@ -38,6 +39,7 @@ interface ChainMembershipRow {
 
 function ProductDetailPage() {
   const { productId } = useParams<{ productId: string }>()
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [product, setProduct] = useState<ProductSummary | null>(null)
@@ -223,19 +225,32 @@ function ProductDetailPage() {
 
   if (loading) {
     return (
-      <PageLayout title="Product Detail" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Product Detail"
+        activeItem="inventory"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/inventory/products')} aria-label="Back to Products">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Spinner text="Loading product detail..." />
       </PageLayout>
     )
   }
 
   return (
-    <PageLayout title="Product Detail" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      <Link to="/inventory/products" className="inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline">
-        <ArrowLeft className="h-4 w-4" />
-        Back to Products
-      </Link>
-
+    <PageLayout
+      title="Product Detail"
+      activeItem="inventory"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={() => navigate('/inventory/products')} aria-label="Back to Products">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
+      contentClassName="px-4 sm:px-6 lg:px-8 py-8 space-y-6"
+    >
       {error ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
       ) : null}

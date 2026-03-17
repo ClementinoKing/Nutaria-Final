@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { LotWasteSummary, WasteRecord, WasteSourceKind, loadWasteTrackingData } from '@/lib/wasteTracking'
@@ -19,6 +20,7 @@ const SOURCE_LABELS: Record<WasteSourceKind, string> = {
 
 function WasteDetailsPage() {
   const { lotRunId } = useParams<{ lotRunId: string }>()
+  const navigate = useNavigate()
   const [summary, setSummary] = useState<LotWasteSummary | null>(null)
   const [records, setRecords] = useState<WasteRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -122,24 +124,32 @@ function WasteDetailsPage() {
 
   if (loading) {
     return (
-      <PageLayout title="Waste Details" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Waste Details"
+        activeItem="inventory"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/inventory/stock-levels/waste')} aria-label="Back to Waste">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Spinner text="Loading waste details..." />
       </PageLayout>
     )
   }
 
   return (
-    <PageLayout title="Waste Details" activeItem="inventory" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
-      <div className="mb-4">
-        <Link
-          to="/inventory/stock-levels/waste"
-          className="inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline"
-        >
+    <PageLayout
+      title="Waste Details"
+      activeItem="inventory"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={() => navigate('/inventory/stock-levels/waste')} aria-label="Back to Waste">
           <ArrowLeft className="h-4 w-4" />
-          Back to Waste
-        </Link>
-      </div>
-
+        </Button>
+      }
+      contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+    >
       {error ? (
         <div className="rounded-md border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
           {error}

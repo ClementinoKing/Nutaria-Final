@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { AlertCircle, ArrowLeft, ArrowUpRight, BarChart3, SlidersHorizontal, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowUpRight, BarChart3, SlidersHorizontal, Sparkles, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Input } from '@/components/ui/input'
@@ -10,6 +10,8 @@ import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Button } from '@/components/ui/button'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import SettingsTour from '@/components/tour/SettingsTour'
 
 const QUALITY_HOLD_STATUSES = new Set(['PENDING', 'HOLD'])
 
@@ -798,10 +800,64 @@ interface AggregatedRecord {
     )
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'summary',
+        target: '[data-tour="supply-stock-summary"]',
+        title: 'Supply stock overview',
+        description: 'Track total on-hand, unprocessed, and in-process stock at a glance.',
+        placement: 'bottom',
+      },
+      {
+        id: 'filters',
+        target: '[data-tour="supply-stock-filters"]',
+        title: 'Search and filter',
+        description: 'Narrow the stock list by product, SKU, or filter presets.',
+        placement: 'top',
+      },
+      {
+        id: 'table',
+        target: '[data-tour="supply-stock-table"]',
+        title: 'Supply stock table',
+        description: 'Review available, allocated, and quality-hold quantities by warehouse.',
+        placement: 'top',
+      },
+      {
+        id: 'panel',
+        target: '[data-tour="supply-stock-filter-panel"]',
+        title: 'Advanced filters',
+        description: 'Use the filter panel to refine stock risk and coverage thresholds.',
+        placement: 'left',
+        beforeEnter: () => {
+          setIsFilterPanelOpen(true)
+        },
+      },
+    ],
+    [setIsFilterPanelOpen]
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   return (
     <PageLayout
       title="Supply Stock"
       activeItem="inventory"
+      actions={
+        <Button variant="outline" onClick={() => void openTour()}>
+          <Sparkles className="mr-2 h-4 w-4" />
+          Take tour
+        </Button>
+      }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="mb-4">
@@ -813,7 +869,7 @@ interface AggregatedRecord {
           Back to Stock Levels
         </Link>
       </div>
-      <div className="grid gap-4 sm:grid-cols-4 mb-6">
+      <div className="grid gap-4 sm:grid-cols-4 mb-6" data-tour="supply-stock-summary">
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
             <CardDescription>Total At Hand</CardDescription>
@@ -876,7 +932,7 @@ interface AggregatedRecord {
             </div>
           ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr),auto]">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr),auto]" data-tour="supply-stock-filters">
             <div>
               <Label htmlFor="stock-search">Search</Label>
               <Input
@@ -906,7 +962,7 @@ interface AggregatedRecord {
               No supply stock recorded yet. Add supplies to see stock levels here.
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4" data-tour="supply-stock-table">
               <ResponsiveTable
                 columns={columns}
                 data={paginatedStockLevels}
@@ -977,6 +1033,7 @@ interface AggregatedRecord {
           role="dialog"
           aria-modal="true"
           aria-label="Supply stock filters"
+          data-tour="supply-stock-filter-panel"
         >
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-4 py-3">
@@ -1072,6 +1129,16 @@ interface AggregatedRecord {
           </div>
         </aside>
       </div>
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={closeTour}
+      />
     </PageLayout>
   )
 }

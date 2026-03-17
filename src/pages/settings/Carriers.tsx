@@ -28,6 +28,8 @@ interface Carrier {
   email: string | null
   created_at: string | null
 }
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface CarrierForm {
   name: string
@@ -197,22 +199,53 @@ function Carriers() {
     {
       key: 'actions',
       header: 'Actions',
+      headerClassName: 'text-right',
+      cellClassName: 'text-right',
+      mobileValueClassName: 'text-right',
       render: (row: Carrier) => (
         <div className="flex items-center gap-2 justify-end">
-          <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => openEdit(row)}
+            className={tableEditButtonClass}
+            title={`Edit ${row.name ?? 'carrier'}`}
+            aria-label={`Edit ${row.name ?? 'carrier'}`}
+          >
             <Edit className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" onClick={() => setDeleteTarget(row)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={tableDeleteButtonClass}
+            onClick={() => setDeleteTarget(row)}
+            title={`Delete ${row.name ?? 'carrier'}`}
+            aria-label={`Delete ${row.name ?? 'carrier'}`}
+          >
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
       ),
       mobileRender: (row: Carrier) => (
         <div className="flex items-center gap-2 justify-end">
-          <Button variant="ghost" size="sm" onClick={() => openEdit(row)}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => openEdit(row)}
+            className={tableEditButtonClass}
+            title={`Edit ${row.name ?? 'carrier'}`}
+            aria-label={`Edit ${row.name ?? 'carrier'}`}
+          >
             <Edit className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" onClick={() => setDeleteTarget(row)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={tableDeleteButtonClass}
+            onClick={() => setDeleteTarget(row)}
+            title={`Delete ${row.name ?? 'carrier'}`}
+            aria-label={`Delete ${row.name ?? 'carrier'}`}
+          >
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
@@ -248,7 +281,7 @@ function Carriers() {
         <CardContent className="space-y-4">
           <div className="space-y-2 sm:max-w-sm">
             <Label htmlFor="carrier-search">Search</Label>
-            <Input id="carrier-search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search name, contact, phone, email" />
+            <Input id="carrier-search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search carriers" />
           </div>
 
           <ResponsiveTable

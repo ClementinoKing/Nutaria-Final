@@ -402,7 +402,16 @@ function PaymentDetail() {
 
   if (loading) {
     return (
-      <PageLayout title="Payment Details" activeItem="payments" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Payment Details"
+        activeItem="payments"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/payments')} aria-label="Back to Payments">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Spinner text="Loading payment details..." />
       </PageLayout>
     )

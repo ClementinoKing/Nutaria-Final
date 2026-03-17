@@ -1082,7 +1082,21 @@ function ProcessDetail() {
 
   if (error || !process) {
     return (
-      <PageLayout title="Process Not Found" activeItem="settings">
+      <PageLayout
+        title="Process Not Found"
+        activeItem="settings"
+        leadingActions={
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => navigate(-1)}
+            className="border-olive-light/40 text-olive hover:text-olive-dark"
+            aria-label="Back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+      >
         <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
           <Layers className="h-12 w-12 text-olive" />
           <div>

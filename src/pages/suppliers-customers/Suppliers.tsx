@@ -5,13 +5,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
-import { Plus, Edit, Trash2, X, Camera, Search } from 'lucide-react'
+import { Plus, Edit, Trash2, X, Camera, Search, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { toast } from 'sonner'
 import { useSuppliers } from '@/hooks/useSuppliers'
 import { useSupplierTypes } from '@/hooks/useSupplierTypes'
 import { useDocumentTypes } from '@/hooks/useDocumentTypes'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import { supabase } from '@/lib/supabaseClient'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui/spinner'
@@ -28,6 +29,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { CameraCapture } from '@/components/CameraCapture'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import SettingsTour from '@/components/tour/SettingsTour'
 import {
   DEFAULT_COUNTRY_DIAL_CODE,
   getAllCountryOptions,
@@ -1093,6 +1095,96 @@ function Suppliers() {
       : 'Save Supplier'
     : 'Next Step'
 
+  const openSupplierTourStep = (stepIndex: number) => {
+    handleOpenModal()
+    setActiveStep(stepIndex)
+  }
+
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'search',
+        target: '[data-tour="suppliers-search"]',
+        title: 'Search and filter suppliers',
+        description: 'Use search, type, and country filters to locate the right supplier quickly.',
+        placement: 'bottom',
+      },
+      {
+        id: 'bulk-actions',
+        target: '[data-tour="suppliers-bulk-actions"]',
+        title: 'Manage suppliers in bulk',
+        description: 'Select rows to edit or delete multiple suppliers at once.',
+        placement: 'top',
+      },
+      {
+        id: 'table',
+        target: '[data-tour="suppliers-table"]',
+        title: 'Review the supplier directory',
+        description: 'Click a supplier to open their detailed profile.',
+        placement: 'top',
+      },
+      {
+        id: 'add',
+        target: '[data-tour="suppliers-add-button"]',
+        title: 'Add a new supplier',
+        description: 'Start a new supplier profile whenever you onboard a new partner.',
+        placement: 'left',
+      },
+      {
+        id: 'basic',
+        target: '[data-tour="suppliers-step-basic"]',
+        title: 'Capture the supplier profile',
+        description: 'Enter the supplier name, type, and primary contact details.',
+        placement: 'top',
+        beforeEnter: () => {
+          openSupplierTourStep(0)
+        },
+      },
+      {
+        id: 'additional',
+        target: '[data-tour="suppliers-step-additional"]',
+        title: 'Add contacts and details',
+        description: 'Store extra contact people and verification details.',
+        placement: 'top',
+        beforeEnter: () => {
+          openSupplierTourStep(1)
+        },
+      },
+      {
+        id: 'documents',
+        target: '[data-tour="suppliers-step-documents"]',
+        title: 'Upload documents',
+        description: 'Attach certificates and compliance documents needed for sourcing.',
+        placement: 'top',
+        beforeEnter: () => {
+          openSupplierTourStep(2)
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="suppliers-save-button"]',
+        title: 'Save the supplier',
+        description: 'Finish the profile once all required information is complete.',
+        placement: 'top',
+        beforeEnter: () => {
+          openSupplierTourStep(2)
+        },
+      },
+    ],
+    [openSupplierTourStep]
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   // Reset to page 1 when filters or suppliers list changes
   useEffect(() => {
     setPage(1)
@@ -1300,10 +1392,16 @@ function Suppliers() {
       title="Suppliers"
       activeItem="suppliersCustomers"
       actions={
-        <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark">
-          <Plus className="mr-2 h-4 w-4" />
-          Add Supplier
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button onClick={handleOpenModal} className="bg-olive hover:bg-olive-dark" data-tour="suppliers-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Supplier
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -1320,7 +1418,7 @@ function Suppliers() {
           ) : (
             <>
               {/* Search and Filter Section */}
-              <div className="mb-6 space-y-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+              <div className="mb-6 space-y-4 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4" data-tour="suppliers-search">
                 <div className="grid gap-4 sm:grid-cols-3">
                   {/* Search Input */}
                   <div className="space-y-2 sm:col-span-3 lg:col-span-1">
@@ -1437,7 +1535,7 @@ function Suppliers() {
                 )}
               </div>
 
-              <div className="mb-4 rounded-lg border border-olive-light/40 bg-white px-4 py-3">
+              <div className="mb-4 rounded-lg border border-olive-light/40 bg-white px-4 py-3" data-tour="suppliers-bulk-actions">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm text-text-dark/70">
                     {selectedSupplierCount > 0
@@ -1521,15 +1619,17 @@ function Suppliers() {
                 </div>
               ) : (
                 <>
-                  <ResponsiveTable 
-                    columns={columns as any} 
-                    data={suppliers as any} 
-                    rowKey="id" 
-                    onRowClick={handleSupplierClick as any}
-                    tableClassName={undefined as any}
-                    mobileCardClassName={undefined as any}
-                    getRowClassName={undefined as any}
-                  />
+                  <div data-tour="suppliers-table">
+                    <ResponsiveTable 
+                      columns={columns as any} 
+                      data={suppliers as any} 
+                      rowKey="id" 
+                      onRowClick={handleSupplierClick as any}
+                      tableClassName={undefined as any}
+                      mobileCardClassName={undefined as any}
+                      getRowClassName={undefined as any}
+                    />
+                  </div>
                   {totalCount > 0 && (
                     <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 mt-4">
                       <div className="text-sm text-text-dark/70">
@@ -1632,7 +1732,7 @@ function Suppliers() {
               <div className="flex-1 overflow-y-auto px-6 py-6">
                 {currentStep?.id === 'basic' && (
                   <div className="space-y-8">
-                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
+                    <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm" data-tour="suppliers-step-basic">
                       <h3 className="text-lg font-semibold text-text-dark">Supplier Profile</h3>
                       <p className="text-sm text-text-dark/70">
                         Capture the core details that appear in the directory.
@@ -1645,7 +1745,7 @@ function Suppliers() {
                             name="name"
                             value={formData.name}
                             onChange={handleChange}
-                            placeholder="Acme Farms"
+                            placeholder="Enter supplier name"
                             disabled={isSubmitting}
                             className={formErrors.fields.name ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                           />
@@ -1700,7 +1800,7 @@ function Suppliers() {
                               options={dialCodeOptions}
                               value={phoneDialCode}
                               onChange={setPhoneDialCode}
-                              placeholder="Code"
+                              placeholder="Dial code"
                               disabled={isSubmitting}
                             />
                             <Input
@@ -1708,7 +1808,7 @@ function Suppliers() {
                               name="phone"
                               value={formData.phone}
                               onChange={handleChange}
-                              placeholder="21 555 1234"
+                              placeholder="Enter phone number"
                               disabled={isSubmitting}
                               className={cn(
                                 'col-span-2',
@@ -1728,7 +1828,7 @@ function Suppliers() {
                             type="email"
                             value={formData.email}
                             onChange={handleChange}
-                            placeholder="hello@acmefarms.co.za"
+                            placeholder="Enter email address"
                             disabled={isSubmitting}
                             className={formErrors.fields.email ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                           />
@@ -1744,7 +1844,7 @@ function Suppliers() {
                             value={formData.address}
                             onChange={handleChange}
                             rows={3}
-                            placeholder="Street, City, Postal Code"
+                            placeholder="Enter address"
                             disabled={isSubmitting}
                             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                           />
@@ -1755,7 +1855,7 @@ function Suppliers() {
                 )}
 
                 {currentStep?.id === 'additional' && (
-                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1" data-tour="suppliers-step-additional">
                     <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
                       <div className="flex items-start justify-between gap-4">
                         <div>
@@ -1777,7 +1877,7 @@ function Suppliers() {
                             name="primary_contact_name"
                             value={formData.primary_contact_name}
                             onChange={handleChange}
-                            placeholder="Jane Smith"
+                            placeholder="Enter contact name"
                             disabled={isSubmitting}
                           />
                         </div>
@@ -1789,7 +1889,7 @@ function Suppliers() {
                               options={dialCodeOptions}
                               value={primaryContactPhoneDialCode}
                               onChange={setPrimaryContactPhoneDialCode}
-                              placeholder="Code"
+                              placeholder="Dial code"
                               disabled={isSubmitting}
                             />
                             <Input
@@ -1797,7 +1897,7 @@ function Suppliers() {
                               name="primary_contact_phone"
                               value={formData.primary_contact_phone}
                               onChange={handleChange}
-                              placeholder="82 456 7890"
+                              placeholder="Enter phone number"
                               disabled={isSubmitting}
                               className="col-span-2"
                             />
@@ -1811,7 +1911,7 @@ function Suppliers() {
                             type="email"
                             value={formData.primary_contact_email}
                             onChange={handleChange}
-                            placeholder="jane.smith@acmefarms.co.za"
+                            placeholder="Enter email address"
                             disabled={isSubmitting}
                             className={
                               formErrors.fields.primary_contact_email
@@ -1830,7 +1930,7 @@ function Suppliers() {
                             name="primary_contact_role"
                             value={formData.primary_contact_role}
                             onChange={handleChange}
-                            placeholder="Operations Manager"
+                            placeholder="Enter role"
                             disabled={isSubmitting}
                           />
                         </div>
@@ -1864,7 +1964,7 @@ function Suppliers() {
                                     onChange={(event) =>
                                       handleAdditionalContactChange(contact.clientId, 'name', event.target.value)
                                     }
-                                    placeholder="John Banda"
+                                    placeholder="Enter contact name"
                                     disabled={isSubmitting}
                                   />
                                 </div>
@@ -1875,7 +1975,7 @@ function Suppliers() {
                                     onChange={(event) =>
                                       handleAdditionalContactChange(contact.clientId, 'phone', event.target.value)
                                     }
-                                    placeholder="+27 82 456 7890"
+                                    placeholder="Enter phone number"
                                     disabled={isSubmitting}
                                   />
                                 </div>
@@ -1886,7 +1986,7 @@ function Suppliers() {
                                     onChange={(event) =>
                                       handleAdditionalContactChange(contact.clientId, 'role', event.target.value)
                                     }
-                                    placeholder="Finance Contact"
+                                    placeholder="Enter role"
                                     disabled={isSubmitting}
                                   />
                                 </div>
@@ -1898,7 +1998,7 @@ function Suppliers() {
                                     onChange={(event) =>
                                       handleAdditionalContactChange(contact.clientId, 'email', event.target.value)
                                     }
-                                    placeholder="john.banda@example.com"
+                                    placeholder="Enter email address"
                                     disabled={isSubmitting}
                                     className={
                                       formErrors.fields[`contact_email_${contact.clientId}`]
@@ -1932,7 +2032,7 @@ function Suppliers() {
                             min="0"
                             value={formData.supplier_age}
                             onChange={handleChange}
-                            placeholder="e.g. 12"
+                            placeholder="Enter age"
                             disabled={isSubmitting}
                             className={
                               formErrors.fields.supplier_age ? 'border-red-300 focus-visible:ring-red-500' : undefined
@@ -1968,7 +2068,7 @@ function Suppliers() {
                             min="0"
                             value={formData.number_of_employees}
                             onChange={handleChange}
-                            placeholder="e.g. 45"
+                            placeholder="Enter number"
                             disabled={isSubmitting}
                             className={
                               formErrors.fields.number_of_employees
@@ -1989,7 +2089,7 @@ function Suppliers() {
                             min="0"
                             value={formData.number_of_dependants}
                             onChange={handleChange}
-                            placeholder="e.g. 3"
+                            placeholder="Enter number"
                             disabled={isSubmitting}
                             className={
                               formErrors.fields.number_of_dependants
@@ -2025,7 +2125,7 @@ function Suppliers() {
                             name="account_number"
                             value={formData.account_number}
                             onChange={handleChange}
-                            placeholder="e.g. 1234567890"
+                            placeholder="Enter account number"
                             disabled={isSubmitting}
                           />
                         </div>
@@ -2086,7 +2186,7 @@ function Suppliers() {
                 )}
 
                 {currentStep?.id === 'documents' && (
-                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1">
+                  <div className="max-h-[60vh] space-y-8 overflow-y-auto pr-1" data-tour="suppliers-step-documents">
                     <section className="rounded-lg border border-olive-light/40 bg-white p-5 shadow-sm">
                       <h3 className="text-lg font-semibold text-text-dark">Documents & Certificates</h3>
                       <p className="text-sm text-text-dark/70">
@@ -2240,6 +2340,7 @@ function Suppliers() {
                 form="supplier-form"
                 className="bg-olive hover:bg-olive-dark"
                 disabled={isSubmitting}
+                data-tour="suppliers-save-button"
               >
                 {primaryActionLabel}
               </Button>
@@ -2361,6 +2462,16 @@ function Suppliers() {
           </div>
         </div>
       )}
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={closeTour}
+      />
     </PageLayout>
   )
 }

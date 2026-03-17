@@ -6,13 +6,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, X } from 'lucide-react'
+import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, Sparkles, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { useAuth } from '@/context/AuthContext'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import { useSuppliers } from '@/hooks/useSuppliers'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import QualityEvaluationTable from '@/components/supplies/QualityEvaluationTable'
 import { SUPPLY_QUALITY_SCORE_LEGEND } from '@/constants/supplyQuality'
 import { Spinner } from '@/components/ui/spinner'
@@ -22,6 +23,7 @@ import { PackagingQualityStep, PackagingQuality } from '@/components/supplies/Pa
 import { SupplierSignOffStep, SupplierSignOff } from '@/components/supplies/SupplierSignOffStep'
 import { CameraCapture } from '@/components/CameraCapture'
 import { buildStorageObjectPath, uploadStoredFile } from '@/lib/fileStorage'
+import SettingsTour from '@/components/tour/SettingsTour'
 
 interface QualityEntry {
   score: number | string | null
@@ -507,7 +509,7 @@ function evaluateBatchQuality(entries: QualityEntries): { hasQualityIssues: bool
   }
 }
 
-function sanitiseAcceptedQuantityInput(value: string | number | null | undefined): string {
+function sanitiseRejectedQuantityInput(value: string | number | null | undefined): string {
   if (value === undefined || value === null) {
     return ''
   }
@@ -658,6 +660,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     createEmptyOperationalSupplyLine(),
   ])
   const [operationalMappedProducts, setOperationalMappedProducts] = useState<Product[]>([])
+  const [tourFlow, setTourFlow] = useState<'PRODUCT' | 'OPERATIONAL' | null>(null)
   const isEditingSupply = editingSupplyId != null
 
   useEffect(() => {
@@ -1122,35 +1125,22 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           return batch
         }
         const quantity = Number.parseFloat(batch.qty)
-        const accepted = Number.parseFloat(batch.accepted_qty)
         const rejected = Number.parseFloat(batch.rejected_qty)
 
         if (!Number.isFinite(quantity) || quantity <= 0) {
           return batch
         }
+        const normalizedRejected = Number.isFinite(rejected) ? Math.min(Math.max(rejected, 0), quantity) : 0
+        const normalizedAccepted = Math.max(quantity - normalizedRejected, 0)
+        const nextRejected = normalizedRejected === 0 ? '0' : normalizedRejected.toString()
+        const nextAccepted = normalizedAccepted === 0 ? '0' : normalizedAccepted.toString()
 
-        if (!Number.isFinite(accepted) && !Number.isFinite(rejected)) {
+        if (batch.rejected_qty !== nextRejected || batch.accepted_qty !== nextAccepted) {
           changed = true
           return {
             ...batch,
-            accepted_qty: '0',
-            rejected_qty: quantity.toString(),
-          }
-        }
-
-        if (!Number.isFinite(accepted) && Number.isFinite(rejected)) {
-          changed = true
-          return {
-            ...batch,
-            accepted_qty: Math.max(quantity - rejected, 0).toString(),
-          }
-        }
-
-        if (Number.isFinite(accepted) && !Number.isFinite(rejected)) {
-          changed = true
-          return {
-            ...batch,
-            rejected_qty: Math.max(quantity - accepted, 0).toString(),
+            rejected_qty: nextRejected,
+            accepted_qty: nextAccepted,
           }
         }
 
@@ -1310,7 +1300,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       toast.error('This raw material is already selected in another batch.')
       return
     }
-    const incomingValue = field === 'accepted_qty' ? sanitiseAcceptedQuantityInput(value) : value
+    const incomingValue = field === 'rejected_qty' ? sanitiseRejectedQuantityInput(value) : value
     const batchAt = next[index]
     if (batchAt) {
       ;(batchAt as unknown as Record<string, string>)[field] = incomingValue
@@ -1319,49 +1309,25 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const currentBatch = next[index]
     if (!currentBatch) return
 
-    if (field === 'qty') {
-      const quantityNumber = Number.parseFloat(incomingValue)
-      const acceptedNumber = Number.parseFloat(currentBatch.accepted_qty)
-
-      if (Number.isFinite(quantityNumber)) {
-        if (Number.isFinite(acceptedNumber) && acceptedNumber > quantityNumber) {
-          currentBatch.accepted_qty = quantityNumber.toString()
-        }
-      } else {
-        currentBatch.accepted_qty = ''
-      }
-    }
-
-    if (field === 'accepted_qty' || field === 'qty') {
+    if (field === 'rejected_qty' || field === 'qty') {
       const quantityNumber = Number.parseFloat(currentBatch.qty)
-      const acceptedNumber = Number.parseFloat(currentBatch.accepted_qty)
+      const rejectedNumber = Number.parseFloat(currentBatch.rejected_qty)
       const hasQuantity = Number.isFinite(quantityNumber) && quantityNumber > 0
-      const hasAccepted = Number.isFinite(acceptedNumber) && acceptedNumber >= 0
+      const hasRejected = Number.isFinite(rejectedNumber) && rejectedNumber >= 0
 
-      if (hasQuantity && hasAccepted && acceptedNumber > quantityNumber) {
-        toast.error('Accepted quantity cannot exceed received quantity.')
-        currentBatch.accepted_qty = quantityNumber.toString()
+      if (hasQuantity && hasRejected && rejectedNumber > quantityNumber) {
+        toast.error('Rejected quantity cannot exceed received quantity.')
+        currentBatch.rejected_qty = quantityNumber.toString()
+        currentBatch.accepted_qty = '0'
+      } else if (hasQuantity && hasRejected) {
+        const accepted = Math.max(quantityNumber - rejectedNumber, 0)
+        currentBatch.accepted_qty = accepted === 0 ? '0' : accepted.toString()
+      } else if (hasQuantity) {
         currentBatch.rejected_qty = '0'
-      } else if (hasQuantity && hasAccepted) {
-        const remainder = Math.max(quantityNumber - acceptedNumber, 0)
-        currentBatch.rejected_qty = remainder === 0 ? '0' : remainder.toString()
+        currentBatch.accepted_qty = quantityNumber.toString()
       } else {
         currentBatch.rejected_qty = ''
-        if (!hasAccepted && field === 'accepted_qty' && incomingValue === '') {
-          currentBatch.accepted_qty = ''
-        }
-      }
-    }
-
-    if (field !== 'accepted_qty' && field !== 'qty') {
-      const quantityNumber = Number.parseFloat(currentBatch.qty)
-      const acceptedNumber = Number.parseFloat(currentBatch.accepted_qty)
-
-      if (Number.isFinite(quantityNumber) && quantityNumber > 0 && Number.isFinite(acceptedNumber) && acceptedNumber >= 0) {
-        const remainder = Math.max(quantityNumber - acceptedNumber, 0)
-        currentBatch.rejected_qty = remainder === 0 ? '0' : remainder.toString()
-      } else {
-        currentBatch.rejected_qty = ''
+        currentBatch.accepted_qty = ''
       }
     }
 
@@ -1640,7 +1606,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         let errorMessage = ''
         const invalidBatch = formData.supply_batches.find((batch) => {
           const quantity = Number.parseFloat(batch.qty)
-          const accepted = Number.parseFloat(batch.accepted_qty)
+          const rejected = Number.parseFloat(batch.rejected_qty)
 
           if (!batch.product_id || !batch.unit_id || !batch.qty) {
             errorMessage = 'Complete all batch details before submitting.'
@@ -1652,13 +1618,13 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             return true
           }
 
-          if (!Number.isFinite(accepted) || accepted < 0) {
-            errorMessage = 'Accepted quantity cannot be negative.'
+          if (!Number.isFinite(rejected) || rejected < 0) {
+            errorMessage = 'Rejected quantity cannot be negative.'
             return true
           }
 
-          if (accepted > quantity) {
-            errorMessage = 'Accepted quantity cannot exceed received quantity.'
+          if (rejected > quantity) {
+            errorMessage = 'Rejected quantity cannot exceed received quantity.'
             return true
           }
 
@@ -2163,19 +2129,23 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const validLines = formData.supply_batches
       .map((batch) => {
         const trimmedQty = batch.qty?.trim() ?? ''
-        const trimmedAccepted = batch.accepted_qty?.trim() ?? ''
+        const trimmedRejected = batch.rejected_qty?.trim() ?? ''
         const quantityNumber = Number.parseFloat(trimmedQty)
-        const acceptedNumber = Number.parseFloat(trimmedAccepted)
+        const rejectedNumber = Number.parseFloat(trimmedRejected)
         const computedRejected =
-          Number.isFinite(quantityNumber) && Number.isFinite(acceptedNumber)
-            ? Math.max(quantityNumber - acceptedNumber, 0)
+          Number.isFinite(quantityNumber) && Number.isFinite(rejectedNumber)
+            ? Math.min(Math.max(rejectedNumber, 0), quantityNumber)
+            : 0
+        const computedAccepted =
+          Number.isFinite(quantityNumber)
+            ? Math.max(quantityNumber - computedRejected, 0)
             : ''
 
         return {
           ...batch,
           qty: trimmedQty,
-          accepted_qty: trimmedAccepted,
-          rejected_qty: computedRejected === '' ? '' : computedRejected.toString(),
+          accepted_qty: computedAccepted === '' ? '' : computedAccepted.toString(),
+          rejected_qty: computedRejected.toString(),
         }
       })
       .filter((batch) => batch.product_id && batch.unit_id && batch.qty)
@@ -2364,9 +2334,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             hasQualityIssues: false,
           }
           const quantity = Number.parseFloat(line.qty) || 0
-          const acceptedRaw = Number.parseFloat(line.accepted_qty)
-          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
-          const rejectedQty = Math.max(quantity - acceptedQty, 0)
+          const rejectedRaw = Number.parseFloat(line.rejected_qty)
+          const rejectedQty = Number.isFinite(rejectedRaw) ? Math.min(Math.max(rejectedRaw, 0), quantity) : 0
+          const acceptedQty = Math.max(quantity - rejectedQty, 0)
           const unitPriceRaw = line.unit_price?.trim()
           const unitPrice = unitPriceRaw && Number.isFinite(Number(unitPriceRaw)) ? Number(unitPriceRaw) : null
 
@@ -2788,9 +2758,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           const qualityKey = getSupplyBatchQualityKey(line, index)
           const assessment = batchAssessments.find((entry) => entry.qualityKey === qualityKey)
           const quantity = Number.parseFloat(line.qty) || 0
-          const acceptedRaw = Number.parseFloat(line.accepted_qty)
-          const acceptedQty = Number.isFinite(acceptedRaw) ? Math.min(acceptedRaw, quantity) : 0
-          const rejectedQty = Math.max(quantity - acceptedQty, 0)
+          const rejectedRaw = Number.parseFloat(line.rejected_qty)
+          const rejectedQty = Number.isFinite(rejectedRaw) ? Math.min(Math.max(rejectedRaw, 0), quantity) : 0
+          const acceptedQty = Math.max(quantity - rejectedQty, 0)
           const lotNumber = `LOT-${newSupplyId}-${String(index + 1).padStart(3, '0')}`
           const batchQualityStatus = assessment?.hasQualityIssues ? 'FAILED' : 'PASSED'
           const unitPriceRaw = line.unit_price?.trim()
@@ -3820,6 +3790,26 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     setIsModalOpen(true)
   }, [getInitialFormData, warehouses, qualityParameters])
 
+  const openSupplyTourModal = useCallback(
+    (stepIndex: number, flow?: 'PRODUCT' | 'OPERATIONAL') => {
+      handleOpenModal()
+      if (flow) {
+        setFormData((previous) => ({
+          ...previous,
+          category_code: flow === 'OPERATIONAL' ? 'SERVICE' : 'PRODUCT',
+          supplier_id: '',
+        }))
+        setOperationalDeliveryReference('')
+        setOperationalCondition('')
+        setOperationalRemarks('')
+        setOperationalSupplyLines([createEmptyOperationalSupplyLine()])
+        setOperationalPackagingQualityByLineKey({})
+      }
+      setCurrentStep(stepIndex)
+    },
+    [handleOpenModal],
+  )
+
   const modalSteps = useMemo(() => {
     if (isOperationalFlow) {
       return OPERATIONAL_STEPS.map((label, index) => ({ label, stepIndex: index }))
@@ -3856,6 +3846,257 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     operationalMappedProducts.length,
     operationalSupplyLines,
   ])
+
+  const tourSteps = useMemo<TourStep[]>(() => {
+    const steps: TourStep[] = [
+      {
+        id: 'overview',
+        target: '[data-tour="supplies-overview"]',
+        title: 'Supplies overview',
+        description: 'Review totals for received supplies before diving into the detailed records.',
+        placement: 'bottom',
+      },
+      {
+        id: 'tabs',
+        target: '[data-tour="supplies-tabs"]',
+        title: 'Switch between supply types',
+        description: 'Product supplies track raw or material receipts. Operational supplies cover packaging, fuel, and services.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          setActiveSupplyTab('product')
+        },
+      },
+      {
+        id: 'filters',
+        target: '[data-tour="supplies-filters"]',
+        title: 'Filter the list',
+        description: 'Search by document or supplier, and narrow down by received date to find the right record quickly.',
+        placement: 'top',
+      },
+      {
+        id: 'table',
+        target: '[data-tour="supplies-table"]',
+        title: 'Review the supply list',
+        description: 'Each row opens a detailed supply record with batches, quality results, and documents.',
+        placement: 'top',
+      },
+      {
+        id: 'add',
+        target: '[data-tour="supplies-add-button"]',
+        title: 'Start a new supply',
+        description: 'Use this action anytime a new receipt arrives.',
+        placement: 'left',
+      },
+      {
+        id: 'category',
+        target: '[data-tour="supplies-category-section"]',
+        title: 'Choose the supply category',
+        description: 'Pick the supply flow that matches the delivery you are recording.',
+        placement: 'top',
+        beforeEnter: () => {
+          openSupplyTourModal(0)
+        },
+      },
+      {
+        id: 'tour-choice',
+        target: '[data-tour="supplies-category-section"]',
+        title: 'Which tour do you want to continue with?',
+        description: 'Select a product or operational supply flow, then continue to the next steps.',
+        placement: 'top',
+        nextDisabled: tourFlow === null,
+        actions: [
+          {
+            label: tourFlow === 'PRODUCT' ? 'Product supply selected' : 'Product supply',
+            variant: tourFlow === 'PRODUCT' ? 'default' : 'outline',
+            onSelect: () => {
+              setTourFlow('PRODUCT')
+              setFormData((previous) => ({
+                ...previous,
+                category_code: 'PRODUCT',
+              }))
+            },
+          },
+          {
+            label: tourFlow === 'OPERATIONAL' ? 'Operational supply selected' : 'Operational supply',
+            variant: tourFlow === 'OPERATIONAL' ? 'default' : 'outline',
+            onSelect: () => {
+              setTourFlow('OPERATIONAL')
+              setFormData((previous) => ({
+                ...previous,
+                category_code: 'SERVICE',
+              }))
+            },
+          },
+        ],
+        beforeEnter: () => {
+          openSupplyTourModal(0)
+        },
+      },
+    ]
+
+    if (tourFlow === 'PRODUCT') {
+      steps.push(
+        {
+          id: 'basic-info',
+          target: '[data-tour="supplies-basic-info"]',
+          title: 'Capture basic information',
+          description: 'Record the warehouse, supplier, and received time for the incoming product supply.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(1, 'PRODUCT')
+          },
+        },
+        {
+          id: 'documents',
+          target: '[data-tour="supplies-documents"]',
+          title: 'Attach supply documents',
+          description: 'Upload invoices and delivery documents so the record is complete.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(2, 'PRODUCT')
+          },
+        },
+        {
+          id: 'vehicle',
+          target: '[data-tour="supplies-vehicle-inspections"]',
+          title: 'Complete vehicle inspections',
+          description: 'Confirm transport conditions before you accept the supply.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(3, 'PRODUCT')
+          },
+        },
+        {
+          id: 'packaging',
+          target: '[data-tour="supplies-packaging-quality"]',
+          title: 'Review packaging quality',
+          description: 'Record packaging condition checks prior to batch entry.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(4, 'PRODUCT')
+          },
+        },
+        {
+          id: 'batches',
+          target: '[data-tour="supplies-batches"]',
+          title: 'Enter supply batches',
+          description: 'Split the receipt into batches and record quantities and pricing.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(5, 'PRODUCT')
+          },
+        },
+        {
+          id: 'quality',
+          target: '[data-tour="supplies-quality-evaluation"]',
+          title: 'Evaluate quality per batch',
+          description: 'Capture quality scores and results for each lot.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(6, 'PRODUCT')
+          },
+        },
+        {
+          id: 'signoff',
+          target: '[data-tour="supplies-signoff"]',
+          title: 'Collect supplier sign-off',
+          description: 'Finalize the record with supplier acknowledgment or signature.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(7, 'PRODUCT')
+          },
+        },
+        {
+          id: 'submit',
+          target: '[data-tour="supplies-submit-button"]',
+          title: 'Save the supply',
+          description: 'Submit the product supply when the information is ready.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(7, 'PRODUCT')
+          },
+        },
+      )
+    }
+
+    if (tourFlow === 'OPERATIONAL') {
+      steps.push(
+        {
+          id: 'receiving',
+          target: '[data-tour="supplies-operational-receiving"]',
+          title: 'Complete the receiving checklist',
+          description: 'Capture warehouse, supplier, delivery reference, and condition.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(1, 'OPERATIONAL')
+          },
+        },
+        {
+          id: 'operational-batches',
+          target: '[data-tour="supplies-operational-batches"]',
+          title: 'Add operational supply lines',
+          description: 'List the operational products, quantities, and pricing for this delivery.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(2, 'OPERATIONAL')
+          },
+        },
+        {
+          id: 'operational-packaging',
+          target: '[data-tour="supplies-operational-packaging"]',
+          title: 'Record packaging quality',
+          description: 'Check packaging condition for each operational line before review.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(3, 'OPERATIONAL')
+          },
+        },
+        {
+          id: 'operational-review',
+          target: '[data-tour="supplies-operational-review"]',
+          title: 'Review the operational supply',
+          description: 'Confirm the summary details before saving.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(4, 'OPERATIONAL')
+          },
+        },
+        {
+          id: 'operational-submit',
+          target: '[data-tour="supplies-submit-button"]',
+          title: 'Finish the flow',
+          description: 'Save the operational supply once everything looks right.',
+          placement: 'top',
+          beforeEnter: () => {
+            openSupplyTourModal(4, 'OPERATIONAL')
+          },
+        },
+      )
+    }
+
+    return steps
+  }, [openSupplyTourModal, setActiveSupplyTab, setFormData, tourFlow])
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
+  const handleOpenTour = useCallback(async () => {
+    setTourFlow(null)
+    await openTour()
+  }, [openTour])
+
+  const handleCloseTour = useCallback(() => {
+    setTourFlow(null)
+    closeTour()
+  }, [closeTour])
 
   const baseFieldClass =
     'h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 text-sm text-text-dark shadow-sm transition focus:border-olive focus:outline-none focus:ring-2 focus:ring-olive/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-olive dark:focus:ring-olive/40'
@@ -4201,15 +4442,21 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           title="Supplies"
           activeItem="supplies"
           actions={
-            <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-              <Plus className="mr-2 h-4 w-4" />
-              New Supply
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => void handleOpenTour()}>
+                <Sparkles className="mr-2 h-4 w-4" />
+                Take tour
+              </Button>
+              <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="supplies-add-button">
+                <Plus className="mr-2 h-4 w-4" />
+                New Supply
+              </Button>
+            </>
           }
           contentClassName="px-4 sm:px-6 lg:px-8 py-8"
         >
           <div className="space-y-6">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-3" data-tour="supplies-overview">
               <Card className="border-olive-light/30">
                 <CardHeader className="pb-2">
                   <CardDescription>Total records</CardDescription>
@@ -4243,7 +4490,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                   Track inbound receipts. Click a record to open the detailed supply page.
                 </CardDescription>
               </CardHeader>
-              <div className="border-b border-olive-light/40">
+              <div className="border-b border-olive-light/40" data-tour="supplies-tabs">
                 <nav className="flex gap-0 px-6" aria-label="Supply category tabs">
                   <button
                     type="button"
@@ -4272,7 +4519,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 </nav>
               </div>
               <CardContent className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-tour="supplies-filters">
                 <div className="lg:col-span-2">
                   <Label htmlFor="supply-search">Search supplies</Label>
                   <Input
@@ -4397,15 +4644,17 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 </div>
               </div>
 
-              <ResponsiveTable
-                columns={columns}
-                data={paginatedSupplies}
-                rowKey="id"
-                onRowClick={handleRowClick}
-                tableClassName=""
-                mobileCardClassName=""
-                getRowClassName={() => ''}
-              />
+              <div data-tour="supplies-table">
+                <ResponsiveTable
+                  columns={columns}
+                  data={paginatedSupplies}
+                  rowKey="id"
+                  onRowClick={handleRowClick}
+                  tableClassName=""
+                  mobileCardClassName=""
+                  getRowClassName={() => ''}
+                />
+              </div>
               {filteredSupplies.length > 0 && (
                 <div className="flex flex-col items-center justify-between gap-3 border-t border-olive-light/20 pt-4 sm:flex-row">
                   <p className="text-xs text-text-dark/60">
@@ -4520,7 +4769,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 0 && !isEditingSupply && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-category-section">
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Supply category</h3>
                       <p className="text-sm text-text-dark/70">
@@ -4569,7 +4818,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 1 && !isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-basic-info">
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Basic Information</h3>
@@ -4663,7 +4912,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 1 && isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-operational-receiving">
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Receiving checklist</h3>
                       <p className="text-sm text-text-dark/70">
@@ -4766,7 +5015,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 2 && !isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-documents">
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Supply Documents</h3>
@@ -4816,7 +5065,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 2 && isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-operational-batches">
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Operational supply batches</h3>
                       <p className="text-sm text-text-dark/70">
@@ -4893,7 +5142,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                         className={baseFieldClass}
                                         value={line.outer_unit_qty}
                                         onChange={(event) => updateOperationalSupplyLine(index, 'outer_unit_qty', event.target.value)}
-                                        placeholder="e.g. 3"
+                                        placeholder="3"
                                         disabled={isSubmitting}
                                       />
                                     </>
@@ -4911,7 +5160,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                       className={baseFieldClass}
                                       value={line.qty}
                                       onChange={(event) => updateOperationalSupplyLine(index, 'qty', event.target.value)}
-                                      placeholder="e.g. 120"
+                                      placeholder="120"
                                       disabled={isSubmitting}
                                     />
                                   </>
@@ -4952,7 +5201,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                       className={baseFieldClass}
                                       value={line.inner_units_per_outer}
                                       onChange={(event) => updateOperationalSupplyLine(index, 'inner_units_per_outer', event.target.value)}
-                                      placeholder="e.g. 50"
+                                      placeholder="50"
                                       disabled={isSubmitting}
                                     />
                                   </div>
@@ -4991,7 +5240,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                 className={baseFieldClass}
                                 value={line.unit_price}
                                 onChange={(event) => updateOperationalSupplyLine(index, 'unit_price', event.target.value)}
-                                placeholder="e.g. 12.50"
+                                placeholder="12.50"
                                 disabled={isSubmitting}
                                 required
                               />
@@ -5006,7 +5255,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                 className={baseFieldClass}
                                 value={line.amount_paid}
                                 onChange={(event) => updateOperationalSupplyLine(index, 'amount_paid', event.target.value)}
-                                placeholder="e.g. 0.00"
+                                placeholder="0.00"
                                 disabled={isSubmitting}
                               />
                             </div>
@@ -5055,7 +5304,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 3 && isOperationalFlow && (
-                  <section className="space-y-6">
+                  <section className="space-y-6" data-tour="supplies-operational-packaging">
                     <div className={sectionCardClass}>
                       <div className="mb-6">
                         <h3 className="text-lg font-semibold text-text-dark">Packaging quality parameters</h3>
@@ -5109,7 +5358,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 4 && isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-operational-review">
                     <div className="mb-6">
                       <h3 className="text-lg font-semibold text-text-dark">Operational supply review</h3>
                       <p className="text-sm text-text-dark/70">
@@ -5203,7 +5452,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 3 && !isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-vehicle-inspections">
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Vehicle Inspections</h3>
@@ -5222,7 +5471,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 4 && !isOperationalFlow && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-packaging-quality">
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Packaging Quality Parameters</h3>
@@ -5241,7 +5490,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 5 && (
-                  <section className="space-y-6">
+                  <section className="space-y-6" data-tour="supplies-batches">
                     <div className={sectionCardClass}>
                       <div className="mb-6">
                         <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
@@ -5336,7 +5585,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                   onChange={(event) =>
                                     handleSupplyBatchChange(index, 'qty', event.target.value)
                                   }
-                                  placeholder="e.g. 120"
+                                  placeholder="120"
                                   className={baseFieldClass}
                                   disabled={isSubmitting || batch.is_locked}
                                 />
@@ -5345,32 +5594,35 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
                             <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`rejected_${index}`}>Rejected quantity *</Label>
+                                <Input
+                                  id={`rejected_${index}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={batch.rejected_qty}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'rejected_qty', event.target.value)
+                                  }
+                                  placeholder="10"
+                                  className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
+                                />
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  Enter the rejected quantity for this batch.
+                                </p>
+                              </div>
+                              <div className="space-y-2 lg:col-span-6">
                                 <Label htmlFor={`accepted_${index}`}>Accepted quantity *</Label>
                                 <Input
                                   id={`accepted_${index}`}
                                   type="number"
-                                  min="0"
-                                  step="0.01"
                                   value={batch.accepted_qty}
-                                  onChange={(event) =>
-                                    handleSupplyBatchChange(index, 'accepted_qty', event.target.value)
-                                  }
-                                  placeholder="e.g. 110"
-                                  className={baseFieldClass}
-                                  disabled={isSubmitting || batch.is_locked}
-                                />
-                              </div>
-                              <div className="space-y-2 lg:col-span-6">
-                                <Label htmlFor={`rejected_${index}`}>Rejected quantity</Label>
-                                <Input
-                                  id={`rejected_${index}`}
-                                  type="number"
                                   readOnly
-                                  value={batch.rejected_qty}
                                   className={`${baseFieldClass} cursor-not-allowed bg-olive-light/20 text-text-dark/70 dark:bg-slate-900/60 dark:text-slate-300`}
                                 />
                                 <p className="text-xs text-text-dark/60 dark:text-slate-400">
-                                  Calculated automatically from received minus accepted.
+                                  Calculated automatically from received minus rejected.
                                 </p>
                               </div>
                             </div>
@@ -5389,7 +5641,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                   onChange={(event) =>
                                     handleSupplyBatchChange(index, 'unit_price', event.target.value)
                                   }
-                                  placeholder="e.g. 12.50"
+                                  placeholder="12.50"
                                   className={baseFieldClass}
                                   disabled={isSubmitting || batch.is_locked}
                                   required
@@ -5409,7 +5661,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                   onChange={(event) =>
                                     handleSupplyBatchChange(index, 'amount_paid', event.target.value)
                                   }
-                                  placeholder="e.g. 0.00"
+                                  placeholder="0.00"
                                   className={baseFieldClass}
                                   disabled={isSubmitting || batch.is_locked}
                                 />
@@ -5439,7 +5691,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 6 && (
-                  <section className="space-y-6">
+                  <section className="space-y-6" data-tour="supplies-quality-evaluation">
                     <div className={sectionCardClass}>
                       <div className="mb-4">
                         <h3 className="text-lg font-semibold text-text-dark dark:text-slate-100">
@@ -5505,7 +5757,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                 )}
 
                 {currentStep === 7 && (
-                  <section className={sectionCardClass}>
+                  <section className={sectionCardClass} data-tour="supplies-signoff">
                     <div className="mb-6 flex items-center justify-between gap-4">
                       <div>
                         <h3 className="text-lg font-semibold text-text-dark">Supplier Sign-Off</h3>
@@ -5550,6 +5802,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                     type="submit"
                     className="bg-olive hover:bg-olive-dark disabled:cursor-not-allowed disabled:bg-olive-light/60"
                     disabled={isSubmitting || isOperationalLineStepBlocked}
+                    data-tour="supplies-submit-button"
                   >
                     {isSubmitting
                       ? 'Saving…'
@@ -5640,6 +5893,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           </div>
         </div>
       )}
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={handleCloseTour}
+      />
       <CameraCapture
         isOpen={addCoaCameraOpen}
         onClose={() => setAddCoaCameraOpen(false)}

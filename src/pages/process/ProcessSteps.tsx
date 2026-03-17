@@ -387,7 +387,10 @@ function ProcessSteps() {
     <PageLayout title="Process Steps" activeItem="process" stickyHeader={false} contentClassName="py-8 space-y-6">
       {definitionsError && (
         <Card className="border-red-300 bg-red-50 text-red-700">
-          <CardContent className="py-4">We could not load process definitions. Please refresh.</CardContent>
+          <CardContent className="py-4">
+            <div className="font-medium">We could not load process definitions.</div>
+            <div className="mt-1 text-sm">{definitionsError.message ?? 'Please refresh.'}</div>
+          </CardContent>
         </Card>
       )}
 

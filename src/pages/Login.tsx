@@ -102,7 +102,7 @@ function Login() {
                       <Input
                         id="identifier"
                         type="text"
-                        placeholder="+265991234567 or info@nutaria.co.za"
+                        placeholder="Enter your email or phone number"
                         value={identifier}
                         onChange={(e) => setIdentifier(e.target.value)}
                         className="h-14 rounded-xl border-none bg-muted pl-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"
@@ -128,7 +128,7 @@ function Login() {
                       <Input
                         id="password"
                         type={showPassword ? 'text' : 'password'}
-                        placeholder="••••••••"
+                        placeholder="Enter your password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         className="h-14 rounded-xl border-none bg-muted pl-12 pr-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"

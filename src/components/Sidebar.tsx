@@ -159,7 +159,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
         { name: 'Supplier Types', icon: Tag, key: 'supplier-types', path: '/settings/supplier-types' },
         { name: 'Document Types', icon: FileText, key: 'document-types', path: '/settings/document-types' },
         { name: 'Quality Parameters', icon: BadgeCheck, key: 'quality-parameters', path: '/settings/quality-parameters' },
-        { name: 'Process Step Names', icon: Layers, key: 'process-step-names', path: '/settings/process-step-names' },
         { name: 'Packaging', icon: Package, key: 'packaging', path: '/settings/packaging' },
       ],
     },

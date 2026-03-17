@@ -1072,7 +1072,7 @@ export function SortingStep({
                   type="text"
                   value={reworkFormData.reason}
                   onChange={(e) => setReworkFormData({ ...reworkFormData, reason: e.target.value })}
-                  placeholder="e.g., Quality issues, contamination, etc."
+                  placeholder="Enter issue details"
                   disabled={saving || externalLoading}
                   className="bg-white"
                 />

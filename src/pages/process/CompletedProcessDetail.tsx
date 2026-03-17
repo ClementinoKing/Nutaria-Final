@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { Button } from '@/components/ui/button'
 
 interface ProcessNonConformanceRow {
   id: number
@@ -60,6 +61,7 @@ function addDetailEntry(entries: StepDetailEntry[], label: string, value: unknow
 
 function CompletedProcessDetail() {
   const { lotRunId } = useParams<{ lotRunId: string }>()
+  const navigate = useNavigate()
   const [lotNo, setLotNo] = useState<string | null>(null)
   const [lotSummary, setLotSummary] = useState<string | null>(null)
   const [productName, setProductName] = useState<string | null>(null)
@@ -396,6 +398,11 @@ function CompletedProcessDetail() {
       <PageLayout
         title="Completed Process"
         activeItem="process"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/process/completed')} aria-label="Back to Completed Processes">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
       >
         <Spinner text="Loading process detail..." />
@@ -405,17 +412,19 @@ function CompletedProcessDetail() {
 
   if (error) {
     return (
-      <PageLayout title="Completed Process" activeItem="process" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Completed Process"
+        activeItem="process"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/process/completed')} aria-label="Back to Completed Processes">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <div className="rounded-md border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
           {error}
         </div>
-        <Link
-          to="/process/completed"
-          className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Completed Processes
-        </Link>
       </PageLayout>
     )
   }
@@ -424,18 +433,13 @@ function CompletedProcessDetail() {
     <PageLayout
       title={lotNo ? `Lot ${lotNo}` : 'Completed Process'}
       activeItem="process"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={() => navigate('/process/completed')} aria-label="Back to Completed Processes">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
-      <div className="mb-4">
-        <Link
-          to="/process/completed"
-          className="inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Completed Processes
-        </Link>
-      </div>
-
       <Card className="mb-6 border-olive-light/30">
         <CardHeader className="pb-2">
           <div className="flex items-center gap-2">

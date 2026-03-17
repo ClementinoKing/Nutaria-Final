@@ -289,7 +289,7 @@ function InventoryAdjustments() {
                     step="0.001"
                     value={formData.qty}
                     onChange={(event) => setFormData((prev) => ({ ...prev, qty: event.target.value }))}
-                    placeholder="e.g. -5 or 12.5"
+                    placeholder="Enter quantity"
                     required
                   />
                 </div>
@@ -310,7 +310,7 @@ function InventoryAdjustments() {
                   id="adj-reason"
                   value={formData.reason}
                   onChange={(event) => setFormData((prev) => ({ ...prev, reason: event.target.value }))}
-                  placeholder="e.g. Physical recount correction"
+                  placeholder="Enter reason"
                   required
                 />
               </div>

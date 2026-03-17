@@ -3,13 +3,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, X, Edit, Trash2 } from 'lucide-react'
+import { Plus, RefreshCcw, X, Edit, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { Spinner } from '@/components/ui/spinner'
 import { useDocumentTypes, type DocumentType } from '@/hooks/useDocumentTypes'
+import SettingsTour from '@/components/tour/SettingsTour'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,6 +29,8 @@ interface FormData {
   description: string
   has_expiry_date: boolean
 }
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface FormErrors {
   code?: string
@@ -170,23 +174,28 @@ function DocumentTypes() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (row: DocumentType) => (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(row)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'document type'}`}
+              aria-label={`Edit ${row.name ?? 'document type'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(row)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'document type'}`}
+              aria-label={`Delete ${row.name ?? 'document type'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -196,20 +205,22 @@ function DocumentTypes() {
         mobileRender: (row: DocumentType) => (
           <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(row)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'document type'}`}
+              aria-label={`Edit ${row.name ?? 'document type'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(row)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'document type'}`}
+              aria-label={`Delete ${row.name ?? 'document type'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -368,6 +379,98 @@ function DocumentTypes() {
     }
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Document types overview',
+        description:
+          'Use this page to manage the document categories used when files are uploaded and reviewed across the system.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="document-types-search"]',
+        title: 'Search existing document types',
+        description:
+          'Search by code, name, or description before creating a new type.',
+        placement: 'bottom',
+      },
+      {
+        id: 'results',
+        target: '[data-tour="document-types-results"]',
+        title: 'Review document types',
+        description:
+          'This table shows the available document types, requirement status, and edit actions.',
+        placement: 'top',
+      },
+      {
+        id: 'add-button',
+        target: '[data-tour="document-types-add-button"]',
+        title: 'Add a document type',
+        description:
+          'Use this action when you need a new document category available in uploads and compliance workflows.',
+        placement: 'left',
+      },
+      {
+        id: 'name',
+        target: '[data-tour="document-types-name-field"]',
+        title: 'Enter the document type name',
+        description:
+          'Start with the display name. The code is generated automatically from it.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'description',
+        target: '[data-tour="document-types-description-field"]',
+        title: 'Describe when it is used',
+        description:
+          'Use the description to explain the purpose of the document type for the team.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'required-toggle',
+        target: '[data-tour="document-types-required-toggle"]',
+        title: 'Mark required document types',
+        description:
+          'Toggle this on when the document type should be treated as mandatory.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="document-types-save-button"]',
+        title: 'Save the document type',
+        description:
+          'Save when the type details are ready to make it available across document flows.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+    ],
+    [documentTypes.length, page, pageSize]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading && documentTypes.length === 0) {
     return (
       <PageLayout title="Document Types" activeItem="settings" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
@@ -381,10 +484,16 @@ function DocumentTypes() {
       title="Document Types"
       activeItem="settings"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Document Type
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="document-types-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Document Type
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -426,6 +535,7 @@ function DocumentTypes() {
               <Label htmlFor="dt-search">Search</Label>
               <Input
                 id="dt-search"
+                data-tour="document-types-search"
                 placeholder="Search by code, name, or description"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -452,16 +562,18 @@ function DocumentTypes() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={paginatedTypes}
-            rowKey="code"
-            emptyMessage={emptyMessage}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="document-types-results">
+            <ResponsiveTable
+              columns={columns}
+              data={paginatedTypes}
+              rowKey="code"
+              emptyMessage={emptyMessage}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
 
           {filteredTypes.length > 0 ? (
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
@@ -538,8 +650,9 @@ function DocumentTypes() {
                 <Label htmlFor="dt-name">Name</Label>
                 <Input
                   id="dt-name"
+                  data-tour="document-types-name-field"
                   name="name"
-                  placeholder="e.g. Halal Certificate"
+                  placeholder="Enter document type name"
                   value={formData.name}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -555,7 +668,7 @@ function DocumentTypes() {
                 <Input
                   id="dt-code"
                   name="code"
-                  placeholder="e.g. HALAL"
+                  placeholder="Enter code"
                   value={formData.code}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -570,6 +683,7 @@ function DocumentTypes() {
                 <Label htmlFor="dt-description">Description</Label>
                 <textarea
                   id="dt-description"
+                  data-tour="document-types-description-field"
                   name="description"
                   placeholder="Optional description of this document type"
                   value={formData.description}
@@ -580,7 +694,7 @@ function DocumentTypes() {
                 />
               </div>
 
-              <div className="flex items-center justify-between rounded-md border border-olive-light/40 bg-olive-light/10 px-4 py-3">
+              <div className="flex items-center justify-between rounded-md border border-olive-light/40 bg-olive-light/10 px-4 py-3" data-tour="document-types-required-toggle">
                 <div>
                   <Label htmlFor="dt-has-expiry" className="text-sm font-medium">
                     Is Required
@@ -618,7 +732,7 @@ function DocumentTypes() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting} data-tour="document-types-save-button">
                   {isSubmitting ? 'Saving…' : isEditMode ? 'Update' : 'Save'}
                 </Button>
               </div>
@@ -649,6 +763,17 @@ function DocumentTypes() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

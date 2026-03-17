@@ -3,10 +3,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, Ruler, X, Edit, Trash2 } from 'lucide-react'
+import { Plus, RefreshCcw, Ruler, X, Edit, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
+import SettingsTour from '@/components/tour/SettingsTour'
 import { supabase } from '@/lib/supabaseClient'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
@@ -22,6 +24,8 @@ import {
 } from '@/components/ui/alert-dialog'
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface Unit {
   id: number
@@ -233,23 +237,28 @@ function Units() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (unit: Unit) => (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(unit)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${unit.name ?? 'unit'}`}
+              aria-label={`Edit ${unit.name ?? 'unit'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(unit)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${unit.name ?? 'unit'}`}
+              aria-label={`Delete ${unit.name ?? 'unit'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -259,20 +268,22 @@ function Units() {
         mobileRender: (unit: Unit) => (
           <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(unit)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${unit.name ?? 'unit'}`}
+              aria-label={`Edit ${unit.name ?? 'unit'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(unit)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${unit.name ?? 'unit'}`}
+              aria-label={`Delete ${unit.name ?? 'unit'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -284,13 +295,13 @@ function Units() {
     [isDeleting]
   )
 
-  const handleOpenModal = () => {
+  const handleOpenModal = useCallback(() => {
     setFormData({ name: '', symbol: '' })
     setFormErrors({})
     setIsEditMode(false)
     setEditingId(null)
     setIsModalOpen(true)
-  }
+  }, [])
 
   const handleCloseModal = () => {
     if (isSubmitting) {
@@ -415,6 +426,87 @@ function Units() {
     }
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Units settings overview',
+        description:
+          'Use this page to manage measurement units used across inventory, products, supplies, and process records.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="units-search"]',
+        title: 'Search units quickly',
+        description:
+          'Filter the list by unit name or symbol to find an existing measurement unit before adding a new one.',
+        placement: 'bottom',
+      },
+      {
+        id: 'results',
+        target: '[data-tour="units-results"]',
+        title: 'Review existing units',
+        description:
+          'This section shows the current unit list, result count, and row actions for managing existing units.',
+        placement: 'top',
+      },
+      {
+        id: 'add-button',
+        target: '[data-tour="units-add-button"]',
+        title: 'Start adding a unit',
+        description:
+          'Use this action whenever you need a new measurement unit available across the system.',
+        placement: 'left',
+      },
+      {
+        id: 'symbol',
+        target: '[data-tour="units-symbol-field"]',
+        title: 'Enter the unit symbol',
+        description:
+          'The symbol is the main input. Examples include kg, g, l, or pcs. The dialog opens automatically for this step.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'name',
+        target: '[data-tour="units-name-field"]',
+        title: 'The name is generated for you',
+        description:
+          'As you type a symbol, the system generates the unit name automatically so settings stay consistent.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="units-save-button"]',
+        title: 'Save the new unit',
+        description:
+          'When the symbol looks right, save to make the unit available in forms and records throughout the app.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+    ],
+    [handleOpenModal]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading) {
     return (
       <PageLayout
@@ -432,10 +524,16 @@ function Units() {
       title="Units"
       activeItem="inventory"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Unit
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="units-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Unit
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -479,6 +577,7 @@ function Units() {
               <Label htmlFor="unit-search">Search</Label>
               <Input
                 id="unit-search"
+                data-tour="units-search"
                 placeholder="Search by name or symbol"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
@@ -511,21 +610,23 @@ function Units() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={loading ? [] : filteredUnits}
-            rowKey="id"
-            emptyMessage={emptyMessage}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="units-results">
+            <ResponsiveTable
+              columns={columns}
+              data={loading ? [] : filteredUnits}
+              rowKey="id"
+              emptyMessage={emptyMessage}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-tour="units-modal">
           <div className="w-full max-w-md rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
               <div>
@@ -551,8 +652,9 @@ function Units() {
                 <Label htmlFor="unit-name">Name (auto-generated)</Label>
                 <Input
                   id="unit-name"
+                  data-tour="units-name-field"
                   name="name"
-                  placeholder="e.g. Kilogram"
+                  placeholder="Enter unit name"
                   value={formData.name}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -564,8 +666,9 @@ function Units() {
                 <Label htmlFor="unit-symbol">Symbol</Label>
                 <Input
                   id="unit-symbol"
+                  data-tour="units-symbol-field"
                   name="symbol"
-                  placeholder="e.g. kg"
+                  placeholder="Enter symbol"
                   value={formData.symbol}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -586,7 +689,12 @@ function Units() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button
+                  type="submit"
+                  className="bg-olive hover:bg-olive-dark"
+                  disabled={isSubmitting}
+                  data-tour="units-save-button"
+                >
                   {isSubmitting ? 'Saving…' : isEditMode ? 'Update Unit' : 'Save Unit'}
                 </Button>
               </div>
@@ -616,6 +724,17 @@ function Units() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

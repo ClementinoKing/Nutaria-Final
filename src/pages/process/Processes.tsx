@@ -4,12 +4,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, Trash2, X, Minus, Eye, Layers } from 'lucide-react'
+import { Plus, Trash2, X, Minus, Eye, Layers, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import SettingsTour from '@/components/tour/SettingsTour'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,6 +23,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
 import { useProcessStepNames, type ProcessStepName } from '@/hooks/useProcessStepNames'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 
 interface Process {
   id: number
@@ -398,12 +400,12 @@ function Processes() {
     setIsModalOpen(true)
   }, [products])
 
-  const handleOpenModal = () => {
+  const handleOpenModal = useCallback(() => {
     setCurrentStep(1)
     setIsModalOpen(true)
-  }
+  }, [])
 
-  const handleCloseModal = () => {
+  const handleCloseModal = useCallback(() => {
     setIsModalOpen(false)
     setIsSubmitting(false)
     setCurrentStep(1)
@@ -415,7 +417,15 @@ function Processes() {
       productIds: [],
       steps: []
     })
-  }
+  }, [])
+
+  const openProcessCreateStep = useCallback(
+    (step: 1 | 2) => {
+      handleOpenModal()
+      setCurrentStep(step)
+    },
+    [handleOpenModal]
+  )
 
   useEffect(() => {
     const state = location.state as { openCreateForProductId?: number; focusProductId?: number } | null
@@ -833,6 +843,191 @@ function Processes() {
     [navigate],
   )
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Factory processes overview',
+        description:
+          'Use this page to create production processes, connect them to raw products, and define the ordered steps operators will follow.',
+        placement: 'center',
+      },
+      {
+        id: 'new-process',
+        target: '[data-tour="processes-add-button"]',
+        title: 'Start a new process',
+        description:
+          'Use this action to create a new factory process and define its flow from selected raw products through the required production steps.',
+        placement: 'left',
+      },
+      {
+        id: 'product-selection',
+        target: '[data-tour="processes-product-selection"]',
+        title: 'Select the raw products',
+        description:
+          'Start by choosing one or more raw products. The process code and name are generated from the selected products to save setup time.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          openProcessCreateStep(1)
+        },
+      },
+      {
+        id: 'process-name',
+        target: '[data-tour="processes-name-field"]',
+        title: 'Review the generated process details',
+        description:
+          'The process code is generated automatically, and the process name can be adjusted before moving to the step-building stage.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          openProcessCreateStep(1)
+        },
+      },
+      {
+        id: 'step-builder',
+        target: '[data-tour="processes-steps-section"]',
+        title: 'Define the process steps',
+        description:
+          'This section is where you build the production flow by adding the steps operators will complete in sequence.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'add-step',
+        target: '[data-tour="processes-add-step-button"]',
+        title: 'Add a step to the process',
+        description:
+          'Add each step here, then configure its name, location, estimated duration, and quality checks.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'step-card',
+        target: '[data-tour="processes-step-card"]',
+        title: 'Configure each process step',
+        description:
+          'For every step, choose a step name, optionally assign a location, set duration, and select at least one quality parameter.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+          setFormData((prev) => {
+            if (prev.steps.length > 0) return prev
+            const newStep: FormStep = {
+              id: Date.now(),
+              seq: 1,
+              step_code: generateStepCode(1),
+              step_name_id: null,
+              requires_qc: false,
+              can_be_skipped: false,
+              default_location_id: '',
+              duration_hours: '',
+              duration_minutes: '',
+              qualityParameterIds: [],
+            }
+            return { ...prev, steps: [newStep] }
+          })
+        },
+      },
+      {
+        id: 'step-name',
+        target: '[data-tour="processes-step-name-field"]',
+        title: 'Choose the step name',
+        description:
+          'Pick the correct process step name here. This tells the team exactly what operation happens at this stage.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+          setFormData((prev) => {
+            if (prev.steps.length > 0) return prev
+            const newStep: FormStep = {
+              id: Date.now(),
+              seq: 1,
+              step_code: generateStepCode(1),
+              step_name_id: null,
+              requires_qc: false,
+              can_be_skipped: false,
+              default_location_id: '',
+              duration_hours: '',
+              duration_minutes: '',
+              qualityParameterIds: [],
+            }
+            return { ...prev, steps: [newStep] }
+          })
+        },
+      },
+      {
+        id: 'step-location',
+        target: '[data-tour="processes-step-location-field"]',
+        title: 'Assign the default location',
+        description:
+          'Use the default location to show where this step usually happens in the factory. This is optional but helpful for operators.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'step-duration',
+        target: '[data-tour="processes-step-duration-field"]',
+        title: 'Set the estimated duration',
+        description:
+          'Capture the expected hours and minutes for the step so planning and execution timelines stay realistic.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'step-skip',
+        target: '[data-tour="processes-step-skip-toggle"]',
+        title: 'Control whether the step can be skipped',
+        description:
+          'Turn this on only for steps that are optional in real operations. Leave it off for mandatory stages.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'step-quality',
+        target: '[data-tour="processes-step-quality-section"]',
+        title: 'Select quality parameters',
+        description:
+          'Each process step needs at least one quality parameter. Choose the checks that operators must complete for this stage.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+      {
+        id: 'create-process',
+        target: '[data-tour="processes-submit-button"]',
+        title: 'Create the process',
+        description:
+          'When the products and step definitions are ready, create the process to save it and make it available to operations.',
+        placement: 'top',
+        beforeEnter: () => {
+          openProcessCreateStep(2)
+        },
+      },
+    ],
+    [openProcessCreateStep]
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
 
   if (loading || warehousesLoading || productsLoading || qualityParametersLoading || processStepNamesLoading) {
     return (
@@ -851,10 +1046,16 @@ function Processes() {
       title="Factory Processes"
       activeItem="settings"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="h-4 w-4 mr-2" />
-          New Process
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="processes-add-button">
+            <Plus className="h-4 w-4 mr-2" />
+            New Process
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -1012,7 +1213,7 @@ function Processes() {
 
       {/* Add Process Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" data-tour="processes-modal">
           <div className="flex w-full max-w-3xl max-h-[90vh] flex-col overflow-hidden rounded-lg bg-white shadow-xl">
             {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-olive-light/20 p-4 sm:p-6">
@@ -1057,7 +1258,7 @@ function Processes() {
               {/* Step 1: Basic Information */}
               {currentStep === 1 && (
                 <div className="space-y-4">
-                <div className="space-y-2">
+                <div className="space-y-2" data-tour="processes-product-selection">
                   <Label className="text-text-dark">
                     Select Product (Raw Materials Only) <span className="text-red-500">*</span>
                   </Label>
@@ -1079,6 +1280,7 @@ function Processes() {
                         <Input
                           type="text"
                           placeholder="Search products by name or SKU..."
+                          data-tour="processes-product-search"
                           value={productSearchTerm}
                           onChange={(e) => setProductSearchTerm(e.target.value)}
                           className="bg-white text-sm"
@@ -1132,6 +1334,7 @@ function Processes() {
                       </Label>
                       <Input
                         id="code"
+                        data-tour="processes-code-field"
                         name="code"
                         type="text"
                         value={formData.code}
@@ -1151,6 +1354,7 @@ function Processes() {
                       </Label>
                       <Input
                         id="name"
+                        data-tour="processes-name-field"
                         name="name"
                         type="text"
                         value={formData.name}
@@ -1170,7 +1374,7 @@ function Processes() {
               {/* Step 2: Process Steps */}
               {currentStep === 2 && (
                 <div className="space-y-4">
-                <div className="space-y-3 pt-4 border-t border-olive-light/20">
+                <div className="space-y-3 pt-4 border-t border-olive-light/20" data-tour="processes-steps-section">
                   <div className="flex items-center justify-between">
                     <Label className="text-text-dark text-base font-semibold">
                       Process Steps
@@ -1188,6 +1392,7 @@ function Processes() {
                         variant="outline"
                         size="sm"
                         className="border-olive-light/30"
+                        data-tour="processes-add-step-button"
                       >
                         <Plus className="h-4 w-4 mr-1" />
                         Add Step
@@ -1199,6 +1404,7 @@ function Processes() {
                         <div
                           key={step.id}
                           className="bg-olive-light/5 border border-olive-light/20 rounded-lg p-4 space-y-3"
+                          data-tour={index === 0 ? 'processes-step-card' : undefined}
                         >
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
@@ -1235,6 +1441,7 @@ function Processes() {
                                 Step Name <span className="text-red-500">*</span>
                               </Label>
                               <select
+                                data-tour={index === 0 ? 'processes-step-name-field' : undefined}
                                 value={step.step_name_id || ''}
                                 onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                                   handleStepChange(step.id, 'step_name_id', e.target.value ? Number(e.target.value) : null)
@@ -1266,6 +1473,7 @@ function Processes() {
                                 Default Location
                               </Label>
                               <select
+                                data-tour={index === 0 ? 'processes-step-location-field' : undefined}
                                 value={step.default_location_id}
                                 onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                                   handleStepChange(step.id, 'default_location_id', e.target.value)
@@ -1288,7 +1496,7 @@ function Processes() {
                               <Label className="text-xs text-text-dark">
                                 Estimated Duration
                               </Label>
-                              <div className="grid grid-cols-2 gap-2">
+                              <div className="grid grid-cols-2 gap-2" data-tour={index === 0 ? 'processes-step-duration-field' : undefined}>
                                 <select
                                   value={step.duration_hours === '' ? '0' : step.duration_hours}
                                   onChange={(e: ChangeEvent<HTMLSelectElement>) =>
@@ -1324,6 +1532,7 @@ function Processes() {
                               Can be Skipped
                             </Label>
                             <button
+                              data-tour={index === 0 ? 'processes-step-skip-toggle' : undefined}
                               type="button"
                               id={`can_be_skipped_${step.id}`}
                               role="switch"
@@ -1344,7 +1553,7 @@ function Processes() {
                           </div>
 
                           {/* Quality Parameters for this step */}
-                          <div className="space-y-2 pt-2 border-t border-olive-light/20">
+                          <div className="space-y-2 pt-2 border-t border-olive-light/20" data-tour={index === 0 ? 'processes-step-quality-section' : undefined}>
                             <Label className="text-xs text-text-dark font-medium">
                               Quality Parameters (select at least one per step)
                             </Label>
@@ -1449,6 +1658,7 @@ function Processes() {
                           variant="outline"
                           size="sm"
                           className="border-olive-light/30"
+                          data-tour="processes-add-step-button"
                         >
                           <Plus className="h-4 w-4 mr-1" />
                           Add Step
@@ -1488,6 +1698,7 @@ function Processes() {
                   type="submit" 
                   className="bg-olive hover:bg-olive-dark" 
                   disabled={isSubmitting}
+                  data-tour="processes-submit-button"
                 >
                   {currentStep === 1 ? 'Next' : isSubmitting ? 'Creating…' : 'Create Process'}
                 </Button>
@@ -1496,6 +1707,17 @@ function Processes() {
           </div>
         </div>
       )}
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

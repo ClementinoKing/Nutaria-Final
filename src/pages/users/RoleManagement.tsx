@@ -491,7 +491,7 @@ function RoleManagement() {
                   <Label htmlFor="role-name">Role name</Label>
                   <Input
                     id="role-name"
-                    placeholder="e.g. Compliance Lead"
+                    placeholder="Enter role name"
                     value={newRole.name}
                     onChange={(event) => setNewRole((prev) => ({ ...prev, name: event.target.value }))}
                   />
@@ -553,7 +553,7 @@ function RoleManagement() {
                   {newRole.permissions.map((permission, index) => (
                     <div key={index} className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <Input
-                        placeholder="e.g. Approve supplier onboarding"
+                        placeholder="Enter permission name"
                         value={permission}
                         onChange={(event) => updatePermission(index, event.target.value)}
                         className="flex-1"
@@ -596,5 +596,4 @@ function RoleManagement() {
 }
 
 export default RoleManagement
-
 

@@ -140,7 +140,7 @@ export function useProcessDefinitions(options: UseProcessDefinitionsOptions = {}
           name,
           sku
         ),
-        units (
+        units:units!supply_batches_unit_id_fkey (
           name,
           symbol
         )

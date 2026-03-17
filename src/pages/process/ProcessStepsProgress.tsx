@@ -51,7 +51,7 @@ import { formatSecondsToHms } from '@/lib/metalDetectorTimer'
 function ProcessStepsProgressSkeleton() {
   return (
     <>
-      <Card className="bg-white border-olive-light/30">
+      <Card className="bg-white border-olive-light/30 dark:bg-slate-900/80 dark:border-slate-700">
         <CardHeader>
           <Skeleton className="h-6 w-48" />
           <Skeleton className="mt-2 h-4 w-64" />
@@ -65,7 +65,7 @@ function ProcessStepsProgressSkeleton() {
           ))}
         </CardContent>
       </Card>
-      <Card className="bg-white border-olive-light/30">
+      <Card className="bg-white border-olive-light/30 dark:bg-slate-900/80 dark:border-slate-700">
         <CardHeader>
           <Skeleton className="h-6 w-52" />
           <Skeleton className="mt-2 h-4 w-72" />
@@ -165,11 +165,11 @@ interface GradedWipOutput {
 function getLotStatusStyles(status: string | null | undefined): string {
   switch ((status ?? '').toUpperCase()) {
     case 'PROCESSING':
-      return 'border-orange-300 bg-orange-100 text-orange-800'
+      return 'border-orange-300 bg-orange-100 text-orange-800 dark:border-orange-500/40 dark:bg-orange-500/20 dark:text-orange-200'
     case 'PROCESSED':
-      return 'border-green-200 bg-green-100 text-green-800'
+      return 'border-green-200 bg-green-100 text-green-800 dark:border-emerald-500/40 dark:bg-emerald-500/20 dark:text-emerald-200'
     default:
-      return 'border-slate-300 bg-slate-100 text-slate-700'
+      return 'border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-700/40 dark:text-slate-200'
   }
 }
 
@@ -243,7 +243,7 @@ function ProcessStepsProgress() {
               name,
               sku
             ),
-            units (
+            units:units!supply_batches_unit_id_fkey (
               name,
               symbol
             )
@@ -304,7 +304,7 @@ function ProcessStepsProgress() {
           name,
           sku
         ),
-        units (
+        units:units!supply_batches_unit_id_fkey (
           name,
           symbol
         )
@@ -1169,7 +1169,7 @@ function ProcessStepsProgress() {
               variant="outline"
               onClick={handleStartMetalDetectorChecks}
               disabled={!selectedLot}
-              className="border-olive-light/40"
+              className="border-olive-light/40 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-800"
             >
               Start Metal Detector Checks
             </Button>
@@ -1191,7 +1191,7 @@ function ProcessStepsProgress() {
           {selectedLots.map((lot) => (
             <span
               key={lot.id}
-              className="inline-flex items-center rounded-full border border-olive-light/40 bg-olive-light/15 px-3 py-1 text-xs text-text-dark/80"
+              className="inline-flex items-center rounded-full border border-olive-light/40 bg-olive-light/15 px-3 py-1 text-xs text-text-dark/80 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
             >
               {lot.lot_no} · {lot.current_qty ?? lot.received_qty ?? '—'} {lot.units?.symbol ?? ''}
             </span>
@@ -1268,7 +1268,7 @@ function ProcessStepsProgress() {
         </div>
       ) : (
         <>
-          <Card className="bg-white border-olive-light/30">
+          <Card className="bg-white border-olive-light/30 dark:bg-slate-900/80 dark:border-slate-700">
             <CardHeader>
               <CardTitle className="text-text-dark">
                 {selectedLots.length > 1 ? `Combined Process Run (${selectedLots.length} lots)` : selectedLot.lot_no}
@@ -1306,7 +1306,7 @@ function ProcessStepsProgress() {
             </CardContent>
           </Card>
 
-          <Card className="bg-white border-olive-light/30">
+          <Card className="bg-white border-olive-light/30 dark:bg-slate-900/80 dark:border-slate-700">
             <CardHeader>
               <CardTitle className="text-text-dark">Process Steps Progress</CardTitle>
               <CardDescription>
@@ -1317,12 +1317,12 @@ function ProcessStepsProgress() {
             </CardHeader>
             <CardContent className="space-y-3">
               {isSortingStep && sortingAvailableQty && (
-                <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Sorting available</p>
-                  <p className="text-2xl font-bold text-emerald-900">
+                <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 dark:border-emerald-500/40 dark:bg-emerald-500/20">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">Sorting available</p>
+                  <p className="text-2xl font-bold text-emerald-900 dark:text-emerald-100">
                     {sortingAvailableQty.availableQty.toFixed(2)} {runUnitSymbol}
                   </p>
-                  <p className="text-xs text-emerald-800">
+                  <p className="text-xs text-emerald-800 dark:text-emerald-200">
                     Initial: {sortingAvailableQty.initialQty.toFixed(2)} {runUnitSymbol} · Deducted waste/rejections:{' '}
                     {sortingAvailableQty.totalWaste.toFixed(2)} {runUnitSymbol}
                   </p>
@@ -1419,33 +1419,33 @@ function ProcessStepsProgress() {
                             disabled={!canAccess || loadingStepRuns}
                             className={`flex flex-1 flex-col items-center ${
                               isCurrent
-                                ? 'text-olive'
+                                ? 'text-olive dark:text-emerald-300'
                                 : isCompleted
-                                ? 'text-green-600'
+                                ? 'text-green-600 dark:text-emerald-300'
                                 : isSkipped
-                                ? 'text-gray-600'
+                                ? 'text-gray-600 dark:text-slate-300'
                                 : canAccess
-                                ? 'text-text-dark/60'
-                                : 'text-text-dark/30 cursor-not-allowed'
+                                ? 'text-text-dark/60 dark:text-slate-300'
+                                : 'text-text-dark/30 dark:text-slate-500 cursor-not-allowed'
                             }`}
                           >
                             <div
                               className={`mb-2 flex h-10 w-10 items-center justify-center rounded-full border-2 ${
                                 isCurrent
-                                  ? 'border-olive bg-olive-light/20'
+                                  ? 'border-olive bg-olive-light/20 dark:border-emerald-400 dark:bg-emerald-500/20'
                                   : isCompleted
-                                  ? 'border-green-600 bg-green-100'
+                                  ? 'border-green-600 bg-green-100 dark:border-emerald-400 dark:bg-emerald-500/20'
                                   : isSkipped
-                                  ? 'border-gray-400 bg-gray-100'
+                                  ? 'border-gray-400 bg-gray-100 dark:border-slate-500 dark:bg-slate-700/60'
                                   : isInProgress
-                                  ? 'border-orange-400 bg-orange-100'
-                                  : 'border-text-dark/20 bg-white'
+                                  ? 'border-orange-400 bg-orange-100 dark:border-orange-400 dark:bg-orange-500/20'
+                                  : 'border-text-dark/20 bg-white dark:border-slate-600 dark:bg-slate-800'
                               }`}
                             >
                               {isCompleted ? (
-                                <CheckCircle2 className="h-6 w-6 text-green-600" />
+                                <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-emerald-300" />
                               ) : isSkipped ? (
-                                <SkipForward className="h-5 w-5 text-gray-600" />
+                                <SkipForward className="h-5 w-5 text-gray-600 dark:text-slate-300" />
                               ) : (
                                 <span className="text-sm font-semibold">{index + 1}</span>
                               )}
@@ -1462,7 +1462,7 @@ function ProcessStepsProgress() {
                           {index < stepRuns.length - 1 && (
                             <div
                               className={`mx-2 mb-3 flex-1 h-0.5 ${
-                                isCompleted || isSkipped ? 'bg-green-600' : 'bg-text-dark/20'
+                                isCompleted || isSkipped ? 'bg-green-600 dark:bg-emerald-400' : 'bg-text-dark/20 dark:bg-slate-600'
                               }`}
                             />
                           )}
@@ -1481,8 +1481,8 @@ function ProcessStepsProgress() {
                           </p>
                         </div>
                         {activeStep.default_location_id && (
-                          <div className="flex items-center gap-2 rounded-md bg-olive-light/20 px-3 py-2 text-sm text-text-dark">
-                            <MapPin className="h-4 w-4 text-olive" />
+                          <div className="flex items-center gap-2 rounded-md bg-olive-light/20 px-3 py-2 text-sm text-text-dark dark:bg-slate-800 dark:text-slate-100">
+                            <MapPin className="h-4 w-4 text-olive dark:text-emerald-300" />
                             <span>
                               Default location:{' '}
                               {warehouses.find((w) => w.id === activeStep.default_location_id)?.name ??
@@ -1494,14 +1494,14 @@ function ProcessStepsProgress() {
                           <span
                             className={`inline-flex h-8 items-center rounded-full px-3 text-xs font-semibold ${
                               activeStepRun.status === 'COMPLETED'
-                                ? 'bg-green-100 text-green-800'
+                                ? 'bg-green-100 text-green-800 dark:bg-emerald-500/20 dark:text-emerald-200'
                                 : activeStepRun.status === 'IN_PROGRESS'
-                                ? 'bg-orange-100 text-orange-800'
+                                ? 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-200'
                                 : activeStepRun.status === 'FAILED'
-                                ? 'bg-red-100 text-red-800'
+                                ? 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200'
                                 : activeStepRun.status === 'SKIPPED'
-                                ? 'bg-gray-100 text-gray-800'
-                                : 'bg-olive-light/40 text-olive-dark'
+                                ? 'bg-gray-100 text-gray-800 dark:bg-slate-700/60 dark:text-slate-200'
+                                : 'bg-olive-light/40 text-olive-dark dark:bg-slate-700 dark:text-slate-100'
                             }`}
                           >
                             {activeStepRun.status}
@@ -1520,7 +1520,7 @@ function ProcessStepsProgress() {
                           </Label>
                           <select
                             id="step_location"
-                            className="flex h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 py-2 text-sm font-medium text-text-dark shadow-sm transition focus:outline-none focus:ring-2 focus:ring-olive-light/50"
+                            className="flex h-11 w-full rounded-lg border border-olive-light/60 bg-white px-3 py-2 text-sm font-medium text-text-dark shadow-sm transition focus:outline-none focus:ring-2 focus:ring-olive-light/50 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-emerald-400/40"
                             value={stepFormData.location_id}
                             onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                               setStepFormData({ ...stepFormData, location_id: e.target.value })
@@ -1536,7 +1536,7 @@ function ProcessStepsProgress() {
                           </select>
                         </div>
 
-                        <div className="rounded-xl border border-olive-light/35 bg-white p-4">
+                        <div className="rounded-xl border border-olive-light/35 bg-white p-4 dark:border-slate-600 dark:bg-slate-800">
                           <div className="mb-2 flex items-center justify-between gap-2">
                             <Label className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
                               <Timer className="h-4 w-4 text-olive" aria-hidden />
@@ -1576,7 +1576,7 @@ function ProcessStepsProgress() {
                           </p>
                         </div>
 
-                        <div className="rounded-xl border border-olive-light/35 bg-white p-4">
+                        <div className="rounded-xl border border-olive-light/35 bg-white p-4 dark:border-slate-600 dark:bg-slate-800">
                           <Label className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-dark/70">
                             <CheckCircle2 className="h-4 w-4 text-olive" aria-hidden />
                             Completed at
@@ -1613,14 +1613,14 @@ function ProcessStepsProgress() {
                                 </p>
                                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                   {gradedWipOutputs.map((output) => (
-                                    <div key={output.id} className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+                                    <div key={output.id} className="rounded-lg border border-olive-light/40 bg-olive-light/10 p-4 dark:border-slate-600 dark:bg-slate-800">
                                       <div className="flex items-start justify-between gap-3">
                                         <p className="text-sm font-semibold text-text-dark">
                                           {output.product?.name ?? `WIP Product #${output.product_id}`}
                                           {output.product?.sku ? ` (${output.product.sku})` : ''}
                                         </p>
                                         {output.washing_state === 'WASHED' && (
-                                          <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-800">
+                                          <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-800 dark:bg-emerald-500/20 dark:text-emerald-200">
                                             Washed
                                           </span>
                                         )}
@@ -1788,8 +1788,8 @@ function ProcessStepsProgress() {
                       )}
 
                       {unresolvedNCs.length > 0 && (
-                        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3">
-                          <p className="text-sm text-yellow-800">
+                        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-400/40 dark:bg-yellow-500/15">
+                          <p className="text-sm text-yellow-800 dark:text-yellow-200">
                             Warning: There are {unresolvedNCs.length} unresolved non-conformance(s). You can still
                             complete the process, but it is recommended to resolve them first.
                           </p>
@@ -1830,7 +1830,7 @@ function ProcessStepsProgress() {
                                 variant="outline"
                                 onClick={handleSkipStep}
                                 disabled={saving || loadingStepRuns}
-                                className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
+                                className="border-yellow-300 text-yellow-700 hover:bg-yellow-50 dark:border-yellow-400/40 dark:text-yellow-200 dark:hover:bg-yellow-500/20"
                               >
                                 <SkipForward className="mr-2 h-4 w-4" />
                                 Skip
@@ -1893,7 +1893,7 @@ function ProcessStepsProgress() {
 
       {washingModalOpen && selectedWashingOutput && activeStepRun && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6">
-          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-olive-light/40 bg-white p-5 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-olive-light/40 bg-white p-5 shadow-xl dark:border-slate-600 dark:bg-slate-900">
             <div className="mb-4 flex items-start justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-text-dark">WASHING - Step Data Entry</h3>

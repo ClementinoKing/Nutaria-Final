@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ArrowLeft } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { Button } from '@/components/ui/button'
 
 interface LotRow {
   id: string
@@ -18,6 +19,7 @@ interface LotRow {
 
 function WIPProductDetailPage() {
   const { productId } = useParams<{ productId: string }>()
+  const navigate = useNavigate()
   const [product, setProduct] = useState<{ name: string; sku: string | null } | null>(null)
   const [rows, setRows] = useState<LotRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -199,6 +201,11 @@ function WIPProductDetailPage() {
       <PageLayout
         title={product ? `${product.name} — WIP by lot` : 'WIP by lot'}
         activeItem="inventory"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/inventory/stock-levels/wip')} aria-label="Back to WIP Stock">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
       >
         <Spinner text="Loading WIP product detail..." />
@@ -210,16 +217,14 @@ function WIPProductDetailPage() {
     <PageLayout
       title={product ? `${product.name} — WIP by lot` : 'WIP by lot'}
       activeItem="inventory"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={() => navigate('/inventory/stock-levels/wip')} aria-label="Back to WIP Stock">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Link
-          to="/inventory/stock-levels/wip"
-          className="inline-flex items-center gap-1 text-sm font-medium text-olive hover:underline"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to WIP Stock
-        </Link>
         {product?.sku ? (
           <span className="text-sm text-text-dark/60">SKU: {product.sku}</span>
         ) : null}

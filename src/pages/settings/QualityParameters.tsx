@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, X, Edit, Trash2 } from 'lucide-react'
+import { Plus, RefreshCcw, X, Edit, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
@@ -20,11 +20,15 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
+import SettingsTour from '@/components/tour/SettingsTour'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 
 interface FormData {
   code: string
   name: string
 }
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface FormErrors {
   code?: string
@@ -125,23 +129,28 @@ function QualityParameters() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (row: QualityParameter) => (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(row)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'quality parameter'}`}
+              aria-label={`Edit ${row.name ?? 'quality parameter'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(row)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'quality parameter'}`}
+              aria-label={`Delete ${row.name ?? 'quality parameter'}`}
               disabled={isDeleting && deletingId === row.id}
             >
               <Trash2 className="h-4 w-4" />
@@ -151,20 +160,22 @@ function QualityParameters() {
         mobileRender: (row: QualityParameter) => (
           <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(row)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${row.name ?? 'quality parameter'}`}
+              aria-label={`Edit ${row.name ?? 'quality parameter'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(row)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${row.name ?? 'quality parameter'}`}
+              aria-label={`Delete ${row.name ?? 'quality parameter'}`}
               disabled={isDeleting && deletingId === row.id}
             >
               <Trash2 className="h-4 w-4" />
@@ -339,6 +350,87 @@ function QualityParameters() {
     }
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Quality parameters overview',
+        description:
+          'Use this page to manage the quality checks that can be assigned to process steps and other operational workflows.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="quality-parameters-search"]',
+        title: 'Search existing parameters',
+        description:
+          'Search by code or name before creating a new quality parameter.',
+        placement: 'bottom',
+      },
+      {
+        id: 'results',
+        target: '[data-tour="quality-parameters-results"]',
+        title: 'Review current parameters',
+        description:
+          'This list shows the quality parameters already available to process definitions.',
+        placement: 'top',
+      },
+      {
+        id: 'add-button',
+        target: '[data-tour="quality-parameters-add-button"]',
+        title: 'Add a quality parameter',
+        description:
+          'Use this action whenever the team needs a new measurable quality check.',
+        placement: 'left',
+      },
+      {
+        id: 'name',
+        target: '[data-tour="quality-parameters-name-field"]',
+        title: 'Enter the parameter name',
+        description:
+          'Start with the quality parameter name. A code is auto-generated for new entries.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'code',
+        target: '[data-tour="quality-parameters-code-field"]',
+        title: 'Review or adjust the code',
+        description:
+          'Codes identify the parameter in structured records. They are auto-generated for new parameters and editable when updating existing ones.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="quality-parameters-save-button"]',
+        title: 'Save the parameter',
+        description:
+          'Save when the parameter details are ready to make it available in process setup.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+    ],
+    [qualityParameters.length]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading && qualityParameters.length === 0) {
     return (
       <PageLayout title="Quality Parameters" activeItem="settings" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
@@ -352,10 +444,16 @@ function QualityParameters() {
       title="Quality Parameters"
       activeItem="settings"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Quality Parameter
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="quality-parameters-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Quality Parameter
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -381,6 +479,7 @@ function QualityParameters() {
               <Label htmlFor="qp-search">Search</Label>
               <Input
                 id="qp-search"
+                data-tour="quality-parameters-search"
                 placeholder="Search by code or name"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -407,16 +506,18 @@ function QualityParameters() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={filteredParameters}
-            rowKey="id"
-            emptyMessage={emptyMessage}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="quality-parameters-results">
+            <ResponsiveTable
+              columns={columns}
+              data={filteredParameters}
+              rowKey="id"
+              emptyMessage={emptyMessage}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -451,8 +552,9 @@ function QualityParameters() {
                 <Label htmlFor="qp-name">Name <span className="text-red-500">*</span></Label>
                 <Input
                   id="qp-name"
+                  data-tour="quality-parameters-name-field"
                   name="name"
-                  placeholder="e.g. Mechanical damage"
+                  placeholder="Enter parameter name"
                   value={formData.name}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -467,8 +569,9 @@ function QualityParameters() {
                 <Label htmlFor="qp-code">Code <span className="text-red-500">*</span></Label>
                 <Input
                   id="qp-code"
+                  data-tour="quality-parameters-code-field"
                   name="code"
-                  placeholder="e.g. MECHANICAL_DAMAGE"
+                  placeholder="Enter code"
                   value={formData.code}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -489,7 +592,7 @@ function QualityParameters() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting} data-tour="quality-parameters-save-button">
                   {isSubmitting ? 'Saving…' : isEditMode ? 'Update' : 'Save'}
                 </Button>
               </div>
@@ -519,6 +622,17 @@ function QualityParameters() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

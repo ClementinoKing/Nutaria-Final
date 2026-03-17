@@ -523,7 +523,7 @@ function UserManagement() {
                     onChange={(event) =>
                       setFormState((prev) => ({ ...prev, fullName: event.target.value }))
                     }
-                    placeholder="Jane Doe"
+                    placeholder="Enter full name"
                   />
                 </div>
                 <div className="space-y-2">
@@ -543,8 +543,8 @@ function UserManagement() {
                     }
                     placeholder={
                       selectedProfile || formState.credentialMode === 'EMAIL'
-                        ? 'info@nutaria.co.za'
-                        : '+265991234567'
+                        ? 'Enter email address'
+                        : 'Enter phone number'
                     }
                   />
                   {!selectedProfile && (
@@ -607,7 +607,7 @@ function UserManagement() {
                       type="password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
-                      placeholder="Generate a secure password"
+                      placeholder="Enter temporary password"
                     />
                   </div>
                 )}

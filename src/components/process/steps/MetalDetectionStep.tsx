@@ -339,7 +339,7 @@ export function MetalDetectionStep({
                   type="text"
                   value={rejectionFormData.object_type}
                   onChange={(e) => setRejectionFormData({ ...rejectionFormData, object_type: e.target.value })}
-                  placeholder="e.g., Metal, Plastic, Glass"
+                  placeholder="Enter contaminant type"
                   required
                   disabled={saving || externalLoading}
                   className="bg-white"

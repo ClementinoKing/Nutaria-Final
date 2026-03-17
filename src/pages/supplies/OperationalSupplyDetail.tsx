@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Pencil } from 'lucide-react'
+import { ArrowLeft, Pencil, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Spinner } from '@/components/ui/spinner'
 import { supabase } from '@/lib/supabaseClient'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import SettingsTour from '@/components/tour/SettingsTour'
 
 interface ProductLookup {
   name: string
@@ -298,7 +300,22 @@ function OperationalSupplyDetail() {
 
   if (loading) {
     return (
-      <PageLayout title="Operational Supply Detail" activeItem="supplies" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Operational Supply Detail"
+        activeItem="supplies"
+        leadingActions={
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            onClick={() => navigate('/inventory/stock-levels/operational-supplies')}
+            aria-label="Back to Operational Supplies"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Spinner text="Loading operational supply..." />
       </PageLayout>
     )
@@ -306,13 +323,73 @@ function OperationalSupplyDetail() {
 
   if (error || !supply) {
     return (
-      <PageLayout title="Operational Supply Detail" activeItem="supplies" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Operational Supply Detail"
+        activeItem="supplies"
+        leadingActions={
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            onClick={() => navigate('/inventory/stock-levels/operational-supplies')}
+            aria-label="Back to Operational Supplies"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Card className="border-red-200 bg-red-50">
           <CardContent className="p-6 text-red-700">{error ?? 'Unable to load operational supply.'}</CardContent>
         </Card>
       </PageLayout>
     )
   }
+
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'summary',
+        target: '[data-tour="operational-supply-summary"]',
+        title: 'Operational supply summary',
+        description: 'Review the document, status, and total received at a glance.',
+        placement: 'bottom',
+      },
+      {
+        id: 'details',
+        target: '[data-tour="operational-supply-details"]',
+        title: 'Receiving details',
+        description: 'Verify supplier, warehouse, delivery reference, and condition.',
+        placement: 'top',
+      },
+      {
+        id: 'batches',
+        target: '[data-tour="operational-supply-batches"]',
+        title: 'Operational batches',
+        description: 'Each line represents an operational item received in this delivery.',
+        placement: 'top',
+      },
+      {
+        id: 'packaging',
+        target: '[data-tour="operational-supply-packaging"]',
+        title: 'Packaging checks',
+        description: 'Review packaging quality captured per operational batch.',
+        placement: 'top',
+      },
+    ],
+    []
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
 
   return (
     <PageLayout
@@ -330,22 +407,28 @@ function OperationalSupplyDetail() {
         </Button>
       }
       actions={
-        <Button
-          type="button"
-          className="bg-olive hover:bg-olive-dark"
-          onClick={() =>
-            navigate(`/supplies/${supply.id}/edit`, {
-              state: { backgroundLocation: location },
-            })
-          }
-        >
-          <Pencil className="mr-2 h-4 w-4" />
-          Edit
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button
+            type="button"
+            className="bg-olive hover:bg-olive-dark"
+            onClick={() =>
+              navigate(`/supplies/${supply.id}/edit`, {
+                state: { backgroundLocation: location },
+              })
+            }
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" data-tour="operational-supply-summary">
         <Card className="border-olive-light/30">
           <CardHeader className="pb-2">
             <CardDescription>Document</CardDescription>
@@ -372,7 +455,7 @@ function OperationalSupplyDetail() {
         </Card>
       </div>
 
-      <Card className="mt-6 border-olive-light/30">
+      <Card className="mt-6 border-olive-light/30" data-tour="operational-supply-details">
         <CardHeader>
           <CardTitle className="text-text-dark">Operational Details</CardTitle>
         </CardHeader>
@@ -404,7 +487,7 @@ function OperationalSupplyDetail() {
         </CardContent>
       </Card>
 
-      <Card className="mt-6 border-olive-light/30">
+      <Card className="mt-6 border-olive-light/30" data-tour="operational-supply-batches">
         <CardHeader>
           <CardTitle className="text-text-dark">Supply Batches</CardTitle>
           <CardDescription>Operational products captured for this delivery.</CardDescription>
@@ -448,7 +531,7 @@ function OperationalSupplyDetail() {
       </Card>
 
       {packagingByBatch.length > 0 ? (
-        <Card className="mt-6 border-olive-light/30">
+        <Card className="mt-6 border-olive-light/30" data-tour="operational-supply-packaging">
           <CardHeader>
             <CardTitle className="text-text-dark">Packaging Quality Parameters</CardTitle>
             <CardDescription>Packaging quality captured for each operational batch.</CardDescription>
@@ -494,6 +577,16 @@ function OperationalSupplyDetail() {
           </CardContent>
         </Card>
       ) : null}
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={closeTour}
+      />
     </PageLayout>
   )
 }

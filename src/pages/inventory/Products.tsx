@@ -4,13 +4,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Boxes, Briefcase, Package2, Pencil, Plus, RefreshCcw, Trash2, X } from 'lucide-react'
+import { Boxes, Briefcase, Link2, Package2, Pencil, Plus, RefreshCcw, Trash2, X, Sparkles } from 'lucide-react'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import SettingsTour from '@/components/tour/SettingsTour'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,6 +23,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { FEATURE_PROCESSING_PRODUCT_WIZARD } from '@/lib/features'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 
 interface ComponentProduct {
   id: number
@@ -297,6 +299,7 @@ function Products() {
   const [bulkDeleteAlertOpen, setBulkDeleteAlertOpen] = useState(false)
   const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditFormData>(createEmptyBulkEditForm())
+  const [tourFlow, setTourFlow] = useState<CreationMode>(null)
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -950,7 +953,7 @@ function Products() {
     }
   }, [editingProduct, loadProcessingChain, openProcessingChainEditor])
 
-  const handleOpenCreateModal = () => {
+  const handleOpenCreateModal = useCallback(() => {
     setFormData({ ...createEmptyProductForm(products, units), product_type: 'OP' })
     setFormErrors({})
     setComponentSearch('')
@@ -959,9 +962,9 @@ function Products() {
     setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
     resetProcessingWizard()
     setIsModalOpen(true)
-  }
+  }, [products, resetProcessingWizard, units])
 
-  const handleCloseModal = () => {
+  const handleCloseModal = useCallback(() => {
     if (isSubmitting) {
       return
     }
@@ -973,7 +976,40 @@ function Products() {
     setComponentSearch('')
     setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
     resetProcessingWizard()
-  }
+  }, [isSubmitting, products, resetProcessingWizard, units])
+
+  const openCreationModeTourModal = useCallback(() => {
+    handleOpenCreateModal()
+    if (FEATURE_PROCESSING_PRODUCT_WIZARD) {
+      setCreationMode(null)
+    }
+  }, [handleOpenCreateModal])
+
+  const ensureCreateModalOpen = useCallback(() => {
+    if (!isModalOpen) {
+      handleOpenCreateModal()
+    }
+  }, [handleOpenCreateModal, isModalOpen])
+
+  const openSelectedTourFlow = useCallback(() => {
+    ensureCreateModalOpen()
+    if (tourFlow === 'PROCESSING') {
+      setCreationMode('PROCESSING')
+      resetProcessingWizard()
+      return
+    }
+    setCreationMode('OPERATIONAL')
+    setFormData((prev) => ({ ...prev, product_type: 'OP' }))
+  }, [ensureCreateModalOpen, resetProcessingWizard, tourFlow])
+
+  const openProcessingTourStep = useCallback(
+    (step: 1 | 2 | 3) => {
+      ensureCreateModalOpen()
+      setCreationMode('PROCESSING')
+      setProcessingStep(step)
+    },
+    [ensureCreateModalOpen]
+  )
 
   const handleOpenEditModal = useCallback((product: Product) => {
     if (!product) {
@@ -1638,11 +1674,25 @@ function Products() {
         render: (product: PreparedProduct) => (
           <div>
             {(() => {
+              const isRawProduct = (product.product_type ?? '').toUpperCase() === 'RAW'
               const chainName = productChainMetaByProductId.get(product.id)?.chainName
-              const baseName = chainName || product.name || 'Unnamed product'
+              const baseName = product.name || 'Unnamed product'
               return (
-                <div className="font-medium text-text-dark">
-                  {(product.product_type ?? '').toUpperCase() === 'RAW' ? (
+                <div className="flex items-center gap-2 font-medium text-text-dark">
+                  {isRawProduct ? (
+                    <span
+                      className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${
+                        chainName
+                          ? 'border-olive/20 bg-olive-light/20 text-olive-dark'
+                          : 'border-slate-200 bg-slate-100 text-slate-500'
+                      }`}
+                      title={chainName ? `Linked to ${chainName}` : 'Not linked to a processing chain'}
+                      aria-label={chainName ? `Linked to ${chainName}` : 'Not linked to a processing chain'}
+                    >
+                      {chainName ? <Link2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+                    </span>
+                  ) : null}
+                  {isRawProduct ? (
                     <button
                       type="button"
                       className="text-left text-olive hover:underline"
@@ -1673,8 +1723,33 @@ function Products() {
         ),
         mobileRender: (product: PreparedProduct) => (
           <div className="text-right">
-            <div className="font-medium text-text-dark">
-              {productChainMetaByProductId.get(product.id)?.chainName || product.name || 'Unnamed product'}
+            <div className="flex items-center justify-end gap-2 font-medium text-text-dark">
+              {(product.product_type ?? '').toUpperCase() === 'RAW' ? (
+                <span
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${
+                    productChainMetaByProductId.get(product.id)?.chainName
+                      ? 'border-olive/20 bg-olive-light/20 text-olive-dark'
+                      : 'border-slate-200 bg-slate-100 text-slate-500'
+                  }`}
+                  title={
+                    productChainMetaByProductId.get(product.id)?.chainName
+                      ? `Linked to ${productChainMetaByProductId.get(product.id)?.chainName}`
+                      : 'Not linked to a processing chain'
+                  }
+                  aria-label={
+                    productChainMetaByProductId.get(product.id)?.chainName
+                      ? `Linked to ${productChainMetaByProductId.get(product.id)?.chainName}`
+                      : 'Not linked to a processing chain'
+                  }
+                >
+                  {productChainMetaByProductId.get(product.id)?.chainName ? (
+                    <Link2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <X className="h-3.5 w-3.5" />
+                  )}
+                </span>
+              ) : null}
+              <span>{product.name || 'Unnamed product'}</span>
             </div>
             {product.notes ? <div className="text-xs text-text-dark/60">{product.notes}</div> : null}
           </div>
@@ -1804,59 +1879,57 @@ function Products() {
           <div className="flex justify-end gap-2">
             <Button
               type="button"
-              size="sm"
+              size="icon"
               variant="outline"
+              title={`Edit ${product.name ?? 'product'}`}
+              aria-label={`Edit ${product.name ?? 'product'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 handleOpenEditModal(product)
               }}
             >
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit
+              <Pencil className="h-4 w-4" />
             </Button>
             <Button
               type="button"
-              size="sm"
+              size="icon"
               variant="ghost"
               className="text-red-600 hover:bg-red-50"
+              title={deletingProductId === product.id ? 'Deleting product' : `Delete ${product.name ?? 'product'}`}
+              aria-label={deletingProductId === product.id ? 'Deleting product' : `Delete ${product.name ?? 'product'}`}
               onClick={(event) => {
                 event.stopPropagation()
                 requestDeleteProduct(product)
               }}
               disabled={deletingProductId === product.id}
             >
-              {deletingProductId === product.id ? (
-                'Deleting…'
-              ) : (
-                <>
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </>
-              )}
+              <Trash2 className={`h-4 w-4 ${deletingProductId === product.id ? 'animate-pulse' : ''}`} />
             </Button>
           </div>
         ),
         mobileRender: (product: PreparedProduct) => (
-          <div className="flex flex-col gap-2">
+          <div className="flex justify-end gap-2">
             <Button
               type="button"
-              size="sm"
+              size="icon"
               variant="outline"
-              className="w-full justify-center"
+              title={`Edit ${product.name ?? 'product'}`}
+              aria-label={`Edit ${product.name ?? 'product'}`}
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
                 handleOpenEditModal(product)
               }}
             >
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit
+              <Pencil className="h-4 w-4" />
             </Button>
             <Button
               type="button"
-              size="sm"
+              size="icon"
               variant="ghost"
-              className="w-full justify-center text-red-600 hover:bg-red-50"
+              className="text-red-600 hover:bg-red-50"
+              title={deletingProductId === product.id ? 'Deleting product' : `Delete ${product.name ?? 'product'}`}
+              aria-label={deletingProductId === product.id ? 'Deleting product' : `Delete ${product.name ?? 'product'}`}
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
@@ -1864,14 +1937,7 @@ function Products() {
               }}
               disabled={deletingProductId === product.id}
             >
-              {deletingProductId === product.id ? (
-                'Deleting…'
-              ) : (
-                <>
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </>
-              )}
+              <Trash2 className={`h-4 w-4 ${deletingProductId === product.id ? 'animate-pulse' : ''}`} />
             </Button>
           </div>
         ),
@@ -1893,6 +1959,306 @@ function Products() {
 
   const isEditMode = modalMode === 'edit'
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => {
+      const steps: TourStep[] = [
+        {
+          id: 'intro',
+          title: 'Products settings overview',
+          description:
+            'Use this page to manage raw, processed, and operational products, along with the stock rules attached to each one.',
+          placement: 'center',
+        },
+        {
+          id: 'tabs',
+          target: '[data-tour="products-tabs"]',
+          title: 'Switch product catalogs',
+          description:
+            'These tabs separate raw products, processed products, and operational products so each catalog stays easier to manage.',
+          placement: 'bottom',
+          beforeEnter: () => {
+            setCatalogTab('RAW')
+          },
+        },
+        {
+          id: 'search',
+          target: '[data-tour="products-search"]',
+          title: 'Search and filter quickly',
+          description:
+            'Use search, status, and sorting together to narrow the list before editing or reviewing stock planning details.',
+          placement: 'bottom',
+          beforeEnter: () => {
+            setCatalogTab('RAW')
+          },
+        },
+        {
+          id: 'results',
+          target: '[data-tour="products-results"]',
+          title: 'Review the current catalog',
+          description:
+            'This table shows the visible products for the selected tab, including quick actions for editing, deleting, and opening raw product details.',
+          placement: 'top',
+          beforeEnter: () => {
+            setCatalogTab('RAW')
+          },
+        },
+        {
+          id: 'bulk-actions',
+          target: '[data-tour="products-bulk-actions"]',
+          title: 'Apply bulk actions',
+          description:
+            'Select products from the table to bulk edit shared inventory settings or remove several records in one pass.',
+          placement: 'top',
+          beforeEnter: () => {
+            setCatalogTab('RAW')
+          },
+        },
+        {
+          id: 'add-button',
+          target: '[data-tour="products-add-button"]',
+          title: 'Start a new product',
+          description:
+            'Use this action whenever you need to register a new product SKU in the catalog.',
+          placement: 'left',
+        },
+      ]
+
+      if (FEATURE_PROCESSING_PRODUCT_WIZARD) {
+        steps.push({
+          id: 'creation-mode',
+          target: '[data-tour="products-creation-mode"]',
+          title: 'Choose how to create it',
+          description:
+            'Choose the path that fits the product you want to set up. You can continue with a simple operational product or switch into the RAW to WIP to FINISHED processing wizard.',
+          placement: 'bottom',
+          beforeEnter: () => {
+            openCreationModeTourModal()
+          },
+        })
+
+        steps.push({
+          id: 'tour-choice',
+          target: '[data-tour="products-creation-mode"]',
+          title: 'Which tour do you want to continue with?',
+          description:
+            'Choose the branch you want to follow next, then click Next to continue with that flow.',
+          placement: 'bottom',
+          nextDisabled: tourFlow === null,
+          actions: [
+            {
+              label: tourFlow === 'OPERATIONAL' ? 'Operational product selected' : 'Operational product',
+              variant: tourFlow === 'OPERATIONAL' ? 'default' : 'outline',
+              onSelect: () => {
+                setTourFlow('OPERATIONAL')
+              },
+            },
+            {
+              label: tourFlow === 'PROCESSING' ? 'Processing product selected' : 'Processing product',
+              variant: tourFlow === 'PROCESSING' ? 'default' : 'outline',
+              onSelect: () => {
+                setTourFlow('PROCESSING')
+              },
+            },
+          ],
+          beforeEnter: () => {
+            openCreationModeTourModal()
+          },
+        })
+
+        if (tourFlow === 'PROCESSING') {
+          steps.push(
+            {
+              id: 'processing-editor',
+              target: '[data-tour="products-processing-editor"]',
+              title: 'Build the processing chain',
+              description:
+                'This wizard lets you define the RAW, WIP, and FINISHED products that belong together in one processing flow.',
+              placement: 'top',
+              beforeEnter: () => {
+                openSelectedTourFlow()
+              },
+            },
+            {
+              id: 'processing-stages',
+              target: '[data-tour="products-processing-stages"]',
+              title: 'Move through RAW, WIP, and FINISHED',
+              description:
+                'Use these stage tabs to define the full chain in order, from raw inputs to work-in-progress items and finally the finished products.',
+              placement: 'bottom',
+              beforeEnter: () => {
+                openProcessingTourStep(1)
+              },
+            },
+            {
+              id: 'processing-raw',
+              target: '[data-tour="products-processing-raw-section"]',
+              title: 'Create the RAW products first',
+              description:
+                'Start by naming the raw products and setting their stock defaults. These become the inputs that WIP products can consume.',
+              placement: 'top',
+              beforeEnter: () => {
+                openProcessingTourStep(1)
+              },
+            },
+            {
+              id: 'processing-wip',
+              target: '[data-tour="products-processing-wip-section"]',
+              title: 'Build the WIP products next',
+              description:
+                'Add the WIP products here, then link each one to the raw products it depends on so the chain reflects the real process.',
+              placement: 'top',
+              beforeEnter: () => {
+                openProcessingTourStep(2)
+              },
+            },
+            {
+              id: 'processing-finished',
+              target: '[data-tour="products-processing-finished-section"]',
+              title: 'Finish with the final products',
+              description:
+                'Create the finished products last and connect them to the WIP items that feed into the final output.',
+              placement: 'top',
+              beforeEnter: () => {
+                openProcessingTourStep(3)
+              },
+            },
+            {
+              id: 'save',
+              target: '[data-tour="products-save-button"]',
+              title: 'Save the processing chain',
+              description:
+                'When the chain looks right, save it to add the linked products to the catalog.',
+              placement: 'top',
+              beforeEnter: () => {
+                openProcessingTourStep(3)
+              },
+            }
+          )
+        }
+
+        if (tourFlow === 'OPERATIONAL') {
+          steps.push(
+            {
+              id: 'name',
+              target: '[data-tour="products-name-field"]',
+              title: 'Capture the product identity',
+              description:
+                'Start with the product name and status so the new SKU is easy to recognize and filter later.',
+              placement: 'bottom',
+              beforeEnter: () => {
+                openSelectedTourFlow()
+              },
+            },
+            {
+              id: 'type',
+              target: '[data-tour="products-type-field"]',
+              title: 'Confirm the product type',
+              description:
+                'Operational products stay on the simple form, while raw, WIP, and finished products support process relationships.',
+              placement: 'bottom',
+              beforeEnter: () => {
+                openSelectedTourFlow()
+              },
+            },
+            {
+              id: 'inventory',
+              target: '[data-tour="products-inventory-section"]',
+              title: 'Set stock planning defaults',
+              description:
+                'Base unit, reorder point, safety stock, and target stock help the team plan replenishment consistently.',
+              placement: 'top',
+              beforeEnter: () => {
+                openSelectedTourFlow()
+              },
+            },
+            {
+              id: 'save',
+              target: '[data-tour="products-save-button"]',
+              title: 'Save the product',
+              description:
+                'When the setup looks right, save to add the product to the catalog and make it available across inventory flows.',
+              placement: 'top',
+              beforeEnter: () => {
+                openSelectedTourFlow()
+              },
+            }
+          )
+        }
+      } else {
+        steps.push(
+          {
+            id: 'name',
+            target: '[data-tour="products-name-field"]',
+            title: 'Capture the product identity',
+            description:
+              'Start with the product name and status so the new SKU is easy to recognize and filter later.',
+            placement: 'bottom',
+            beforeEnter: () => {
+              ensureCreateModalOpen()
+            },
+          },
+          {
+            id: 'type',
+            target: '[data-tour="products-type-field"]',
+            title: 'Confirm the product type',
+            description:
+              'Product type controls whether composition is required. Raw, WIP, finished, and operational products each support a different setup path.',
+            placement: 'bottom',
+            beforeEnter: () => {
+              ensureCreateModalOpen()
+            },
+          },
+          {
+            id: 'inventory',
+            target: '[data-tour="products-inventory-section"]',
+            title: 'Set stock planning defaults',
+            description:
+              'Base unit, reorder point, safety stock, and target stock help the team plan replenishment consistently.',
+            placement: 'top',
+            beforeEnter: () => {
+              ensureCreateModalOpen()
+            },
+          },
+          {
+            id: 'save',
+            target: '[data-tour="products-save-button"]',
+            title: 'Save the product',
+            description:
+              'When the setup looks right, save to add the product to the catalog and make it available across inventory flows.',
+            placement: 'top',
+            beforeEnter: () => {
+              ensureCreateModalOpen()
+            },
+          }
+        )
+      }
+
+      return steps
+    },
+    [ensureCreateModalOpen, openCreationModeTourModal, openProcessingTourStep, openSelectedTourFlow, tourFlow]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
+  const handleOpenTour = useCallback(async () => {
+    setTourFlow(null)
+    await openTour()
+  }, [openTour])
+
+  const handleCloseTour = useCallback(() => {
+    setTourFlow(null)
+    closeTour()
+  }, [closeTour])
+
   if (loading) {
     return (
       <PageLayout
@@ -1910,10 +2276,20 @@ function Products() {
       title="Products"
       activeItem="inventory"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenCreateModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Product
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void handleOpenTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button
+            className="bg-olive hover:bg-olive-dark"
+            onClick={handleOpenCreateModal}
+            data-tour="products-add-button"
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add Product
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -1955,7 +2331,7 @@ function Products() {
           <CardTitle className="text-text-dark">Products</CardTitle>
           <CardDescription>Default view shows raw products. Switch tabs to see processed and operational products.</CardDescription>
         </CardHeader>
-        <div className="border-b border-olive-light/40">
+        <div className="border-b border-olive-light/40" data-tour="products-tabs">
           <nav className="flex flex-wrap gap-0 px-6" aria-label="Product category tabs">
             <button
               type="button"
@@ -2002,6 +2378,7 @@ function Products() {
               <Label htmlFor="product-search">Search products</Label>
               <Input
                 id="product-search"
+                data-tour="products-search"
                 placeholder="Search by name or notes"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
@@ -2071,7 +2448,7 @@ function Products() {
               </Button>
             </div>
             <div className="sm:col-span-3">
-              <div className="rounded-md border border-olive-light/40 bg-white px-3 py-2">
+              <div className="rounded-md border border-olive-light/40 bg-white px-3 py-2" data-tour="products-bulk-actions">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm text-text-dark/70">
                     {selectedProductIds.length} selected
@@ -2109,21 +2486,23 @@ function Products() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={loading ? [] : paginatedProducts}
-            rowKey="id"
-            emptyMessage={emptyMessage}
-            tableClassName=""
-            mobileCardClassName=""
-            getRowClassName={() => ''}
-            onRowClick={(row) => {
-              const type = (row.product_type ?? '').toUpperCase()
-              if (type === 'RAW') {
-                navigate(`/inventory/products/${row.id}`)
-              }
-            }}
-          />
+          <div data-tour="products-results">
+            <ResponsiveTable
+              columns={columns}
+              data={loading ? [] : paginatedProducts}
+              rowKey="id"
+              emptyMessage={emptyMessage}
+              tableClassName=""
+              mobileCardClassName=""
+              getRowClassName={() => ''}
+              onRowClick={(row) => {
+                const type = (row.product_type ?? '').toUpperCase()
+                if (type === 'RAW') {
+                  navigate(`/inventory/products/${row.id}`)
+                }
+              }}
+            />
+          </div>
 
           {filteredProducts.length > 0 ? (
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2">
@@ -2207,7 +2586,7 @@ function Products() {
               <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
               {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === null ? (
                 <div className="space-y-6">
-                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
+                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4" data-tour="products-creation-mode">
                     <h3 className="text-sm font-semibold text-text-dark">Choose Creation Mode</h3>
                     <p className="text-xs text-text-dark/60 mt-1">Step 1 of 4</p>
                     <p className="text-xs text-text-dark/60 mt-1">Operational products use a simple form. Processing products use RAW → WIP → FINISHED wizard.</p>
@@ -2216,6 +2595,7 @@ function Products() {
                         type="button"
                         variant="outline"
                         className="justify-start border-olive-light/60"
+                        data-tour="products-processing-option"
                         onClick={() => {
                           setCreationMode('PROCESSING')
                           resetProcessingWizard()
@@ -2227,6 +2607,7 @@ function Products() {
                         type="button"
                         variant="outline"
                         className="justify-start border-olive-light/60"
+                        data-tour="products-operational-option"
                         onClick={() => {
                           setCreationMode('OPERATIONAL')
                           setFormData((prev) => ({ ...prev, product_type: 'OP' }))
@@ -2239,7 +2620,7 @@ function Products() {
                 </div>
               ) : isProcessingWizardActive ? (
                 <div className="space-y-6">
-                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4">
+                  <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4" data-tour="products-processing-editor">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-semibold text-text-dark">{processingEditMode ? 'Edit Processing Chain' : 'Create Processing Chain'}</h3>
@@ -2250,14 +2631,14 @@ function Products() {
                       <Input
                         value={processingChainName}
                         onChange={(e) => setProcessingChainName(e.target.value)}
-                        placeholder="Chain name (optional)"
+                        placeholder="Enter chain name"
                         className="max-w-xs"
                         disabled={isSubmitting}
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-3 gap-2" data-tour="products-processing-stages">
                     {[1, 2, 3].map((step) => (
                       <button
                         key={step}
@@ -2272,14 +2653,14 @@ function Products() {
                   </div>
 
                   {processingStep === 1 && (
-                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm" data-tour="products-processing-raw-section">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">RAW Products</h4>
                       </div>
                       {processingRaws.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
                           <div className="grid gap-2 sm:grid-cols-2">
-                            <Input placeholder="Raw name" value={row.name} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'name', e.target.value)} />
+                            <Input placeholder="Enter product name" value={row.name} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'name', e.target.value)} />
                             <select value={row.status} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
                               <option value="ACTIVE">Active</option>
                               <option value="INACTIVE">Inactive</option>
@@ -2291,9 +2672,9 @@ function Products() {
                               <option value="">No unit</option>
                               {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
                             </select>
-                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'reorder_point', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'safety_stock', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'target_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Reorder point" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety stock" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target stock" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'target_stock', e.target.value)} />
                           </div>
                           <div className="flex items-center gap-2">
                             <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingRaws, row.temp_key, 'notes', e.target.value)} />
@@ -2310,14 +2691,14 @@ function Products() {
                   )}
 
                   {processingStep === 2 && (
-                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm" data-tour="products-processing-wip-section">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">WIP Products</h4>
                       </div>
                       {processingWips.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
                           <div className="grid gap-2 sm:grid-cols-2">
-                            <Input placeholder="WIP name" value={row.name} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'name', e.target.value)} />
+                            <Input placeholder="Enter product name" value={row.name} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'name', e.target.value)} />
                             <select value={row.status} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
                               <option value="ACTIVE">Active</option>
                               <option value="INACTIVE">Inactive</option>
@@ -2329,9 +2710,9 @@ function Products() {
                               <option value="">No unit</option>
                               {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
                             </select>
-                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'reorder_point', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'safety_stock', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'target_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Reorder point" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety stock" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target stock" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'target_stock', e.target.value)} />
                           </div>
                           <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingWips, row.temp_key, 'notes', e.target.value)} />
                           <div className="grid max-h-32 gap-2 overflow-y-auto sm:grid-cols-2">
@@ -2354,14 +2735,14 @@ function Products() {
                   )}
 
                   {processingStep === 3 && (
-                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+                    <div className="space-y-3 rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm" data-tour="products-processing-finished-section">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">FINISHED Products</h4>
                       </div>
                       {processingFinished.map((row) => (
                         <div key={row.temp_key} className="rounded-md border border-olive-light/30 p-3 space-y-2">
                           <div className="grid gap-2 sm:grid-cols-2">
-                            <Input placeholder="Finished name" value={row.name} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'name', e.target.value)} />
+                            <Input placeholder="Enter product name" value={row.name} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'name', e.target.value)} />
                             <select value={row.status} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'status', e.target.value)} className="rounded-md border border-olive-light/60 px-3 py-2 text-sm">
                               <option value="ACTIVE">Active</option>
                               <option value="INACTIVE">Inactive</option>
@@ -2373,9 +2754,9 @@ function Products() {
                               <option value="">No unit</option>
                               {units.map((unit) => <option key={unit.id} value={unit.id}>{unit.name} {unit.symbol ? `(${unit.symbol})` : ''}</option>)}
                             </select>
-                            <Input type="number" step="any" placeholder="Reorder" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'reorder_point', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Safety" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'safety_stock', e.target.value)} />
-                            <Input type="number" step="any" placeholder="Target" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'target_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Reorder point" value={row.reorder_point} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'reorder_point', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Safety stock" value={row.safety_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'safety_stock', e.target.value)} />
+                            <Input type="number" step="any" placeholder="Target stock" value={row.target_stock} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'target_stock', e.target.value)} />
                           </div>
                           <Input placeholder="Notes (optional)" value={row.notes} onChange={(e) => updateDraftField(setProcessingFinished, row.temp_key, 'notes', e.target.value)} />
                           <div className="grid max-h-32 gap-2 overflow-y-auto sm:grid-cols-2">
@@ -2410,8 +2791,9 @@ function Products() {
                     <Label htmlFor="product-name">Name *</Label>
                     <Input
                       id="product-name"
+                      data-tour="products-name-field"
                       name="name"
-                      placeholder="e.g. Raw Macadamia Kernel"
+                      placeholder="Enter product name"
                       value={formData.name}
                       onChange={handleFormChange}
                       className="mt-1"
@@ -2461,12 +2843,12 @@ function Products() {
                 ) : null}
                 <div className="mt-4 grid gap-4 sm:grid-cols-1">
                   {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === 'OPERATIONAL' ? (
-                    <div>
+                    <div data-tour="products-type-field">
                       <Label>Product type</Label>
                       <p className="mt-1 rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark">Operational (OP)</p>
                     </div>
                   ) : (
-                    <div>
+                    <div data-tour="products-type-field">
                       <Label htmlFor="product-type">Product type</Label>
                       <select
                         id="product-type"
@@ -2496,7 +2878,7 @@ function Products() {
               </div>
 
               {formData.product_type.toUpperCase() !== 'OP' ? (
-              <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm">
+              <div className="rounded-xl border border-olive-light/30 bg-white p-4 shadow-sm" data-tour="products-inventory-section">
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold text-text-dark">Composition</h3>
                   <p className="text-xs text-text-dark/60">
@@ -2633,7 +3015,7 @@ function Products() {
                       name="reorder_point"
                       type="number"
                       step="any"
-                      placeholder="e.g. 250"
+                      placeholder="Enter reorder point"
                       value={formData.reorder_point}
                       onChange={handleFormChange}
                       className="mt-1"
@@ -2647,7 +3029,7 @@ function Products() {
                       name="safety_stock"
                       type="number"
                       step="any"
-                      placeholder="e.g. 100"
+                      placeholder="Enter safety stock"
                       value={formData.safety_stock}
                       onChange={handleFormChange}
                       className="mt-1"
@@ -2661,7 +3043,7 @@ function Products() {
                       name="target_stock"
                       type="number"
                       step="any"
-                      placeholder="e.g. 500"
+                      placeholder="Enter target stock"
                       value={formData.target_stock}
                       onChange={handleFormChange}
                       className="mt-1"
@@ -2727,7 +3109,12 @@ function Products() {
                       <Button type="button" variant="ghost" onClick={handleCloseModal} disabled={isSubmitting}>
                         Cancel
                       </Button>
-                      <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                      <Button
+                        type="submit"
+                        className="bg-olive hover:bg-olive-dark"
+                        disabled={isSubmitting}
+                        data-tour="products-save-button"
+                      >
                         {isSubmitting ? 'Saving…' : processingEditMode ? 'Update Chain' : 'Save Chain'}
                       </Button>
                     </div>
@@ -2743,7 +3130,12 @@ function Products() {
                     >
                       Cancel
                     </Button>
-                    <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                    <Button
+                      type="submit"
+                      className="bg-olive hover:bg-olive-dark"
+                      disabled={isSubmitting}
+                      data-tour="products-save-button"
+                    >
                       {isSubmitting ? 'Saving…' : isEditMode ? 'Update Product' : 'Save Product'}
                     </Button>
                   </div>
@@ -2823,7 +3215,7 @@ function Products() {
                     name="reorder_point"
                     type="number"
                     step="any"
-                    placeholder="Leave blank = no change"
+                    placeholder="Leave blank to keep current value"
                     value={bulkEditForm.reorder_point}
                     onChange={handleBulkEditFormChange}
                     disabled={bulkActionLoading}
@@ -2836,7 +3228,7 @@ function Products() {
                     name="safety_stock"
                     type="number"
                     step="any"
-                    placeholder="Leave blank = no change"
+                    placeholder="Leave blank to keep current value"
                     value={bulkEditForm.safety_stock}
                     onChange={handleBulkEditFormChange}
                     disabled={bulkActionLoading}
@@ -2849,7 +3241,7 @@ function Products() {
                     name="target_stock"
                     type="number"
                     step="any"
-                    placeholder="Leave blank = no change"
+                    placeholder="Leave blank to keep current value"
                     value={bulkEditForm.target_stock}
                     onChange={handleBulkEditFormChange}
                     disabled={bulkActionLoading}
@@ -3023,6 +3415,17 @@ function Products() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={handleCloseTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

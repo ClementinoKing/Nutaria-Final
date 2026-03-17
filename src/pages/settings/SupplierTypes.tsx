@@ -3,13 +3,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, X } from 'lucide-react'
+import { Plus, RefreshCcw, X, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { toast } from 'sonner'
 import { Spinner } from '@/components/ui/spinner'
 import { useSupplierTypes, type SupplierType } from '@/hooks/useSupplierTypes'
+import SettingsTour from '@/components/tour/SettingsTour'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 
 interface FormData {
   code: string
@@ -165,6 +167,87 @@ function SupplierTypes() {
     }
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Supplier types overview',
+        description:
+          'Use this page to manage the supplier type labels that appear when creating and organizing suppliers.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="supplier-types-search"]',
+        title: 'Search existing supplier types',
+        description:
+          'Search by code or name before adding a new type so the list stays clean and consistent.',
+        placement: 'bottom',
+      },
+      {
+        id: 'results',
+        target: '[data-tour="supplier-types-results"]',
+        title: 'Review the current types',
+        description:
+          'This table shows the supplier types already available to the team.',
+        placement: 'top',
+      },
+      {
+        id: 'add-button',
+        target: '[data-tour="supplier-types-add-button"]',
+        title: 'Add a new supplier type',
+        description:
+          'Use this action whenever a new supplier category needs to be available in supplier records.',
+        placement: 'left',
+      },
+      {
+        id: 'name',
+        target: '[data-tour="supplier-types-name-field"]',
+        title: 'Enter the type name',
+        description:
+          'Start with the display name. The code is generated automatically from it.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'code',
+        target: '[data-tour="supplier-types-code-field"]',
+        title: 'Review the generated code',
+        description:
+          'The code is derived from the name so supplier type records stay consistent.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="supplier-types-save-button"]',
+        title: 'Save the supplier type',
+        description:
+          'Save when the name looks right to make the new type available across supplier forms.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+    ],
+    [supplierTypes.length]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading && supplierTypes.length === 0) {
     return (
       <PageLayout title="Supplier Types" activeItem="settings" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
@@ -178,10 +261,16 @@ function SupplierTypes() {
       title="Supplier Types"
       activeItem="settings"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Supplier Type
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="supplier-types-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Supplier Type
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -207,6 +296,7 @@ function SupplierTypes() {
               <Label htmlFor="st-search">Search</Label>
               <Input
                 id="st-search"
+                data-tour="supplier-types-search"
                 placeholder="Search by code or name"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -233,16 +323,18 @@ function SupplierTypes() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={filteredTypes}
-            rowKey="code"
-            emptyMessage={emptyMessage}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="supplier-types-results">
+            <ResponsiveTable
+              columns={columns}
+              data={filteredTypes}
+              rowKey="code"
+              emptyMessage={emptyMessage}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -271,8 +363,9 @@ function SupplierTypes() {
                 <Label htmlFor="st-name">Name</Label>
                 <Input
                   id="st-name"
+                  data-tour="supplier-types-name-field"
                   name="name"
-                  placeholder="e.g. Nut Supplier"
+                  placeholder="Enter supplier type name"
                   value={formData.name}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -287,8 +380,9 @@ function SupplierTypes() {
                 <Label htmlFor="st-code">Code (auto-generated)</Label>
                 <Input
                   id="st-code"
+                  data-tour="supplier-types-code-field"
                   name="code"
-                  placeholder="e.g. NUT"
+                  placeholder="Enter code"
                   value={formData.code}
                   onChange={handleFormChange}
                   className="mt-1"
@@ -306,7 +400,7 @@ function SupplierTypes() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting}>
+                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={isSubmitting} data-tour="supplier-types-save-button">
                   {isSubmitting ? 'Saving…' : 'Save'}
                 </Button>
               </div>
@@ -314,6 +408,17 @@ function SupplierTypes() {
           </div>
         </div>
       )}
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

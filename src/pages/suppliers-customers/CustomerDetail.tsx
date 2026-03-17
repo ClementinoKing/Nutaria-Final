@@ -108,7 +108,16 @@ function CustomerDetail() {
 
   if (loading) {
     return (
-      <PageLayout title="Customer Detail" activeItem="suppliersCustomers" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Customer Detail"
+        activeItem="suppliersCustomers"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={() => navigate('/suppliers-customers/customers')} aria-label="Back to Customers">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <Spinner text="Loading customer details..." />
       </PageLayout>
     )

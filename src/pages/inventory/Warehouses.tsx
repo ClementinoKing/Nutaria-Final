@@ -3,10 +3,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Warehouse, Plus, RefreshCcw, X, Edit, Trash2 } from 'lucide-react'
+import { Warehouse, Plus, RefreshCcw, X, Edit, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
+import SettingsTour from '@/components/tour/SettingsTour'
 import { supabase } from '@/lib/supabaseClient'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
@@ -28,6 +30,8 @@ const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
 })
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+const tableEditButtonClass = 'border-olive-light/60 bg-beige/30 text-text-dark hover:bg-beige/50'
+const tableDeleteButtonClass = 'text-red-600 hover:bg-red-50 hover:text-red-700'
 
 interface WarehouseData {
   id: number
@@ -285,23 +289,28 @@ function Warehouses() {
       {
         key: 'actions',
         header: 'Actions',
+        headerClassName: 'text-right',
+        cellClassName: 'text-right',
+        mobileValueClassName: 'text-right',
         render: (warehouse: WarehouseData) => (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(warehouse)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${warehouse.name ?? 'warehouse'}`}
+              aria-label={`Edit ${warehouse.name ?? 'warehouse'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(warehouse)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${warehouse.name ?? 'warehouse'}`}
+              aria-label={`Delete ${warehouse.name ?? 'warehouse'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -311,20 +320,22 @@ function Warehouses() {
         mobileRender: (warehouse: WarehouseData) => (
           <div className="flex items-center justify-end gap-2">
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="icon"
               onClick={() => handleEdit(warehouse)}
-              className="text-blue-600 hover:bg-blue-50"
-              title="Edit"
+              className={tableEditButtonClass}
+              title={`Edit ${warehouse.name ?? 'warehouse'}`}
+              aria-label={`Edit ${warehouse.name ?? 'warehouse'}`}
             >
               <Edit className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon"
               onClick={() => handleDeleteClick(warehouse)}
-              className="text-red-600 hover:bg-red-50"
-              title="Delete"
+              className={tableDeleteButtonClass}
+              title={`Delete ${warehouse.name ?? 'warehouse'}`}
+              aria-label={`Delete ${warehouse.name ?? 'warehouse'}`}
               disabled={isDeleting}
             >
               <Trash2 className="h-4 w-4" />
@@ -346,12 +357,12 @@ function Warehouses() {
     return 'No warehouses found.'
   }, [error, loading])
 
-  const handleOpenModal = () => {
+  const handleOpenModal = useCallback(() => {
     resetForm()
     setIsEditMode(false)
     setEditingId(null)
     setIsModalOpen(true)
-  }
+  }, [resetForm])
 
   const handleCloseModal = () => {
     resetForm()
@@ -473,6 +484,98 @@ function Warehouses() {
     }
   }
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'intro',
+        title: 'Warehouses settings overview',
+        description:
+          'Use this page to manage warehouse locations and control which ones are available across supplies, stock, and allocation flows.',
+        placement: 'center',
+      },
+      {
+        id: 'search',
+        target: '[data-tour="warehouses-search"]',
+        title: 'Search and filter warehouses',
+        description:
+          'Use search and status filtering to quickly find active or disabled warehouse locations.',
+        placement: 'bottom',
+      },
+      {
+        id: 'results',
+        target: '[data-tour="warehouses-results"]',
+        title: 'Review existing warehouses',
+        description:
+          'This section shows the current warehouse list, status, generated codes, and row actions for managing records.',
+        placement: 'top',
+      },
+      {
+        id: 'add-button',
+        target: '[data-tour="warehouses-add-button"]',
+        title: 'Add a warehouse',
+        description:
+          'Use this action whenever you need to create a new warehouse location for inventory and receiving.',
+        placement: 'left',
+      },
+      {
+        id: 'name',
+        target: '[data-tour="warehouses-name-field"]',
+        title: 'Enter the warehouse name',
+        description:
+          'Start with the warehouse name. The dialog opens automatically for this step and the code is generated from the name.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'code',
+        target: '[data-tour="warehouses-code-field"]',
+        title: 'Code is generated automatically',
+        description:
+          'The warehouse code is generated for consistency, so you can review it without typing it manually.',
+        placement: 'bottom',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'status',
+        target: '[data-tour="warehouses-enabled-field"]',
+        title: 'Control warehouse availability',
+        description:
+          'Use the Active toggle to control whether this warehouse can be selected in other parts of the system.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+      {
+        id: 'save',
+        target: '[data-tour="warehouses-save-button"]',
+        title: 'Save the warehouse',
+        description:
+          'When the details look right, save to make the warehouse available across receiving and stock workflows.',
+        placement: 'top',
+        beforeEnter: () => {
+          handleOpenModal()
+        },
+      },
+    ],
+    [handleOpenModal]
+  )
+
+  const {
+    closeTour,
+    currentStep,
+    currentStepIndex,
+    isLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading) {
     return (
       <PageLayout
@@ -490,10 +593,16 @@ function Warehouses() {
       title="Warehouses"
       activeItem="inventory"
       actions={
-        <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Warehouse
-        </Button>
+        <>
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={handleOpenModal} data-tour="warehouses-add-button">
+            <Plus className="mr-2 h-4 w-4" />
+            Add Warehouse
+          </Button>
+        </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
@@ -543,6 +652,7 @@ function Warehouses() {
               <Label htmlFor="warehouse-search">Search</Label>
               <Input
                 id="warehouse-search"
+                data-tour="warehouses-search"
                 placeholder="Search by name or code"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
@@ -588,21 +698,23 @@ function Warehouses() {
             </div>
           ) : null}
 
-          <ResponsiveTable
-            columns={columns}
-            data={loading ? [] : filteredWarehouses}
-            rowKey="id"
-            emptyMessage={emptyMessage}
-            tableClassName={undefined}
-            mobileCardClassName={undefined}
-            getRowClassName={undefined}
-            onRowClick={undefined}
-          />
+          <div data-tour="warehouses-results">
+            <ResponsiveTable
+              columns={columns}
+              data={loading ? [] : filteredWarehouses}
+              rowKey="id"
+              emptyMessage={emptyMessage}
+              tableClassName={undefined}
+              mobileCardClassName={undefined}
+              getRowClassName={undefined}
+              onRowClick={undefined}
+            />
+          </div>
         </CardContent>
       </Card>
 
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" data-tour="warehouses-modal">
           <div className="w-full max-w-xl rounded-lg bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/30 px-6 py-4">
               <div>
@@ -631,8 +743,9 @@ function Warehouses() {
                   <Label htmlFor="warehouse-name">Warehouse name</Label>
                   <Input
                     id="warehouse-name"
+                    data-tour="warehouses-name-field"
                     name="name"
-                    placeholder="e.g. Eastern Cape Hub"
+                    placeholder="Enter warehouse name"
                     value={formData.name}
                     onChange={handleFormChange}
                     disabled={isSubmitting}
@@ -646,8 +759,9 @@ function Warehouses() {
                   <Label htmlFor="warehouse-code">Code (auto-generated)</Label>
                   <Input
                     id="warehouse-code"
+                    data-tour="warehouses-code-field"
                     name="code"
-                    placeholder="e.g. EC-001"
+                    placeholder="Enter warehouse code"
                     value={formData.code}
                     onChange={handleFormChange}
                     disabled
@@ -657,7 +771,7 @@ function Warehouses() {
                     <p className="text-xs text-red-600">{formErrors.code}</p>
                   ) : null}
                 </div>
-                <div className="flex items-center gap-3 rounded-md border border-olive-light/40 bg-olive-light/10 px-4 py-3">
+                <div className="flex items-center gap-3 rounded-md border border-olive-light/40 bg-olive-light/10 px-4 py-3" data-tour="warehouses-enabled-field">
                   <input
                     id="warehouse-enabled"
                     name="enabled"
@@ -688,7 +802,12 @@ function Warehouses() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isSubmitting} className="bg-olive hover:bg-olive-dark">
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="bg-olive hover:bg-olive-dark"
+                  data-tour="warehouses-save-button"
+                >
                   {isSubmitting ? 'Saving…' : isEditMode ? 'Update Warehouse' : 'Save Warehouse'}
                 </Button>
               </div>
@@ -718,6 +837,17 @@ function Warehouses() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SettingsTour
+        open={isTourOpen}
+        step={currentStep}
+        currentStepIndex={currentStepIndex}
+        totalSteps={tourSteps.length}
+        isLastStep={isLastStep}
+        onClose={closeTour}
+        onBack={() => void previousStep()}
+        onNext={() => void nextStep()}
+      />
     </PageLayout>
   )
 }

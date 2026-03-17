@@ -877,7 +877,7 @@ function Customers() {
                         name="name"
                         value={formData.name}
                         onChange={handleFieldChange}
-                        placeholder="Acme Retail"
+                        placeholder="Enter customer name"
                         disabled={isSubmitting}
                         className={formErrors.fields.name ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                       />
@@ -893,7 +893,7 @@ function Customers() {
                         type="email"
                         value={formData.email}
                         onChange={handleFieldChange}
-                        placeholder="account@acmeretail.co.za"
+                        placeholder="Enter email address"
                         disabled={isSubmitting}
                         className={formErrors.fields.email ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                       />
@@ -928,7 +928,7 @@ function Customers() {
                               phone_dial_code: value,
                             }))
                           }
-                          placeholder="Code"
+                          placeholder="Dial code"
                           disabled={isSubmitting}
                         />
                         <Input
@@ -936,7 +936,7 @@ function Customers() {
                           name="phone"
                           value={formData.phone}
                           onChange={handleFieldChange}
-                          placeholder="21 555 0198"
+                          placeholder="Enter phone number"
                           disabled={isSubmitting}
                           className="col-span-2"
                         />
@@ -956,7 +956,7 @@ function Customers() {
                         value={formData.billing_address}
                         onChange={handleFieldChange}
                         rows={3}
-                        placeholder="Street, City, Postal Code"
+                        placeholder="Enter address"
                         disabled={isSubmitting}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
@@ -972,14 +972,14 @@ function Customers() {
                             <Input
                               value={entry.label}
                               onChange={(event) => handleAdditionalAddressChange('BILLING', entry.clientId, 'label', event.target.value)}
-                              placeholder="Label e.g. Finance office"
+                              placeholder="Enter address label"
                               disabled={isSubmitting}
                             />
                             <textarea
                               value={entry.address}
                               onChange={(event) => handleAdditionalAddressChange('BILLING', entry.clientId, 'address', event.target.value)}
                               rows={3}
-                              placeholder="Street, City, Postal Code"
+                              placeholder="Enter address"
                               disabled={isSubmitting}
                               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             />
@@ -1001,7 +1001,7 @@ function Customers() {
                         value={formData.shipping_address}
                         onChange={handleFieldChange}
                         rows={3}
-                        placeholder="Street, City, Postal Code"
+                        placeholder="Enter address"
                         disabled={isSubmitting}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />
@@ -1017,14 +1017,14 @@ function Customers() {
                             <Input
                               value={entry.label}
                               onChange={(event) => handleAdditionalAddressChange('SHIPPING', entry.clientId, 'label', event.target.value)}
-                              placeholder="Label e.g. Durban warehouse"
+                              placeholder="Enter address label"
                               disabled={isSubmitting}
                             />
                             <textarea
                               value={entry.address}
                               onChange={(event) => handleAdditionalAddressChange('SHIPPING', entry.clientId, 'address', event.target.value)}
                               rows={3}
-                              placeholder="Street, City, Postal Code"
+                              placeholder="Enter address"
                               disabled={isSubmitting}
                               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             />
@@ -1059,7 +1059,7 @@ function Customers() {
                                 onChange={(event) =>
                                   handleContactChange(contact.clientId, 'name', event.target.value)
                                 }
-                                placeholder="Nomsa Khumalo"
+                                placeholder="Enter contact name"
                                 disabled={isSubmitting}
                                 className={contactError ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                               />
@@ -1072,7 +1072,7 @@ function Customers() {
                                 onChange={(event) =>
                                   handleContactChange(contact.clientId, 'role', event.target.value)
                                 }
-                                placeholder="Procurement"
+                                placeholder="Enter role or department"
                                 disabled={isSubmitting}
                               />
                             </div>
@@ -1085,7 +1085,7 @@ function Customers() {
                                 onChange={(event) =>
                                   handleContactChange(contact.clientId, 'email', event.target.value)
                                 }
-                                placeholder="nomsa.khumalo@acmeretail.co.za"
+                                placeholder="Enter email address"
                                 disabled={isSubmitting}
                               />
                             </div>
@@ -1099,7 +1099,7 @@ function Customers() {
                                   onChange={(value) =>
                                     handleContactChange(contact.clientId, 'phone_dial_code', value)
                                   }
-                                  placeholder="Code"
+                                  placeholder="Dial code"
                                   disabled={isSubmitting}
                                 />
                                 <Input
@@ -1108,7 +1108,7 @@ function Customers() {
                                   onChange={(event) =>
                                     handleContactChange(contact.clientId, 'phone', event.target.value)
                                   }
-                                  placeholder="82 123 4567"
+                                  placeholder="Enter phone number"
                                   disabled={isSubmitting}
                                   className="col-span-2"
                                 />

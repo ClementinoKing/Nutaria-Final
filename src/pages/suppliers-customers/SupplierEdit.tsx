@@ -1074,7 +1074,7 @@ function SupplierEdit() {
                       name="name"
                       value={formData.name}
                       onChange={handleChange}
-                      placeholder="Acme Farms"
+                      placeholder="Enter supplier name"
                       disabled={saving}
                       className={formErrors.fields.name ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                     />
@@ -1112,7 +1112,7 @@ function SupplierEdit() {
                       name="country"
                       value={formData.country}
                       onChange={handleChange}
-                      placeholder="South Africa"
+                      placeholder="Enter country"
                       disabled={saving}
                     />
                   </div>
@@ -1124,7 +1124,7 @@ function SupplierEdit() {
                       name="phone"
                       value={formData.phone}
                       onChange={handleChange}
-                      placeholder="+27 21 555 1234"
+                      placeholder="Enter phone number"
                       disabled={saving}
                     />
                   </div>
@@ -1137,7 +1137,7 @@ function SupplierEdit() {
                       type="email"
                       value={formData.email}
                       onChange={handleChange}
-                      placeholder="hello@acmefarms.co.za"
+                      placeholder="Enter email address"
                       disabled={saving}
                       className={formErrors.fields.email ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                     />
@@ -1154,7 +1154,7 @@ function SupplierEdit() {
                     value={formData.address}
                     onChange={handleChange}
                     rows={3}
-                    placeholder="Street, City, Postal Code"
+                    placeholder="Enter address"
                     disabled={saving}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -1186,7 +1186,7 @@ function SupplierEdit() {
                         name="primary_contact_name"
                         value={formData.primary_contact_name}
                         onChange={handleChange}
-                        placeholder="Jane Smith"
+                        placeholder="Enter contact name"
                         disabled={saving}
                       />
                     </div>
@@ -1197,7 +1197,7 @@ function SupplierEdit() {
                         name="primary_contact_phone"
                         value={formData.primary_contact_phone}
                         onChange={handleChange}
-                        placeholder="+27 82 456 7890"
+                        placeholder="Enter phone number"
                         disabled={saving}
                       />
                     </div>
@@ -1209,7 +1209,7 @@ function SupplierEdit() {
                         type="email"
                         value={formData.primary_contact_email}
                         onChange={handleChange}
-                        placeholder="jane.smith@acmefarms.co.za"
+                        placeholder="Enter email address"
                         disabled={saving}
                         className={
                           formErrors.fields.primary_contact_email
@@ -1228,7 +1228,7 @@ function SupplierEdit() {
                         name="primary_contact_role"
                         value={formData.primary_contact_role}
                         onChange={handleChange}
-                        placeholder="Operations Manager"
+                        placeholder="Enter role"
                         disabled={saving}
                       />
                     </div>
@@ -1262,7 +1262,7 @@ function SupplierEdit() {
                                 onChange={(event) =>
                                   handleAdditionalContactChange(contact.clientId, 'name', event.target.value)
                                 }
-                                placeholder="John Banda"
+                                placeholder="Enter contact name"
                                 disabled={saving}
                               />
                             </div>
@@ -1273,7 +1273,7 @@ function SupplierEdit() {
                                 onChange={(event) =>
                                   handleAdditionalContactChange(contact.clientId, 'phone', event.target.value)
                                 }
-                                placeholder="+27 82 456 7890"
+                                placeholder="Enter phone number"
                                 disabled={saving}
                               />
                             </div>
@@ -1284,7 +1284,7 @@ function SupplierEdit() {
                                 onChange={(event) =>
                                   handleAdditionalContactChange(contact.clientId, 'role', event.target.value)
                                 }
-                                placeholder="Accounts Contact"
+                                placeholder="Enter role"
                                 disabled={saving}
                               />
                             </div>
@@ -1296,7 +1296,7 @@ function SupplierEdit() {
                                 onChange={(event) =>
                                   handleAdditionalContactChange(contact.clientId, 'email', event.target.value)
                                 }
-                                placeholder="john.banda@example.com"
+                                placeholder="Enter email address"
                                 disabled={saving}
                                 className={
                                   formErrors.fields[`contact_email_${contact.clientId}`]
@@ -1334,7 +1334,7 @@ function SupplierEdit() {
                         min="0"
                         value={formData.supplier_age}
                         onChange={handleChange}
-                        placeholder="e.g. 12"
+                        placeholder="Enter age"
                         disabled={saving}
                         className={formErrors.fields.supplier_age ? 'border-red-300 focus-visible:ring-red-500' : undefined}
                       />
@@ -1349,7 +1349,7 @@ function SupplierEdit() {
                         name="gender"
                         value={formData.gender}
                         onChange={handleChange}
-                        placeholder="e.g. Female"
+                        placeholder="Enter gender"
                         disabled={saving}
                       />
                     </div>
@@ -1362,7 +1362,7 @@ function SupplierEdit() {
                         min="0"
                         value={formData.number_of_employees}
                         onChange={handleChange}
-                        placeholder="e.g. 45"
+                        placeholder="Enter number"
                         disabled={saving}
                         className={
                           formErrors.fields.number_of_employees ? 'border-red-300 focus-visible:ring-red-500' : undefined
@@ -1381,7 +1381,7 @@ function SupplierEdit() {
                         min="0"
                         value={formData.number_of_dependants}
                         onChange={handleChange}
-                        placeholder="e.g. 3"
+                        placeholder="Enter number"
                         disabled={saving}
                         className={
                           formErrors.fields.number_of_dependants ? 'border-red-300 focus-visible:ring-red-500' : undefined
@@ -1415,7 +1415,7 @@ function SupplierEdit() {
                         name="account_number"
                         value={formData.account_number}
                         onChange={handleChange}
-                        placeholder="e.g. 1234567890"
+                        placeholder="Enter account number"
                         disabled={saving}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       />

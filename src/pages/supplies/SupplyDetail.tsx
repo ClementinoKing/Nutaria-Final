@@ -7,7 +7,9 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { SUPPLY_QUALITY_PARAMETERS, SupplyQualityParameter } from '@/constants/supplyQuality'
 import { supabase } from '@/lib/supabaseClient'
-import { Download, Loader2, Pencil } from 'lucide-react'
+import { ArrowLeft, Download, Loader2, Pencil, Sparkles } from 'lucide-react'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import SettingsTour from '@/components/tour/SettingsTour'
 
 interface QualityParameterWithId extends SupplyQualityParameter {
   id?: number | null
@@ -1102,14 +1104,96 @@ function SupplyDetail() {
     } catch (error) {
       console.error('Error generating PDF:', error)
       alert('Failed to generate PDF. Please try again.')
-    } finally {
-      setIsGeneratingPDF(false)
-    }
+  } finally {
+    setIsGeneratingPDF(false)
   }
+}
+
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'header',
+        target: '[data-tour="supply-detail-header"]',
+        title: 'Supply summary',
+        description: 'Review the document number, status, and quality state at a glance.',
+        placement: 'bottom',
+      },
+      {
+        id: 'facts',
+        target: '[data-tour="supply-detail-facts"]',
+        title: 'Key metrics',
+        description: 'These cards summarize supplier, timing, and quantity information.',
+        placement: 'top',
+      },
+      {
+        id: 'batches',
+        target: '[data-tour="supply-detail-batches"]',
+        title: 'Traceable batches',
+        description: 'Each batch represents a lot created during receiving.',
+        placement: 'top',
+      },
+      {
+        id: 'quality',
+        target: '[data-tour="supply-detail-quality"]',
+        title: 'Quality checks',
+        description: 'Inspect quality results recorded for each batch.',
+        placement: 'top',
+      },
+      {
+        id: 'documents',
+        target: '[data-tour="supply-detail-documents"]',
+        title: 'Supply documents',
+        description: 'Verify documents and certificates captured during receiving.',
+        placement: 'top',
+      },
+      {
+        id: 'packaging',
+        target: '[data-tour="supply-detail-packaging"]',
+        title: 'Packaging quality',
+        description: 'Review packaging inspection results per batch.',
+        placement: 'top',
+      },
+      {
+        id: 'signoff',
+        target: '[data-tour="supply-detail-signoff"]',
+        title: 'Supplier sign-off',
+        description: 'Confirm the supplier acknowledgement and signature.',
+        placement: 'top',
+      },
+      {
+        id: 'timeline',
+        target: '[data-tour="supply-detail-timeline"]',
+        title: 'Activity timeline',
+        description: 'Track operational events captured for this supply.',
+        placement: 'top',
+      },
+    ],
+    []
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
 
   if (loadingDetail) {
     return (
-      <PageLayout title="Supply Detail" activeItem="supplies" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+      <PageLayout
+        title="Supply Detail"
+        activeItem="supplies"
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Supplies">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        }
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-8 w-8 animate-spin text-olive" />
         </div>
@@ -1122,9 +1206,9 @@ function SupplyDetail() {
       <PageLayout
         title="Supply Detail"
         activeItem="supplies"
-        actions={
-          <Button variant="outline" onClick={handleBack}>
-            Back to Supplies
+        leadingActions={
+          <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Supplies">
+            <ArrowLeft className="h-4 w-4" />
           </Button>
         }
         contentClassName="px-4 sm:px-6 lg:px-8 py-8"
@@ -1352,9 +1436,18 @@ function SupplyDetail() {
     <PageLayout
       title="Supply Detail"
       activeItem="supplies"
+      leadingActions={
+        <Button size="icon" variant="outline" onClick={handleBack} aria-label="Back to Supplies">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      }
       actions={
         <>
-          <Button variant="outline" onClick={handleEdit} className="gap-2">
+          <Button variant="outline" onClick={() => void openTour()}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Take tour
+          </Button>
+          <Button className="bg-olive hover:bg-olive-dark gap-2" onClick={handleEdit}>
             <Pencil className="h-4 w-4" />
             Edit supply
           </Button>
@@ -1376,15 +1469,12 @@ function SupplyDetail() {
               </>
             )}
           </Button>
-          <Button variant="outline" onClick={handleBack}>
-            Back to Supplies
-          </Button>
         </>
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="space-y-6">
-        <Card className="border-olive-light/40 bg-white">
+        <Card className="border-olive-light/40 bg-white" data-tour="supply-detail-header">
           <CardContent className="flex flex-col gap-5 px-6 py-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="space-y-2">
               <CardTitle className="text-2xl font-semibold text-text-dark">{supply.doc_no}</CardTitle>
@@ -1417,7 +1507,7 @@ function SupplyDetail() {
           </CardContent>
         </Card>
 
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-3" data-tour="supply-detail-facts">
           <Card className="border-olive-light/30 bg-white">
             <CardHeader className="px-6 pt-6 pb-2">
               <CardTitle className="text-base font-semibold text-text-dark">
@@ -1473,7 +1563,7 @@ function SupplyDetail() {
           </Card>
         </div>
 
-        <Card className="border-olive-light/30 bg-white">
+        <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-batches">
           <CardHeader>
             <CardTitle className="text-text-dark">Batches</CardTitle>
             <CardDescription>Traceability details for lots created during receiving.</CardDescription>
@@ -1491,7 +1581,7 @@ function SupplyDetail() {
           </CardContent>
         </Card>
 
-        <Card className="border-olive-light/30 bg-white">
+        <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-quality">
           <CardHeader>
             <CardTitle className="text-text-dark">Quality checks by product</CardTitle>
             <CardDescription>Inspection results recorded during receiving.</CardDescription>
@@ -1581,7 +1671,7 @@ function SupplyDetail() {
           </CardContent>
         </Card>
 
-        <Card className="border-olive-light/30 bg-white">
+        <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-timeline">
           <CardHeader>
             <CardTitle className="text-text-dark">Activity Timeline</CardTitle>
             <CardDescription>Operational events captured for this supply.</CardDescription>
@@ -1611,7 +1701,7 @@ function SupplyDetail() {
         </Card>
 
         {supplyDocuments.length > 0 && (
-          <Card className="border-olive-light/30 bg-white">
+          <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-documents">
             <CardHeader>
               <CardTitle className="text-text-dark">Supply Documents</CardTitle>
               <CardDescription>Document information and uploaded files for this supply.</CardDescription>
@@ -1653,7 +1743,7 @@ function SupplyDetail() {
         )}
 
         {vehicleInspection && (
-          <Card className="border-olive-light/30 bg-white">
+          <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-vehicle">
             <CardHeader>
               <CardTitle className="text-text-dark">Vehicle Inspections</CardTitle>
               <CardDescription>Vehicle inspection checklist completed during receiving.</CardDescription>
@@ -1710,7 +1800,7 @@ function SupplyDetail() {
         )}
 
         {packagingChecksWithItems.length > 0 && (
-          <Card className="border-olive-light/30 bg-white">
+          <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-packaging">
             <CardHeader>
               <CardTitle className="text-text-dark">Packaging Quality Parameters</CardTitle>
               <CardDescription>Packaging quality evaluation results.</CardDescription>
@@ -1776,7 +1866,7 @@ function SupplyDetail() {
         )}
 
         {supplierSignOff && (
-          <Card className="border-olive-light/30 bg-white">
+          <Card className="border-olive-light/30 bg-white" data-tour="supply-detail-signoff">
             <CardHeader>
               <CardTitle className="text-text-dark">Supplier Sign-Off</CardTitle>
               <CardDescription>Supplier acknowledgment and signature.</CardDescription>
@@ -1838,6 +1928,16 @@ function SupplyDetail() {
           </Card>
         )}
       </div>
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={closeTour}
+      />
     </PageLayout>
   )
 }
