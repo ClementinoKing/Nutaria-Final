@@ -21,9 +21,12 @@ interface ResponsiveTableProps<T = unknown> {
   rowKey: string | ((item: T, index: number) => string | number)
   emptyMessage?: string
   tableClassName?: string
+  containerClassName?: string
+  theadClassName?: string
   mobileCardClassName?: string
   getRowClassName?: (item: T, index: number) => string | undefined
   onRowClick?: (item: T, index: number) => void
+  density?: 'comfortable' | 'compact'
 }
 
 function getColumnKey<T>(column: Column<T>, index: number): string {
@@ -52,9 +55,12 @@ function ResponsiveTable<T = unknown>({
   rowKey,
   emptyMessage = 'No records found',
   tableClassName,
+  containerClassName,
+  theadClassName,
   mobileCardClassName,
   getRowClassName,
   onRowClick,
+  density = 'comfortable',
 }: ResponsiveTableProps<T>) {
   if (!Array.isArray(columns) || columns.length === 0) {
     return null
@@ -83,17 +89,20 @@ function ResponsiveTable<T = unknown>({
     return undefined
   }
 
+  const headerPadding = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3'
+  const cellPadding = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3'
+
   return (
     <div className="w-full">
       <div className="hidden sm:block">
-        <div className="overflow-x-auto">
+        <div className={cn('overflow-x-auto', containerClassName)}>
           <table
             className={cn(
               'min-w-full divide-y divide-olive-light/20 bg-white',
               tableClassName
             )}
           >
-            <thead className="bg-olive-light/10">
+            <thead className={cn('bg-olive-light/10', theadClassName)}>
               <tr>
                 {columns.map((column, columnIndex) => {
                   const columnKey = getColumnKey(column, columnIndex)
@@ -102,7 +111,8 @@ function ResponsiveTable<T = unknown>({
                       key={columnKey}
                       scope="col"
                       className={cn(
-                        'px-4 py-3 text-left text-sm font-medium text-text-dark',
+                        headerPadding,
+                        'text-left text-sm font-medium text-text-dark',
                         column.headerClassName
                       )}
                     >
@@ -151,7 +161,8 @@ function ResponsiveTable<T = unknown>({
                         <td
                           key={columnKey}
                           className={cn(
-                            'px-4 py-3 text-sm text-text-dark',
+                            cellPadding,
+                            'text-sm text-text-dark',
                             column.cellClassName
                           )}
                         >

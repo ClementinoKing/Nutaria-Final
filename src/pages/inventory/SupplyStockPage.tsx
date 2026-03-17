@@ -788,18 +788,6 @@ interface AggregatedRecord {
     [coverageThreshold]
   )
 
-  if (loading) {
-    return (
-      <PageLayout
-        title="Supply Stock"
-        activeItem="inventory"
-        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
-      >
-        <Spinner text="Loading supply stock..." />
-      </PageLayout>
-    )
-  }
-
   const tourSteps = useMemo<TourStep[]>(
     () => [
       {
@@ -847,6 +835,18 @@ interface AggregatedRecord {
     openTour,
     previousStep,
   } = useSettingsTour(tourSteps)
+
+  if (loading) {
+    return (
+      <PageLayout
+        title="Supply Stock"
+        activeItem="inventory"
+        contentClassName="px-4 sm:px-6 lg:px-8 py-8"
+      >
+        <Spinner text="Loading supply stock..." />
+      </PageLayout>
+    )
+  }
 
   return (
     <PageLayout
