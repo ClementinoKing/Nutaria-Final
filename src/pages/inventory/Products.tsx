@@ -31,6 +31,7 @@ interface ComponentProduct {
   name: string | null
   sku: string | null
   product_type: 'RAW' | 'WIP' | 'FINISHED' | 'OP' | null
+  is_mixed_product?: boolean | null
 }
 
 interface ProductComponentRow {
@@ -51,6 +52,7 @@ interface Product {
   created_at: string | null
   updated_at: string | null
   product_type: 'RAW' | 'WIP' | 'FINISHED' | 'OP' | null
+  is_mixed_product?: boolean | null
   product_components?: ProductComponentRow[] | null
 }
 
@@ -79,6 +81,7 @@ interface ProductFormData {
   status: string
   notes: string
   product_type: string
+  is_mixed_product: boolean
   component_ids: number[]
 }
 
@@ -99,7 +102,7 @@ interface BulkEditFormData {
   wip_component_ids: number[]
 }
 
-type CreationMode = 'OPERATIONAL' | 'PROCESSING' | null
+type CreationMode = 'OPERATIONAL' | 'PROCESSING' | 'MIXED' | null
 type ProductCatalogTab = 'RAW' | 'PROCESSED' | 'OPERATIONAL'
 
 interface ProcessingDraftBase {
@@ -178,6 +181,7 @@ function createEmptyProductForm(existingProducts: Product[] = [], units: Unit[] 
     status: 'ACTIVE',
     notes: '',
     product_type: 'RAW',
+    is_mixed_product: false,
     component_ids: [],
   }
 }
@@ -321,6 +325,7 @@ function Products() {
       created_at,
       updated_at,
       product_type,
+      is_mixed_product,
       product_components:product_components!product_components_parent_product_id_fkey (
         component_product:products!product_components_component_product_id_fkey (id, name, sku, product_type)
       )
@@ -336,7 +341,7 @@ function Products() {
       const fallback = await supabase
         .from('products')
         .select(
-          'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
+          'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type, is_mixed_product'
         )
         .order('updated_at', { ascending: false, nullsFirst: false })
       data = fallback.data ?? []
@@ -466,6 +471,10 @@ function Products() {
     () => products.filter((p) => (p.product_type || '').toUpperCase() === 'WIP'),
     [products]
   )
+  const finishedProductOptions = useMemo(
+    () => products.filter((p) => (p.product_type || '').toUpperCase() === 'FINISHED'),
+    [products]
+  )
   const [componentSearch, setComponentSearch] = useState('')
   const [bulkComponentSearch, setBulkComponentSearch] = useState('')
   const filteredRawOptions = useMemo(() => {
@@ -496,6 +505,20 @@ function Products() {
       return (a.name || '').localeCompare(b.name || '')
     })
   }, [componentSearch, wipProductOptions, formData.component_ids])
+  const filteredFinishedOptions = useMemo(() => {
+    const q = componentSearch.trim().toLowerCase()
+    const filtered = finishedProductOptions.filter((p) => {
+      if (!q) return true
+      return (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
+    })
+    const selected = new Set(formData.component_ids)
+    return filtered.sort((a, b) => {
+      const aSel = selected.has(a.id) ? 1 : 0
+      const bSel = selected.has(b.id) ? 1 : 0
+      if (aSel !== bSel) return bSel - aSel
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [componentSearch, finishedProductOptions, formData.component_ids])
   const filteredRawOptionsBulk = useMemo(() => {
     const q = bulkComponentSearch.trim().toLowerCase()
     const filtered = rawProductOptions.filter((p) => {
@@ -999,8 +1022,13 @@ function Products() {
       resetProcessingWizard()
       return
     }
+    if (tourFlow === 'MIXED') {
+      setCreationMode('MIXED')
+      setFormData((prev) => ({ ...prev, product_type: 'FINISHED', is_mixed_product: true, component_ids: [] }))
+      return
+    }
     setCreationMode('OPERATIONAL')
-    setFormData((prev) => ({ ...prev, product_type: 'OP' }))
+    setFormData((prev) => ({ ...prev, product_type: 'OP', is_mixed_product: false }))
   }, [ensureCreateModalOpen, resetProcessingWizard, tourFlow])
 
   const openProcessingTourStep = useCallback(
@@ -1039,6 +1067,7 @@ function Products() {
         status: (product.status ?? 'ACTIVE').toUpperCase(),
         notes: product.notes ?? '',
         product_type: (product.product_type ?? 'RAW').toUpperCase(),
+        is_mixed_product: Boolean(product.is_mixed_product),
         component_ids:
           product.product_components
             ?.map((row) => row?.component_product?.id)
@@ -1289,9 +1318,20 @@ function Products() {
 
   const handleFormChange = (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = event.target
+    const nextValue =
+      event.target instanceof HTMLInputElement && event.target.type === 'checkbox'
+        ? event.target.checked
+        : value
     setFormData((previous) => ({
       ...previous,
-      [name]: value,
+      [name]: nextValue,
+      ...(name === 'product_type'
+        ? {
+            is_mixed_product: String(value).toUpperCase() === 'FINISHED'
+              ? previous.is_mixed_product
+              : false,
+          }
+        : {}),
     }))
   }
 
@@ -1449,11 +1489,17 @@ function Products() {
     }
 
     const type = (formData.product_type || 'RAW').toUpperCase()
+    const isMixedMode = modalMode === 'create' && creationMode === 'MIXED'
     if (type === 'WIP' && formData.component_ids.length === 0) {
       errors.components = 'Select at least one raw material for WIP products.'
     }
     if (type === 'FINISHED' && formData.component_ids.length === 0) {
-      errors.components = 'Select at least one WIP for finished products.'
+      errors.components = isMixedMode
+        ? 'Select at least one finished product for a mixed finished product.'
+        : 'Select at least one WIP for finished products.'
+    }
+    if (formData.is_mixed_product && type !== 'FINISHED') {
+      errors.product_type = 'Only finished products can be marked as mixed products.'
     }
     setFormErrors(errors)
     return Object.keys(errors).length === 0
@@ -1468,6 +1514,7 @@ function Products() {
     const isEditing = modalMode === 'edit' && editingProduct?.id !== undefined
     try {
       const productType = (formData.product_type || 'RAW').toUpperCase()
+      const isMixedMode = modalMode === 'create' && creationMode === 'MIXED'
       const productTypeVal =
         productType === 'RAW' || productType === 'WIP' || productType === 'FINISHED' || productType === 'OP'
           ? productType
@@ -1476,7 +1523,7 @@ function Products() {
         productTypeVal === 'WIP'
           ? rawProductOptions.map((p) => p.id)
           : productTypeVal === 'FINISHED'
-          ? wipProductOptions.map((p) => p.id)
+          ? (isMixedMode ? finishedProductOptions : wipProductOptions).map((p) => p.id)
           : []
       )
       const sanitizedComponentIds =
@@ -1508,6 +1555,7 @@ function Products() {
         status: (formData.status || 'ACTIVE').toUpperCase(),
         notes: formData.notes.trim() || null,
         product_type: productTypeVal,
+        is_mixed_product: productTypeVal === 'FINISHED' ? (isMixedMode || formData.is_mixed_product) : false,
       }
 
       if (isEditing) {
@@ -1516,7 +1564,7 @@ function Products() {
           .update(payload)
           .eq('id', editingProduct.id)
           .select(
-            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type, is_mixed_product'
           )
           .single()
 
@@ -1533,7 +1581,7 @@ function Products() {
           .from('products')
           .insert(payload)
           .select(
-            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type'
+            'id, sku, name, category, base_unit_id, reorder_point, safety_stock, target_stock, status, notes, created_at, updated_at, product_type, is_mixed_product'
           )
           .single()
 
@@ -2060,6 +2108,13 @@ function Products() {
                 setTourFlow('PROCESSING')
               },
             },
+            {
+              label: tourFlow === 'MIXED' ? 'Mixed product selected' : 'Mixed product',
+              variant: tourFlow === 'MIXED' ? 'default' : 'outline',
+              onSelect: () => {
+                setTourFlow('MIXED')
+              },
+            },
           ],
           beforeEnter: () => {
             openCreationModeTourModal()
@@ -2137,7 +2192,7 @@ function Products() {
           )
         }
 
-        if (tourFlow === 'OPERATIONAL') {
+        if (tourFlow === 'OPERATIONAL' || tourFlow === 'MIXED') {
           steps.push(
             {
               id: 'name',
@@ -2155,7 +2210,9 @@ function Products() {
               target: '[data-tour="products-type-field"]',
               title: 'Confirm the product type',
               description:
-                'Operational products stay on the simple form, while raw, WIP, and finished products support process relationships.',
+                tourFlow === 'MIXED'
+                  ? 'Mixed product mode creates a finished product and lets you link it to existing finished-product components.'
+                  : 'Operational products stay on the simple form, while raw, WIP, and finished products support process relationships.',
               placement: 'bottom',
               beforeEnter: () => {
                 openSelectedTourFlow()
@@ -2590,8 +2647,8 @@ function Products() {
                   <div className="rounded-xl border border-olive-light/30 bg-olive-light/10 p-4" data-tour="products-creation-mode">
                     <h3 className="text-sm font-semibold text-text-dark">Choose Creation Mode</h3>
                     <p className="text-xs text-text-dark/60 mt-1">Step 1 of 4</p>
-                    <p className="text-xs text-text-dark/60 mt-1">Operational products use a simple form. Processing products use RAW → WIP → FINISHED wizard.</p>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <p className="text-xs text-text-dark/60 mt-1">Operational products use a simple form. Processing products use RAW → WIP → FINISHED wizard. Mixed products create finished products from existing finished-product components.</p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
                       <Button
                         type="button"
                         variant="outline"
@@ -2608,10 +2665,21 @@ function Products() {
                         type="button"
                         variant="outline"
                         className="justify-start border-olive-light/60"
+                        onClick={() => {
+                          setCreationMode('MIXED')
+                          setFormData((prev) => ({ ...prev, product_type: 'FINISHED', is_mixed_product: true, component_ids: [] }))
+                        }}
+                      >
+                        Mixed product
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-start border-olive-light/60"
                         data-tour="products-operational-option"
                         onClick={() => {
                           setCreationMode('OPERATIONAL')
-                          setFormData((prev) => ({ ...prev, product_type: 'OP' }))
+                          setFormData((prev) => ({ ...prev, product_type: 'OP', is_mixed_product: false }))
                         }}
                       >
                         Operational product
@@ -2843,10 +2911,12 @@ function Products() {
                   </div>
                 ) : null}
                 <div className="mt-4 grid gap-4 sm:grid-cols-1">
-                  {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && creationMode === 'OPERATIONAL' ? (
+                  {FEATURE_PROCESSING_PRODUCT_WIZARD && modalMode === 'create' && (creationMode === 'OPERATIONAL' || creationMode === 'MIXED') ? (
                     <div data-tour="products-type-field">
                       <Label>Product type</Label>
-                      <p className="mt-1 rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark">Operational (OP)</p>
+                      <p className="mt-1 rounded-md border border-olive-light/60 bg-white px-3 py-2 text-sm text-text-dark">
+                        {creationMode === 'MIXED' ? 'Finished (Mixed)' : 'Operational (OP)'}
+                      </p>
                     </div>
                   ) : (
                     <div data-tour="products-type-field">
@@ -2875,6 +2945,24 @@ function Products() {
                       ) : null}
                     </div>
                   )}
+                  {formData.product_type.toUpperCase() === 'FINISHED' ? (
+                    <label className="flex items-start gap-3 rounded-md border border-olive-light/30 bg-white px-3 py-3 text-sm text-text-dark">
+                      <input
+                        type="checkbox"
+                        name="is_mixed_product"
+                        checked={formData.is_mixed_product}
+                        onChange={handleFormChange}
+                        disabled={isSubmitting}
+                        className="mt-1"
+                      />
+                      <span>
+                        Mark as mixed finished product.
+                        <span className="block text-xs text-text-dark/60">
+                          Mixed finished products can be selected in Mixed Pack Processing.
+                        </span>
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
               </div>
 
@@ -2883,7 +2971,9 @@ function Products() {
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold text-text-dark">Composition</h3>
                   <p className="text-xs text-text-dark/60">
-                    Link products to their inputs. WIP → raw materials. Finished → WIPs.
+                    {modalMode === 'create' && creationMode === 'MIXED'
+                      ? 'Link this mixed finished product to the finished products that make it up.'
+                      : 'Link products to their inputs. WIP → raw materials. Finished → WIPs.'}
                   </p>
                 </div>
                 {(formData.product_type.toUpperCase() === 'WIP' || formData.product_type.toUpperCase() === 'FINISHED') && (
@@ -2946,33 +3036,37 @@ function Products() {
 
                 {formData.product_type.toUpperCase() === 'FINISHED' && (
                   <div className="space-y-3">
-                    <p className="text-xs text-text-dark/60">Select WIP inputs (one or more).</p>
+                    <p className="text-xs text-text-dark/60">
+                      {modalMode === 'create' && creationMode === 'MIXED'
+                        ? 'Select finished-product inputs (one or more).'
+                        : 'Select WIP inputs (one or more).'}
+                    </p>
                     <div className="grid max-h-64 overflow-y-auto gap-2 sm:grid-cols-2">
-                      {filteredWipOptions
+                      {(modalMode === 'create' && creationMode === 'MIXED' ? filteredFinishedOptions : filteredWipOptions)
                         .filter((p) => p.id !== editingProductId)
-                        .map((wip) => (
+                        .map((component) => (
                           <label
-                            key={wip.id}
+                            key={component.id}
                             className="flex items-center gap-2 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-sm text-text-dark"
                           >
                             <input
                               type="checkbox"
                               className="h-4 w-4 rounded border-olive-light/60"
-                              checked={formData.component_ids.includes(wip.id)}
+                              checked={formData.component_ids.includes(component.id)}
                               onChange={(e) => {
                                 const checked = e.target.checked
                                 setFormData((prev) => {
                                   const next = new Set(prev.component_ids)
-                                  if (checked) next.add(wip.id)
-                                  else next.delete(wip.id)
+                                  if (checked) next.add(component.id)
+                                  else next.delete(component.id)
                                   return { ...prev, component_ids: Array.from(next) }
                                 })
                               }}
                               disabled={isSubmitting}
                             />
                             <span className="flex-1">
-                              {wip.name ?? 'Unnamed WIP'}
-                              {wip.sku ? <span className="text-text-dark/50"> ({wip.sku})</span> : null}
+                              {component.name ?? (modalMode === 'create' && creationMode === 'MIXED' ? 'Unnamed finished product' : 'Unnamed WIP')}
+                              {component.sku ? <span className="text-text-dark/50"> ({component.sku})</span> : null}
                             </span>
                           </label>
                         ))}

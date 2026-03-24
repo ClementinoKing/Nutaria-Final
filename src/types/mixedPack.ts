@@ -27,6 +27,7 @@ export interface MixedPackCreateLine {
 
 export interface CreateMixedPackPayload {
   p_pack_name: string
+  p_mixed_product_id: number | null
   p_defined_pack_size: number | null
   p_warehouse_id: number | null
   p_unit_id: number | null

@@ -39,8 +39,15 @@ interface BoxPackRuleOption {
   box_unit_name?: string | null
 }
 
+interface MixedFinishedProductOption {
+  id: number
+  name: string
+  sku: string | null
+}
+
 interface FormState {
   packName: string
+  mixedProductId: string
   definedPackSize: string
   requireExactTotal: boolean
   packetUnitCode: string
@@ -53,6 +60,7 @@ interface FormState {
 
 const defaultFormState: FormState = {
   packName: '',
+  mixedProductId: '',
   definedPackSize: '',
   requireExactTotal: true,
   packetUnitCode: '',
@@ -93,6 +101,7 @@ function MixedPacks() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createStep, setCreateStep] = useState<1 | 2>(1)
   const [sourceSearch, setSourceSearch] = useState('')
   const [form, setForm] = useState<FormState>(defaultFormState)
   const [sourceRows, setSourceRows] = useState<MixedPackSourceOption[]>([])
@@ -103,29 +112,78 @@ function MixedPacks() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [packagingUnits, setPackagingUnits] = useState<PackagingUnitOption[]>([])
   const [boxPackRules, setBoxPackRules] = useState<BoxPackRuleOption[]>([])
+  const [mixedFinishedProducts, setMixedFinishedProducts] = useState<MixedFinishedProductOption[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
 
-    const [sourcesRes, batchesRes, unitsRes, rulesRes] = await Promise.all([
+    const [sourcesRes, batchesRes, unitsRes, rulesRes, mixedProductsRes] = await Promise.all([
       supabase
-        .from('mixed_pack_source_remainders')
-        .select('*')
-        .gt('available_remainder_kg', 0)
-        .order('packed_at', { ascending: false }),
+        .from('process_packaging_pack_entries')
+        .select(`
+          id,
+          product_id,
+          quantity_kg,
+          pack_identifier,
+          packet_unit_code,
+          pack_count,
+          remainder_kg,
+          created_at,
+          sorting_output:process_sorting_outputs(
+            product:products(id, name, sku, product_type, base_unit_id, units(name, symbol))
+          ),
+          product:products(id, name, sku, product_type, base_unit_id, units(name, symbol)),
+          usages:process_packaging_remainder_usages!process_packaging_remainder_usages_source_pack_entry_id_fkey(
+            quantity_kg
+          ),
+          packaging_run:process_packaging_runs(
+            process_step_run_id,
+            process_step_runs(
+              process_lot_run_id,
+              status,
+              process_lot_runs(
+                id,
+                status,
+                supply_batch_id,
+                supply_batches(
+                  lot_no,
+                  supply_id,
+                  supplies(
+                    warehouse_id,
+                    warehouses(name)
+                  )
+                )
+              )
+            )
+          )
+        `)
+        .gt('remainder_kg', 0)
+        .order('created_at', { ascending: false }),
       supabase
         .from('mixed_pack_batches')
         .select('id, batch_no, pack_name, status, inventory_type, defined_pack_size, actual_total_qty, warehouse_id, unit_id, require_exact_total, notes, created_at, storage_allocation_id, pack_entry_id, created_by')
         .order('created_at', { ascending: false }),
       supabase.rpc('get_packaging_units'),
       supabase.rpc('get_box_pack_rules'),
+      supabase
+        .from('products')
+        .select(`
+          id,
+          name,
+          sku,
+          product_type,
+          is_mixed_product
+        `)
+        .eq('product_type', 'FINISHED')
+        .eq('is_mixed_product', true)
+        .order('name', { ascending: true }),
     ])
 
-    if (sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error) {
+    if (sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error) {
       setError(
         getUserFriendlyErrorMessage(
-          sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error,
+          sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error,
           'We could not load the mixed-pack workspace right now. Please refresh and try again.',
         ),
       )
@@ -133,35 +191,73 @@ function MixedPacks() {
       setBatchRows([])
       setPackagingUnits([])
       setBoxPackRules([])
+      setMixedFinishedProducts([])
       setLoading(false)
       return
     }
 
-    const nextSources = ((sourcesRes.data ?? []) as Array<Record<string, unknown>>)
-      .map((row) => ({
-        pack_entry_id: Number(row.pack_entry_id),
-        product_id: Number(row.product_id),
-        product_name: String(row.product_name ?? 'Unknown product'),
-        product_sku: row.product_sku ? String(row.product_sku) : null,
-        pack_identifier: row.pack_identifier ? String(row.pack_identifier) : null,
-        lot_no: row.lot_no ? String(row.lot_no) : null,
-        lot_run_id: row.lot_run_id ? Number(row.lot_run_id) : null,
-        remainder_kg: Number(row.remainder_kg) || 0,
-        used_remainder_kg: Number(row.used_remainder_kg) || 0,
-        available_remainder_kg: Number(row.available_remainder_kg) || 0,
-        quantity_kg: Number(row.quantity_kg) || 0,
-        pack_count: row.pack_count == null ? null : Number(row.pack_count),
-        packed_at: row.packed_at ? String(row.packed_at) : null,
-        warehouse_id: Number(row.warehouse_id),
-        warehouse_name: row.warehouse_name ? String(row.warehouse_name) : null,
-        unit_id: row.unit_id ? Number(row.unit_id) : null,
-        unit_name: row.unit_name ? String(row.unit_name) : null,
-        unit_symbol: row.unit_symbol ? String(row.unit_symbol) : null,
-      }))
-      .filter((row) => row.pack_entry_id > 0 && row.available_remainder_kg > 0)
+    const unwrap = <T,>(value: T | T[] | null | undefined): T | null =>
+      Array.isArray(value) ? value[0] ?? null : value ?? null
+
+    const nextSources = ((sourcesRes.data ?? []) as any[])
+      .map((row) => {
+        const usageRows = Array.isArray(row.usages) ? row.usages : []
+        const usedRemainderKg = usageRows.reduce((sum: number, usage: { quantity_kg?: number | null }) => {
+          return sum + (Number(usage.quantity_kg) || 0)
+        }, 0)
+
+        const stepRun = unwrap(row.packaging_run?.process_step_runs)
+        const lotRun = unwrap(stepRun?.process_lot_runs)
+        const batch = unwrap(lotRun?.supply_batches)
+        const supply = unwrap(batch?.supplies)
+        const warehouse = unwrap(supply?.warehouses)
+        const product = unwrap(row.product) ?? unwrap(row.sorting_output?.product) ?? null
+        const unit = unwrap(product?.units ?? null)
+        const remainderKg = Number(row.remainder_kg) || 0
+        const availableRemainderKg = Math.max(0, remainderKg - usedRemainderKg)
+
+        return {
+          pack_entry_id: Number(row.id),
+          product_id: Number(product?.id ?? row.product_id ?? 0),
+          product_name: String(product?.name ?? 'Unknown product'),
+          product_sku: product?.sku ? String(product.sku) : null,
+          pack_identifier: row.pack_identifier ? String(row.pack_identifier) : null,
+          lot_no: batch?.lot_no ? String(batch.lot_no) : null,
+          lot_run_id: lotRun?.id ? Number(lotRun.id) : null,
+          remainder_kg: remainderKg,
+          used_remainder_kg: usedRemainderKg,
+          available_remainder_kg: availableRemainderKg,
+          quantity_kg: Number(row.quantity_kg) || 0,
+          pack_count: row.pack_count == null ? null : Number(row.pack_count),
+          packed_at: row.created_at ? String(row.created_at) : null,
+          warehouse_id: Number(supply?.warehouse_id ?? 0),
+          warehouse_name: warehouse?.name ? String(warehouse.name) : null,
+          unit_id: product?.base_unit_id ? Number(product.base_unit_id) : null,
+          unit_name: unit?.name ? String(unit.name) : null,
+          unit_symbol: unit?.symbol ? String(unit.symbol) : null,
+        }
+      })
+      .filter((row) =>
+        row.pack_entry_id > 0 &&
+        row.available_remainder_kg > 0 &&
+        row.product_id > 0,
+      )
 
     const nextUnits = ((unitsRes.data ?? []) as PackagingUnitOption[]).filter((unit) => unit.is_active)
     const nextRules = ((rulesRes.data ?? []) as BoxPackRuleOption[]).filter((rule) => rule.is_active)
+    const nextMixedProducts = ((mixedProductsRes.data ?? []) as Array<{
+      id: number
+      name: string | null
+      sku: string | null
+      product_type: string | null
+      is_mixed_product?: boolean | null
+    }>)
+      .filter((row) => String(row.product_type ?? '').toUpperCase() === 'FINISHED' && Boolean(row.is_mixed_product))
+      .map((row) => ({
+        id: Number(row.id),
+        name: String(row.name ?? 'Unnamed mixed product'),
+        sku: row.sku ? String(row.sku) : null,
+      }))
 
     const rawBatches = (batchesRes.data ?? []) as Array<{
       id: number
@@ -207,6 +303,7 @@ function MixedPacks() {
       setBatchRows([])
       setPackagingUnits(nextUnits)
       setBoxPackRules(nextRules)
+      setMixedFinishedProducts(nextMixedProducts)
       setLoading(false)
       return
     }
@@ -267,6 +364,7 @@ function MixedPacks() {
     setBatchRows(nextBatches)
     setPackagingUnits(nextUnits)
     setBoxPackRules(nextRules)
+    setMixedFinishedProducts(nextMixedProducts)
     setLoading(false)
   }, [])
 
@@ -289,6 +387,11 @@ function MixedPacks() {
     [form.packetUnitCode, packetUnits],
   )
 
+  const selectedMixedProduct = useMemo(
+    () => mixedFinishedProducts.find((product) => String(product.id) === form.mixedProductId) ?? null,
+    [form.mixedProductId, mixedFinishedProducts],
+  )
+
   const selectedWarehouseId = useMemo(
     () => selectedLines[0]?.source.warehouse_id ?? null,
     [selectedLines],
@@ -297,6 +400,11 @@ function MixedPacks() {
   const selectedUnitId = useMemo(
     () => selectedLines[0]?.source.unit_id ?? null,
     [selectedLines],
+  )
+
+  const selectedWarehouseLabel = useMemo(
+    () => (selectedLines.length > 0 ? selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}` : '—'),
+    [selectedLines, selectedWarehouseId],
   )
 
   const selectedTotalQty = useMemo(
@@ -372,6 +480,7 @@ function MixedPacks() {
 
   const canSubmit = useMemo(() => {
     if (!form.packName.trim()) return false
+    if (!form.mixedProductId.trim()) return false
     if (!selectedPacketUnit) return false
     if (selectedLines.length === 0) return false
     if (lineErrors.size > 0) return false
@@ -413,6 +522,14 @@ function MixedPacks() {
 
   const removeLine = useCallback((packEntryId: number) => {
     setSelectedLines((previous) => previous.filter((line) => line.source_pack_entry_id !== packEntryId))
+  }, [])
+
+  const resetCreateModal = useCallback(() => {
+    setForm(defaultFormState)
+    setSelectedLines([])
+    setSourceSearch('')
+    setCreateStep(1)
+    setShowCreateModal(false)
   }, [])
 
   const openBatchDetails = useCallback(async (batch: MixedPackBatchRow) => {
@@ -517,6 +634,7 @@ function MixedPacks() {
 
     const payload: CreateMixedPackPayload = {
       p_pack_name: form.packName.trim(),
+      p_mixed_product_id: form.mixedProductId.trim() ? Number(form.mixedProductId) : null,
       p_defined_pack_size: form.definedPackSize.trim() ? Number(form.definedPackSize) : null,
       p_warehouse_id: selectedWarehouseId,
       p_unit_id: selectedUnitId,
@@ -561,6 +679,10 @@ function MixedPacks() {
   const boxUnitOptions = boxUnits.map((unit) => ({
     value: unit.code,
     label: `${unit.code} · ${unit.name}`,
+  }))
+  const mixedProductOptions = mixedFinishedProducts.map((product) => ({
+    value: String(product.id),
+    label: product.sku ? `${product.name} (${product.sku})` : product.name,
   }))
 
   const batchColumns = useMemo(
@@ -659,7 +781,7 @@ function MixedPacks() {
             <CardTitle className="text-text-dark">Created Mixed Packs</CardTitle>
             <CardDescription>Each row already has a real pack entry and real storage allocation behind it.</CardDescription>
           </div>
-          <Button className="bg-olive hover:bg-olive-dark" onClick={() => setShowCreateModal(true)}>
+          <Button className="bg-olive hover:bg-olive-dark" onClick={() => { setCreateStep(1); setShowCreateModal(true) }}>
             <PackagePlus className="mr-2 h-4 w-4" />
             Create Mixed Pack
           </Button>
@@ -671,8 +793,8 @@ function MixedPacks() {
 
       {showCreateModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
-            <div className="flex items-start justify-between gap-4 border-b border-olive-light/20 p-5">
+          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-olive-light/20 bg-[#fcfaf5] shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-olive-light/20 bg-white/90 px-6 py-5">
               <div>
                 <h2 className="flex items-center gap-2 text-2xl font-semibold text-text-dark">
                   <PackagePlus className="h-5 w-5 text-olive" />
@@ -682,362 +804,471 @@ function MixedPacks() {
                   Select packaging remainders, then define the packet unit and storage allocation the way Step 5 packaging does.
                 </p>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => setShowCreateModal(false)}>
+              <Button variant="ghost" size="icon" onClick={resetCreateModal}>
                 <X className="h-5 w-5" />
               </Button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5">
-              <form className="rounded-lg border border-olive-light/30 bg-white p-4" onSubmit={handleSubmit}>
-              <div className="mb-4 rounded-md border border-olive-light/40 bg-olive-light/10 px-3 py-2 text-xs text-text-dark/70">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span>
-                    Selected qty: <strong className="text-text-dark">{formatQuantity(selectedTotalQty)}</strong>
-                  </span>
-                  <span>
-                    Target total: <strong className="text-text-dark">{definedPackSizeValue != null ? formatQuantity(definedPackSizeValue) : '—'}</strong>
-                  </span>
-                  <span>
-                    Produced packs: <strong className="text-text-dark">{selectedPacketUnit ? producedPackCount : '—'}</strong>
-                  </span>
-                  <span>
-                    Warehouse: <strong className="text-text-dark">{selectedLines.length > 0 ? selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}` : '—'}</strong>
-                  </span>
-                  {selectedPacketUnit ? (
-                    <span>
-                      Packet unit: <strong className="text-text-dark">{selectedPacketUnit.code}</strong>
-                    </span>
-                  ) : null}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="mb-5 rounded-2xl border border-olive-light/30 bg-white px-5 py-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${createStep === 1 ? 'bg-olive text-white' : 'bg-beige/40 text-text-dark/70'}`}>
+                      1
+                    </div>
+                    <div className="min-w-[120px]">
+                      <p className={`text-sm font-semibold ${createStep === 1 ? 'text-text-dark' : 'text-text-dark/60'}`}>Select Remainders</p>
+                      <p className="text-xs text-text-dark/50">Choose the remainder sources</p>
+                    </div>
+                    <div className="hidden h-px min-w-16 flex-1 bg-olive-light/30 md:block" />
+                    <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${createStep === 2 ? 'bg-olive text-white' : 'bg-beige/40 text-text-dark/70'}`}>
+                      2
+                    </div>
+                    <div className="min-w-[160px]">
+                      <p className={`text-sm font-semibold ${createStep === 2 ? 'text-text-dark' : 'text-text-dark/60'}`}>Pack Entry & Allocation</p>
+                      <p className="text-xs text-text-dark/50">Finish the mixed pack output</p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-olive-light/20 bg-[#fcfaf5] px-3 py-2">
+                      <div className="text-[11px] uppercase tracking-[0.08em] text-text-dark/45">Selected Qty</div>
+                      <div className="text-sm font-semibold text-text-dark">{formatQuantity(selectedTotalQty)}</div>
+                    </div>
+                    <div className="rounded-xl border border-olive-light/20 bg-[#fcfaf5] px-3 py-2">
+                      <div className="text-[11px] uppercase tracking-[0.08em] text-text-dark/45">Sources</div>
+                      <div className="text-sm font-semibold text-text-dark">{selectedLines.length}</div>
+                    </div>
+                    <div className="rounded-xl border border-olive-light/20 bg-[#fcfaf5] px-3 py-2">
+                      <div className="text-[11px] uppercase tracking-[0.08em] text-text-dark/45">Warehouse</div>
+                      <div className="truncate text-sm font-semibold text-text-dark">{selectedWarehouseLabel}</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="border-b border-olive-light/20 pb-4">
-                <h4 className="mb-4 text-sm font-semibold text-text-dark">Mixed Components</h4>
-                <p className="mb-3 text-xs text-text-dark/60">
-                  Select packaging remainders that will make up this mixed pack.
-                </p>
+              {createStep === 1 ? (
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                  <div className="rounded-2xl border border-olive-light/30 bg-white p-5">
+                    <h4 className="mb-2 text-sm font-semibold text-text-dark">Available Remainders</h4>
+                    <p className="mb-3 text-xs text-text-dark/60">
+                      Select packaging remainders that will make up this mixed pack.
+                    </p>
 
-                <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="relative w-full max-w-xl">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
-                    <Input
-                      value={sourceSearch}
-                      onChange={(event) => setSourceSearch(event.target.value)}
-                      placeholder="Search by product, SKU, lot, pack, or warehouse"
-                      className="pl-9"
-                    />
-                  </div>
-                  {selectedWarehouseId != null ? (
-                    <div className="rounded-full bg-olive-light/15 px-3 py-1 text-xs font-medium text-text-dark">
-                      Locked to {selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}`}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="mb-4 space-y-3">
-                  {filteredSources.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-olive-light/60 bg-beige/20 px-4 py-6 text-center text-sm text-text-dark/60">
-                      No eligible stock matches the current search or warehouse selection.
-                    </div>
-                  ) : (
-                    filteredSources.map((source) => {
-                      const isSelected = selectedLines.some((line) => line.source_pack_entry_id === source.pack_entry_id)
-                      return (
-                        <div key={source.pack_entry_id} className="rounded-lg border border-olive-light/40 bg-white p-4">
-                          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                            <div className="min-w-0 flex-1">
-                              <p className="font-medium text-text-dark">
-                                {source.product_name}
-                                {source.product_sku ? ` (${source.product_sku})` : ''}
-                              </p>
-                              <p className="text-xs text-text-dark/60">
-                                Lot {source.lot_no ?? '—'} · Pack {source.pack_identifier ?? '—'} · Packed {source.packed_at ? new Date(source.packed_at).toLocaleDateString() : '—'} · {source.warehouse_name ?? 'Unknown warehouse'}
-                              </p>
-                              <p className="mt-1 text-xs text-text-dark/60">
-                                Available remainder: {formatQuantity(source.available_remainder_kg)} · Used: {formatQuantity(source.used_remainder_kg)} · Source remainder: {formatQuantity(source.remainder_kg)}
-                              </p>
-                            </div>
-                            <Button
-                              type="button"
-                              variant={isSelected ? 'outline' : 'default'}
-                              className={isSelected ? '' : 'bg-olive hover:bg-olive-dark'}
-                              onClick={() => addSourceLine(source)}
-                            >
-                              {isSelected ? 'Already Added' : 'Add Source'}
-                            </Button>
-                          </div>
+                    <div className="mb-4 flex flex-col gap-3">
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
+                        <Input
+                          value={sourceSearch}
+                          onChange={(event) => setSourceSearch(event.target.value)}
+                          placeholder="Search by product, SKU, lot, pack, or warehouse"
+                          className="pl-9"
+                        />
+                      </div>
+                      {selectedWarehouseId != null ? (
+                        <div className="rounded-full bg-olive-light/15 px-3 py-1 text-xs font-medium text-text-dark">
+                          Locked to {selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}`}
                         </div>
-                      )
-                    })
-                  )}
-                </div>
+                      ) : null}
+                    </div>
 
-                <div className="rounded-lg border border-olive-light/30 bg-white">
-                  <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
-                    Selected Source Summary
-                  </div>
-                  <div className="divide-y divide-olive-light/20">
-                    {selectedLines.length === 0 ? (
-                      <div className="px-4 py-6 text-sm text-text-dark/60">No source products selected yet.</div>
-                    ) : (
-                      selectedLines.map((line) => {
-                        const quantityUsed = Number(line.quantity_used) || 0
-                        const remainingAfterSelection = Math.max(0, line.source.available_remainder_kg - quantityUsed)
-                        const lineError = lineErrors.get(line.source_pack_entry_id)
-                        return (
-                          <div key={line.source_pack_entry_id} className="px-4 py-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-medium text-text-dark">
-                                  {line.source.product_name}
-                                  {line.source.product_sku ? ` (${line.source.product_sku})` : ''}
-                                </p>
-                                <p className="text-xs text-text-dark/60">
-                                  Lot {line.source.lot_no ?? '—'} · Pack {line.source.pack_identifier ?? '—'} · Produced {line.source.pack_count ?? '—'} packs
-                                </p>
-                                <p className="text-xs text-text-dark/60">
-                                  Available remainder {formatQuantity(line.source.available_remainder_kg)} · Remaining after selection {formatQuantity(remainingAfterSelection)}
-                                </p>
+                    <div className="max-h-[56vh] space-y-3 overflow-y-auto pr-1">
+                      {filteredSources.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-olive-light/60 bg-beige/20 px-4 py-6 text-center text-sm text-text-dark/60">
+                          No eligible remainders match the current search or warehouse selection.
+                        </div>
+                      ) : (
+                        filteredSources.map((source) => {
+                          const isSelected = selectedLines.some((line) => line.source_pack_entry_id === source.pack_entry_id)
+                          return (
+                            <button
+                              key={source.pack_entry_id}
+                              type="button"
+                              onClick={() => addSourceLine(source)}
+                              className={`w-full rounded-lg border p-4 text-left transition ${
+                                isSelected
+                                  ? 'border-olive bg-olive-light/10'
+                                  : 'border-olive-light/40 bg-white hover:border-olive-light/70 hover:bg-beige/20'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium text-text-dark">
+                                    {source.product_name}
+                                    {source.product_sku ? ` (${source.product_sku})` : ''}
+                                  </p>
+                                  <p className="text-xs text-text-dark/60">
+                                    Lot {source.lot_no ?? '—'} · Pack {source.pack_identifier ?? '—'} · Packed {source.packed_at ? new Date(source.packed_at).toLocaleDateString() : '—'}
+                                  </p>
+                                  <p className="mt-1 text-xs text-text-dark/60">
+                                    {source.warehouse_name ?? 'Unknown warehouse'}
+                                  </p>
+                                  <p className="mt-2 text-xs text-text-dark/70">
+                                    Available remainder: {formatQuantity(source.available_remainder_kg)}
+                                  </p>
+                                  <p className="text-xs text-text-dark/60">
+                                    Used: {formatQuantity(source.used_remainder_kg)} · Source remainder: {formatQuantity(source.remainder_kg)}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                                    isSelected ? 'bg-olive text-white' : 'bg-beige/60 text-text-dark'
+                                  }`}
+                                >
+                                  {isSelected ? 'Selected' : 'Select'}
+                                </span>
                               </div>
-                              <Button type="button" variant="ghost" size="sm" onClick={() => removeLine(line.source_pack_entry_id)}>
-                                <X className="mr-1 h-4 w-4" />
-                                Remove
-                              </Button>
-                            </div>
-                            <div className="mt-3 grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
-                              <div className="space-y-2">
-                                <Label htmlFor={`line-${line.source_pack_entry_id}`}>Quantity to Use (kg)</Label>
-                                <Input
-                                  id={`line-${line.source_pack_entry_id}`}
-                                  type="number"
-                                  min="0"
-                                  step="0.001"
-                                  value={line.quantity_used}
-                                  onChange={(event) => updateLineQuantity(line.source_pack_entry_id, event.target.value)}
-                                  placeholder="Enter quantity"
-                                />
-                              </div>
-                              <div className="flex items-end">
-                                {lineError ? (
-                                  <div className="w-full rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{lineError}</div>
-                                ) : (
-                                  <div className="w-full rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                                    Quantity is within the current available remainder.
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        )
-                      })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-b border-olive-light/20 py-4">
-                <div className="mb-4 flex items-center gap-2">
-                  <PackageIcon className="h-4 w-4 text-olive" />
-                  <h4 className="text-sm font-semibold text-text-dark">Pack Entry</h4>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="space-y-2 lg:col-span-2">
-                    <Label htmlFor="mixed-pack-name">Pack Name *</Label>
-                    <Input
-                      id="mixed-pack-name"
-                      value={form.packName}
-                      onChange={(event) => setForm((previous) => ({ ...previous, packName: event.target.value }))}
-                      placeholder="e.g. Retail Assorted Mix"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="mixed-pack-size">Target Total Weight / Size</Label>
-                    <Input
-                      id="mixed-pack-size"
-                      type="number"
-                      min="0"
-                      step="0.001"
-                      value={form.definedPackSize}
-                      onChange={(event) => setForm((previous) => ({ ...previous, definedPackSize: event.target.value }))}
-                      placeholder="Enter total kg"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Finished product being packed</Label>
-                    <div className="flex h-10 w-full items-center rounded-md border border-input bg-background px-3 py-2 text-sm text-text-dark/70">
-                      Mixed Pack
+                            </button>
+                          )
+                        })
+                      )}
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="mixed-packet-unit">Packet unit *</Label>
-                    <SearchableSelect
-                      id="mixed-packet-unit"
-                      options={packetUnitOptions}
-                      value={form.packetUnitCode}
-                      onChange={(value) => setForm((previous) => ({ ...previous, packetUnitCode: value, boxUnitCode: '', packsPerUnit: '' }))}
-                      placeholder="Select packet unit"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Quantity (kg)</Label>
-                    <div className="flex h-10 w-full items-center rounded-md border border-input bg-background px-3 py-2 text-sm text-text-dark/70">
-                      {selectedTotalQty > 0 ? selectedTotalQty.toFixed(3) : ''}
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Good packs (auto)</Label>
-                    <Input type="text" readOnly value={producedPackCount > 0 ? String(producedPackCount) : ''} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Remainder (kg, auto)</Label>
-                    <Input
-                      type="text"
-                      readOnly
-                      value={(() => {
-                        const packSize = Number(selectedPacketUnit?.net_weight_kg) || 0
-                        if (packSize <= 0 || selectedTotalQty <= 0) return ''
-                        return Math.max(0, selectedTotalQty - producedPackCount * packSize).toFixed(2)
-                      })()}
-                    />
-                  </div>
-                </div>
-                <label className="mt-4 flex items-start gap-3 rounded-md border border-olive-light/30 bg-olive-light/5 px-3 py-2 text-sm text-text-dark">
-                  <input
-                    type="checkbox"
-                    checked={form.requireExactTotal}
-                    onChange={(event) => setForm((previous) => ({ ...previous, requireExactTotal: event.target.checked }))}
-                    className="mt-1"
-                  />
-                  <span>Require the selected quantities to exactly match the defined total when a target size is entered.</span>
-                </label>
-              </div>
 
-              <div className="pt-4">
-                <h4 className="mb-4 text-sm font-semibold text-text-dark">Storage Allocation</h4>
-                <p className="mb-3 text-xs text-text-dark/60">
-                  Allocate the mixed-pack entry into storage units using the same Step 5 packaging pattern.
-                </p>
-
-                <div className="flex flex-col gap-4">
-                  <div className="order-1 rounded-lg border border-olive-light/30 bg-white">
-                    <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
-                      Pack Entry Summary
+                  <div className="rounded-2xl border border-olive-light/30 bg-white">
+                    <div className="border-b border-olive-light/20 px-5 py-3 text-xs font-medium uppercase tracking-[0.08em] text-text-dark/50">
+                      Selected Remainders
                     </div>
                     <div className="divide-y divide-olive-light/20">
-                      <div className="px-4 py-2 text-sm text-text-dark/80">
-                        {(selectedPacketUnit?.code || 'Select packet unit')}:
-                        {' '}produced {producedPackCount} good packs · allocated {requestedAllocationPacks} · remaining {Math.max(producedPackCount - requestedAllocationPacks, 0)}
+                      {selectedLines.length === 0 ? (
+                        <div className="px-5 py-10 text-sm text-text-dark/60">No remainders selected yet.</div>
+                      ) : (
+                        selectedLines.map((line) => {
+                          const quantityUsed = Number(line.quantity_used) || 0
+                          const remainingAfterSelection = Math.max(0, line.source.available_remainder_kg - quantityUsed)
+                          const lineError = lineErrors.get(line.source_pack_entry_id)
+                          return (
+                            <div key={line.source_pack_entry_id} className="px-5 py-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-medium text-text-dark">
+                                    {line.source.product_name}
+                                    {line.source.product_sku ? ` (${line.source.product_sku})` : ''}
+                                  </p>
+                                  <p className="text-xs text-text-dark/60">
+                                    Lot {line.source.lot_no ?? '—'} · Pack {line.source.pack_identifier ?? '—'} · Produced {line.source.pack_count ?? '—'} packs
+                                  </p>
+                                  <p className="text-xs text-text-dark/60">
+                                    Available remainder {formatQuantity(line.source.available_remainder_kg)} · Remaining after selection {formatQuantity(remainingAfterSelection)}
+                                  </p>
+                                </div>
+                                <Button type="button" variant="ghost" size="sm" onClick={() => removeLine(line.source_pack_entry_id)}>
+                                  <X className="mr-1 h-4 w-4" />
+                                  Remove
+                                </Button>
+                              </div>
+                              <div className="mt-3 grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+                                <div className="space-y-2">
+                                  <Label htmlFor={`line-${line.source_pack_entry_id}`}>Quantity to Use (kg)</Label>
+                                  <Input
+                                    id={`line-${line.source_pack_entry_id}`}
+                                    type="number"
+                                    min="0"
+                                    step="0.001"
+                                    value={line.quantity_used}
+                                    onChange={(event) => updateLineQuantity(line.source_pack_entry_id, event.target.value)}
+                                    placeholder="Enter quantity"
+                                  />
+                                </div>
+                                <div className="flex items-end">
+                                  {lineError ? (
+                                    <div className="w-full rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{lineError}</div>
+                                  ) : (
+                                    <div className="w-full rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                                      Quantity is within the current available remainder.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+
+                    <div className="border-t border-olive-light/20 px-5 py-4">
+                      <div className="rounded-xl border border-olive-light/30 bg-[#fcfaf5] px-4 py-3 text-sm text-text-dark/70">
+                        Selected qty: <strong className="text-text-dark">{formatQuantity(selectedTotalQty)}</strong>
+                        {' '}· Sources: <strong className="text-text-dark">{selectedLines.length}</strong>
                       </div>
                     </div>
                   </div>
 
-                  <div className="order-2 rounded-lg border border-olive-light/30 bg-white p-4">
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-                      <div className="space-y-2 lg:col-span-2">
-                        <Label>Pack Entry *</Label>
-                        <div className="flex h-10 w-full items-center rounded-md border border-input bg-background px-3 py-2 text-sm text-text-dark/70">
-                          {selectedPacketUnit ? `${selectedPacketUnit.code} · ${producedPackCount} good packs` : 'Select packet unit first'}
-                        </div>
+                  <div className="xl:col-span-2">
+                    <div className="flex flex-col gap-3 border-t border-olive-light/20 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="text-sm text-text-dark/60">
+                        Select at least one valid remainder source to continue.
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="mixed-storage-type">Storage Type *</Label>
-                        <select
-                          id="mixed-storage-type"
-                          value={form.storageType}
-                          onChange={(event) =>
-                            setForm((previous) => ({
-                              ...previous,
-                              storageType: event.target.value as '' | 'BOX' | 'SHOP_PACKING',
-                              boxUnitCode: event.target.value === 'BOX' ? previous.boxUnitCode || '' : '',
-                              packsPerUnit: previous.storageType === event.target.value ? previous.packsPerUnit : '',
-                            }))
-                          }
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      <div className="flex justify-end gap-2">
+                        <Button type="button" variant="outline" onClick={resetCreateModal} disabled={submitting}>
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          className="bg-olive hover:bg-olive-dark"
+                          onClick={() => setCreateStep(2)}
+                          disabled={selectedLines.length === 0 || lineErrors.size > 0}
                         >
-                          <option value="">Select type</option>
-                          <option value="BOX">Box</option>
-                          <option value="SHOP_PACKING">Shop packing</option>
-                        </select>
-                      </div>
-                      {form.storageType === 'BOX' && (
-                        <div className="space-y-2">
-                          <Label htmlFor="mixed-box-unit">Box unit *</Label>
-                          <SearchableSelect
-                            id="mixed-box-unit"
-                            options={boxUnitOptions}
-                            value={form.boxUnitCode}
-                            onChange={(value) => setForm((previous) => ({ ...previous, boxUnitCode: value }))}
-                            placeholder="Select box unit"
-                          />
-                        </div>
-                      )}
-                      <div className="space-y-2">
-                        <Label htmlFor="mixed-units-count">Units Count *</Label>
-                        <Input
-                          id="mixed-units-count"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={form.unitsCount}
-                          onChange={(event) => setForm((previous) => ({ ...previous, unitsCount: event.target.value }))}
-                          placeholder="Enter units count"
-                        />
-                        <p className="text-xs text-text-dark/60">Edit the storage unit count for this mixed-pack allocation.</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="mixed-packs-per-unit">Packs per Unit *</Label>
-                        <Input
-                          id="mixed-packs-per-unit"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={form.packsPerUnit}
-                          onChange={(event) => setForm((previous) => ({ ...previous, packsPerUnit: event.target.value }))}
-                          placeholder="Enter packs per unit"
-                        />
+                          Continue
+                        </Button>
                       </div>
                     </div>
-                    <div className="mt-3 rounded-md border border-olive-light/30 bg-beige/20 px-3 py-2 text-sm text-text-dark/70">
-                      Requested allocation: {requestedAllocationPacks} packs
-                      {selectedPacketUnit?.net_weight_kg ? ` · ${formatQuantity(requestedAllocationPacks * selectedPacketUnit.net_weight_kg)}` : ''}
-                    </div>
-                    {allocationError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{allocationError}</div> : null}
                   </div>
                 </div>
-              </div>
+              ) : (
+              <form className="space-y-5" onSubmit={handleSubmit}>
+                <div className="rounded-2xl border border-olive-light/30 bg-white p-5">
+                  <div className="mb-5 rounded-xl border border-olive-light/30 bg-[#fcfaf5] px-4 py-3 text-xs text-text-dark/70">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span>
+                        Selected qty: <strong className="text-text-dark">{formatQuantity(selectedTotalQty)}</strong>
+                      </span>
+                      <span>
+                        Target total: <strong className="text-text-dark">{definedPackSizeValue != null ? formatQuantity(definedPackSizeValue) : '—'}</strong>
+                      </span>
+                      <span>
+                        Produced packs: <strong className="text-text-dark">{selectedPacketUnit ? producedPackCount : '—'}</strong>
+                      </span>
+                      <span>
+                        Warehouse: <strong className="text-text-dark">{selectedWarehouseLabel}</strong>
+                      </span>
+                      {selectedPacketUnit ? (
+                        <span>
+                          Packet unit: <strong className="text-text-dark">{selectedPacketUnit.code}</strong>
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
 
-              <div className="mt-4 space-y-2">
-                <Label htmlFor="mixed-notes">Notes (Optional)</Label>
-                <Input
-                  id="mixed-notes"
-                  value={form.notes}
-                  onChange={(event) => setForm((previous) => ({ ...previous, notes: event.target.value }))}
-                  placeholder="Add notes for the synthetic packaging bridge or allocation"
-                />
-              </div>
+                  <div className="border-b border-olive-light/20 py-4 first:pt-0">
+                    <h4 className="mb-4 text-sm font-semibold text-text-dark">Pack Entry</h4>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="space-y-2 lg:col-span-2">
+                        <Label htmlFor="mixed-pack-name">Pack Name *</Label>
+                        <Input
+                          id="mixed-pack-name"
+                          value={form.packName}
+                          onChange={(event) => setForm((previous) => ({ ...previous, packName: event.target.value }))}
+                          placeholder="e.g. Retail Assorted Mix"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="mixed-pack-size">Target Total Weight / Size</Label>
+                        <Input
+                          id="mixed-pack-size"
+                          type="number"
+                          min="0"
+                          step="0.001"
+                          value={form.definedPackSize}
+                          onChange={(event) => setForm((previous) => ({ ...previous, definedPackSize: event.target.value }))}
+                          placeholder="Enter total kg"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="mixed-finished-product">Finished product being packed *</Label>
+                        <SearchableSelect
+                          id="mixed-finished-product"
+                          options={mixedProductOptions}
+                          value={form.mixedProductId}
+                          onChange={(value) =>
+                            setForm((previous) => {
+                              const nextProduct = mixedFinishedProducts.find((product) => String(product.id) === value) ?? null
+                              return {
+                                ...previous,
+                                mixedProductId: value,
+                                packName: previous.packName.trim() ? previous.packName : nextProduct?.name ?? previous.packName,
+                              }
+                            })
+                          }
+                          placeholder={mixedProductOptions.length > 0 ? 'Select mixed finished product' : 'No mixed finished products found'}
+                        />
+                        {selectedMixedProduct ? (
+                          <p className="text-xs text-text-dark/60">
+                            {selectedMixedProduct.sku ? `SKU ${selectedMixedProduct.sku}` : 'Finished mixed product selected'}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="mixed-packet-unit">Packet unit *</Label>
+                        <SearchableSelect
+                          id="mixed-packet-unit"
+                          options={packetUnitOptions}
+                          value={form.packetUnitCode}
+                          onChange={(value) => setForm((previous) => ({ ...previous, packetUnitCode: value, boxUnitCode: '', packsPerUnit: '' }))}
+                          placeholder="Select packet unit"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Quantity (kg)</Label>
+                        <div className="flex h-10 w-full items-center rounded-md border border-input bg-background px-3 py-2 text-sm text-text-dark/70">
+                          {selectedTotalQty > 0 ? selectedTotalQty.toFixed(3) : ''}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Good packs (auto)</Label>
+                        <Input type="text" readOnly value={producedPackCount > 0 ? String(producedPackCount) : ''} />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Remainder (kg, auto)</Label>
+                        <Input
+                          type="text"
+                          readOnly
+                          value={(() => {
+                            const packSize = Number(selectedPacketUnit?.net_weight_kg) || 0
+                            if (packSize <= 0 || selectedTotalQty <= 0) return ''
+                            return Math.max(0, selectedTotalQty - producedPackCount * packSize).toFixed(2)
+                          })()}
+                        />
+                      </div>
+                    </div>
+                    <label className="mt-4 flex items-start gap-3 rounded-md border border-olive-light/30 bg-olive-light/5 px-3 py-2 text-sm text-text-dark">
+                      <input
+                        type="checkbox"
+                        checked={form.requireExactTotal}
+                        onChange={(event) => setForm((previous) => ({ ...previous, requireExactTotal: event.target.checked }))}
+                        className="mt-1"
+                      />
+                      <span>Require the selected quantities to exactly match the defined total when a target size is entered.</span>
+                    </label>
+                  </div>
 
-              {totalMismatch ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">The selected total does not match the defined pack size.</div> : null}
-              {producedPackCount <= 0 && selectedPacketUnit ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">The selected quantity is not enough to produce one full pack at the chosen packet size.</div> : null}
+                  <div className="border-b border-olive-light/20 py-4">
+                    <h4 className="mb-4 text-sm font-semibold text-text-dark">Storage Allocation</h4>
+                    <p className="mb-3 text-xs text-text-dark/60">
+                      Allocate the mixed-pack entry into storage units using the same Step 5 packaging pattern.
+                    </p>
 
-              <div className="mt-4 flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setForm(defaultFormState)
-                    setSelectedLines([])
-                    setShowCreateModal(false)
-                  }}
-                  disabled={submitting}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={submitting || !canSubmit}>
-                  {submitting ? 'Creating mixed pack...' : 'Create Mixed Pack'}
-                </Button>
-              </div>
-            </form>
+                    <div className="flex flex-col gap-4">
+                      <div className="order-1 rounded-xl border border-olive-light/30 bg-[#fcfaf5]">
+                        <div className="border-b border-olive-light/20 px-4 py-2 text-xs font-medium uppercase tracking-[0.08em] text-text-dark/50">
+                          Pack Entry Summary
+                        </div>
+                        <div className="divide-y divide-olive-light/20">
+                          <div className="px-4 py-2 text-sm text-text-dark/80">
+                            {(selectedPacketUnit?.code || 'Select packet unit')}:
+                            {' '}produced {producedPackCount} good packs · allocated {requestedAllocationPacks} · remaining {Math.max(producedPackCount - requestedAllocationPacks, 0)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="order-2 rounded-xl border border-olive-light/30 bg-white p-4">
+                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                          <div className="space-y-2 lg:col-span-2">
+                            <Label>Pack Entry *</Label>
+                            <div className="flex h-10 w-full items-center rounded-md border border-input bg-background px-3 py-2 text-sm text-text-dark/70">
+                              {selectedPacketUnit ? `${selectedPacketUnit.code} · ${producedPackCount} good packs` : 'Select packet unit first'}
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="mixed-storage-type">Storage Type *</Label>
+                            <select
+                              id="mixed-storage-type"
+                              value={form.storageType}
+                              onChange={(event) =>
+                                setForm((previous) => ({
+                                  ...previous,
+                                  storageType: event.target.value as '' | 'BOX' | 'SHOP_PACKING',
+                                  boxUnitCode: event.target.value === 'BOX' ? previous.boxUnitCode || '' : '',
+                                  packsPerUnit: previous.storageType === event.target.value ? previous.packsPerUnit : '',
+                                }))
+                              }
+                              className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="">Select type</option>
+                              <option value="BOX">Box</option>
+                              <option value="SHOP_PACKING">Shop packing</option>
+                            </select>
+                          </div>
+                          {form.storageType === 'BOX' && (
+                            <div className="space-y-2">
+                              <Label htmlFor="mixed-box-unit">Box unit *</Label>
+                              <SearchableSelect
+                                id="mixed-box-unit"
+                                options={boxUnitOptions}
+                                value={form.boxUnitCode}
+                                onChange={(value) => setForm((previous) => ({ ...previous, boxUnitCode: value }))}
+                                placeholder="Select box unit"
+                              />
+                            </div>
+                          )}
+                          <div className="space-y-2">
+                            <Label htmlFor="mixed-units-count">Units Count *</Label>
+                            <Input
+                              id="mixed-units-count"
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={form.unitsCount}
+                              onChange={(event) => setForm((previous) => ({ ...previous, unitsCount: event.target.value }))}
+                              placeholder="Enter units count"
+                            />
+                            <p className="text-xs text-text-dark/60">Edit the storage unit count for this mixed-pack allocation.</p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="mixed-packs-per-unit">Packs per Unit *</Label>
+                            <Input
+                              id="mixed-packs-per-unit"
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={form.packsPerUnit}
+                              onChange={(event) => setForm((previous) => ({ ...previous, packsPerUnit: event.target.value }))}
+                              placeholder="Enter packs per unit"
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-3 rounded-xl border border-olive-light/30 bg-[#fcfaf5] px-3 py-2 text-sm text-text-dark/70">
+                          Requested allocation: {requestedAllocationPacks} packs
+                          {selectedPacketUnit?.net_weight_kg ? ` · ${formatQuantity(requestedAllocationPacks * selectedPacketUnit.net_weight_kg)}` : ''}
+                        </div>
+                        {allocationError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{allocationError}</div> : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <Label htmlFor="mixed-notes">Notes (Optional)</Label>
+                    <Input
+                      id="mixed-notes"
+                      value={form.notes}
+                      onChange={(event) => setForm((previous) => ({ ...previous, notes: event.target.value }))}
+                      placeholder="Add notes for the synthetic packaging bridge or allocation"
+                    />
+                  </div>
+
+                  {totalMismatch ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">The selected total does not match the defined pack size.</div> : null}
+                  {producedPackCount <= 0 && selectedPacketUnit ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">The selected quantity is not enough to produce one full pack at the chosen packet size.</div> : null}
+
+                  <div className="mt-6 flex flex-col gap-3 border-t border-olive-light/20 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-text-dark/60">
+                      Review the packaging output before creating the mixed pack.
+                    </div>
+                    <div className="flex justify-end gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setCreateStep(1)}
+                      disabled={submitting}
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={resetCreateModal}
+                      disabled={submitting}
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" className="bg-olive hover:bg-olive-dark" disabled={submitting || !canSubmit}>
+                      {submitting ? 'Creating mixed pack...' : 'Create Mixed Pack'}
+                    </Button>
+                    </div>
+                  </div>
+                </div>
+              </form>
+              )}
             </div>
           </div>
         </div>
