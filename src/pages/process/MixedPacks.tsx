@@ -694,7 +694,66 @@ function MixedPacks() {
               </div>
 
               <div className="border-b border-olive-light/20 pb-4">
-                <h4 className="mb-4 text-sm font-semibold text-text-dark">Mixed Pack Composition</h4>
+                <h4 className="mb-4 text-sm font-semibold text-text-dark">Mixed Components</h4>
+                <p className="mb-3 text-xs text-text-dark/60">
+                  Select the processed finished-stock allocations that will make up this mixed pack.
+                </p>
+
+                <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="relative w-full max-w-xl">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
+                    <Input
+                      value={sourceSearch}
+                      onChange={(event) => setSourceSearch(event.target.value)}
+                      placeholder="Search by product, SKU, lot, pack, or warehouse"
+                      className="pl-9"
+                    />
+                  </div>
+                  {selectedWarehouseId != null ? (
+                    <div className="rounded-full bg-olive-light/15 px-3 py-1 text-xs font-medium text-text-dark">
+                      Locked to {selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}`}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="mb-4 space-y-3">
+                  {filteredSources.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-olive-light/60 bg-beige/20 px-4 py-6 text-center text-sm text-text-dark/60">
+                      No eligible stock matches the current search or warehouse selection.
+                    </div>
+                  ) : (
+                    filteredSources.map((source) => {
+                      const isSelected = selectedLines.some((line) => line.source_allocation_id === source.allocation_id)
+                      return (
+                        <div key={source.allocation_id} className="rounded-lg border border-olive-light/40 bg-white p-4">
+                          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-text-dark">
+                                {source.product_name}
+                                {source.product_sku ? ` (${source.product_sku})` : ''}
+                              </p>
+                              <p className="text-xs text-text-dark/60">
+                                Lot {source.lot_no ?? '—'} · Pack {source.pack_identifier ?? '—'} · {source.storage_type ?? '—'} · {source.warehouse_name ?? 'Unknown warehouse'}
+                              </p>
+                              <p className="mt-1 text-xs text-text-dark/60">
+                                Remaining: {formatQuantity(source.remaining_quantity_kg)} · Remaining units: {source.remaining_units} · Unit size: {formatQuantity(source.quantity_per_unit_kg)}
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant={isSelected ? 'outline' : 'default'}
+                              className={isSelected ? '' : 'bg-olive hover:bg-olive-dark'}
+                              onClick={() => addSourceLine(source)}
+                            >
+                              {isSelected ? 'Already Added' : 'Add Source'}
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+
                 <div className="rounded-lg border border-olive-light/30 bg-white">
                   <div className="border-b border-olive-light/20 px-4 py-2 text-xs text-text-dark/60">
                     Selected Source Summary
@@ -963,46 +1022,6 @@ function MixedPacks() {
           </CardContent>
         </Card>
       </div>
-
-      <Card className="mt-6 border-olive-light/30 bg-white">
-        <CardHeader>
-          <CardTitle className="text-text-dark">Available Finished Stock Sources</CardTitle>
-          <CardDescription>Only completed processed stock with positive remaining quantity is shown here.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="relative w-full max-w-xl">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
-              <Input value={sourceSearch} onChange={(event) => setSourceSearch(event.target.value)} placeholder="Search by product, SKU, lot, pack, or warehouse" className="pl-9" />
-            </div>
-            {selectedWarehouseId != null ? <div className="rounded-full bg-olive-light/15 px-3 py-1 text-xs font-medium text-text-dark">Locked to {selectedLines[0]?.source.warehouse_name ?? `Warehouse #${selectedWarehouseId}`}</div> : null}
-          </div>
-
-          <div className="space-y-3">
-            {filteredSources.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-olive-light/60 bg-beige/20 px-4 py-8 text-center text-sm text-text-dark/60">No eligible stock matches the current search or warehouse selection.</div>
-            ) : (
-              filteredSources.map((source) => {
-                const isSelected = selectedLines.some((line) => line.source_allocation_id === source.allocation_id)
-                return (
-                  <div key={source.allocation_id} className="rounded-lg border border-olive-light/40 bg-white p-4">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-text-dark">{source.product_name}{source.product_sku ? ` (${source.product_sku})` : ''}</p>
-                        <p className="text-xs text-text-dark/60">Lot {source.lot_no ?? '—'} · Pack {source.pack_identifier ?? '—'} · {source.storage_type ?? '—'} · {source.warehouse_name ?? 'Unknown warehouse'}</p>
-                        <p className="mt-1 text-xs text-text-dark/60">Remaining: {formatQuantity(source.remaining_quantity_kg)} · Remaining units: {source.remaining_units} · Unit size: {formatQuantity(source.quantity_per_unit_kg)}</p>
-                      </div>
-                      <Button type="button" variant={isSelected ? 'outline' : 'default'} className={isSelected ? '' : 'bg-olive hover:bg-olive-dark'} onClick={() => addSourceLine(source)}>
-                        {isSelected ? 'Already Added' : 'Add Source'}
-                      </Button>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </CardContent>
-      </Card>
 
       {selectedBatch ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
