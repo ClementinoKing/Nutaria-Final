@@ -781,14 +781,14 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
   const allowedSupplierTypeCodes = useMemo(
     () => {
+      if (formData.category_code === 'SERVICE') {
+        return ['OS']
+      }
+
       const codes = Array.from(supplierTypeCategoryMap.entries())
         .filter(([, categoryCode]) => categoryCode === formData.category_code)
         .map(([code]) => code)
         .filter(Boolean)
-
-      if (formData.category_code === 'SERVICE' && codes.length === 0) {
-        return ['OS']
-      }
 
       return codes
     },
@@ -832,6 +832,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const filteredSupplierList = useMemo(() => {
     return categorySuppliers.filter((supplier) => {
       const supplierType = String(supplier?.supplier_type ?? '').trim().toUpperCase()
+      if (formData.category_code === 'SERVICE') {
+        return supplierType === 'OS'
+      }
       return supplierTypeCategoryMap.get(supplierType) === formData.category_code
     })
   }, [categorySuppliers, supplierTypeCategoryMap, formData.category_code])

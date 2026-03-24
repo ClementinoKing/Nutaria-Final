@@ -1,5 +1,4 @@
 export interface MixedPackSourceOption {
-  allocation_id: number
   pack_entry_id: number
   product_id: number
   product_name: string
@@ -7,22 +6,21 @@ export interface MixedPackSourceOption {
   pack_identifier: string | null
   lot_no: string | null
   lot_run_id: number | null
-  storage_type: string | null
-  units_count: number
-  remaining_units: number
-  total_quantity_kg: number
-  remaining_quantity_kg: number
-  quantity_per_unit_kg: number
+  remainder_kg: number
+  used_remainder_kg: number
+  available_remainder_kg: number
+  quantity_kg: number
+  pack_count: number | null
+  packed_at: string | null
   warehouse_id: number
   warehouse_name: string | null
   unit_id: number | null
   unit_name: string | null
   unit_symbol: string | null
-  allocated_at: string | null
 }
 
 export interface MixedPackCreateLine {
-  source_allocation_id: number
+  source_pack_entry_id: number
   quantity_used: string
   source: MixedPackSourceOption
 }
@@ -43,7 +41,7 @@ export interface CreateMixedPackPayload {
   p_packs_per_unit: number
   p_notes: string | null
   p_lines: Array<{
-    source_allocation_id: number
+    source_pack_entry_id: number
     quantity_used: number
   }>
 }
@@ -79,7 +77,7 @@ export interface MixedPackBatchRow {
 
 export interface MixedPackBatchItemDetail {
   id: number
-  source_allocation_id: number
+  source_allocation_id: number | null
   source_pack_entry_id: number | null
   source_product_id: number | null
   source_lot_run_id: number | null
