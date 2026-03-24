@@ -54,8 +54,8 @@ function Login() {
     }
 
     const classified = classifyIdentifier(identifier)
-    if (classified?.type === 'phone') {
-      toast.info('Phone account reset is handled by admin.')
+    if (classified?.type === 'phone' || classified?.type === 'username') {
+      toast.info('Phone and username account resets are handled by admin.')
       return
     }
 
@@ -92,17 +92,17 @@ function Login() {
                   <div className="flex flex-col gap-1 text-left">
                     <h1 className="text-2xl font-bold text-card-foreground">Login to your account</h1>
                     <p className="text-muted-foreground text-sm">
-                      Enter your username (phone) or email below to login
+                      Enter your username, phone, or email below to log in
                     </p>
                   </div>
                   <Field>
-                    <FieldLabel htmlFor="identifier">Username or Email</FieldLabel>
+                    <FieldLabel htmlFor="identifier">Username, phone, or email</FieldLabel>
                     <div className="relative">
                       <Mail className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         id="identifier"
                         type="text"
-                        placeholder="Enter your email or phone number"
+                        placeholder="Enter your username, email, or phone number"
                         value={identifier}
                         onChange={(e) => setIdentifier(e.target.value)}
                         className="h-14 rounded-xl border-none bg-muted pl-12 text-base text-card-foreground shadow-inner focus-visible:ring-2 focus-visible:ring-primary dark:bg-muted/50"

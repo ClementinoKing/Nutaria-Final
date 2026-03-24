@@ -26,6 +26,7 @@ export function useUserProfiles(pollIntervalMs?: number): UseUserProfilesReturn 
     const { data, error: queryError } = await supabase
       .from('user_profiles')
       .select('*')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
 
     if (queryError) {
@@ -72,4 +73,3 @@ export function useUserProfiles(pollIntervalMs?: number): UseUserProfilesReturn 
     setProfiles
   }
 }
-

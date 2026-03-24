@@ -4,166 +4,227 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Layers,
-  ShieldCheck,
-  Plus,
-  Users as UsersIcon,
-  Filter,
-  Settings2,
-  ClipboardList
-} from 'lucide-react'
+import { BadgeCheck, CheckCircle2, ClipboardList, Filter, Layers, Plus, ShieldCheck, Users as UsersIcon } from 'lucide-react'
 import { toast } from 'sonner'
-import { useUserProfiles } from '@/hooks/useUserProfiles'
-import { ROLE_OPTIONS, ROLE_CAPABILITY_MATRIX } from '@/constants/roles'
+import { supabase } from '@/lib/supabaseClient'
+import { Spinner } from '@/components/ui/spinner'
+import { ROLE_OPTIONS, normalizeRoleName } from '@/constants/roles'
+
+interface RoleRow {
+  id: string
+  name: string
+  description: string | null
+  created_at: string
+}
+
+interface PermissionRow {
+  id: string
+  key: string
+  description: string | null
+  module: string
+}
+
+interface RolePermissionRow {
+  role_id: string
+  permission_id: string
+}
 
 interface NewRoleState {
   name: string
   description: string
-  capabilities: string[]
-  permissions: string[]
 }
 
 function RoleManagement() {
-  const [focusArea, setFocusArea] = useState('ALL')
+  const [roles, setRoles] = useState<RoleRow[]>([])
+  const [permissions, setPermissions] = useState<PermissionRow[]>([])
+  const [rolePermissions, setRolePermissions] = useState<RolePermissionRow[]>([])
+  const [roleMembers, setRoleMembers] = useState<Record<string, number>>({})
+  const [loading, setLoading] = useState(true)
   const [roleSearch, setRoleSearch] = useState('')
+  const [focusArea, setFocusArea] = useState('ALL')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [newRole, setNewRole] = useState<NewRoleState>({
     name: '',
     description: '',
-    capabilities: [],
-    permissions: ['']
   })
-  const { profiles, loading, error, refresh } = useUserProfiles()
+
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      const [rolesResult, permissionsResult, rolePermissionsResult, userRolesResult] = await Promise.all([
+        supabase.from('roles').select('id, name, description, created_at').order('name', { ascending: true }),
+        supabase.from('permissions').select('id, key, description, module').order('module', { ascending: true }).order('key', { ascending: true }),
+        supabase.from('role_permissions').select('role_id, permission_id'),
+        supabase.rpc('get_role_member_counts'),
+      ])
+
+      if (rolesResult.error) throw rolesResult.error
+      if (permissionsResult.error) throw permissionsResult.error
+      if (rolePermissionsResult.error) throw rolePermissionsResult.error
+      if (userRolesResult.error) throw userRolesResult.error
+
+      setRoles((rolesResult.data ?? []) as RoleRow[])
+      setPermissions((permissionsResult.data ?? []) as PermissionRow[])
+      setRolePermissions((rolePermissionsResult.data ?? []) as RolePermissionRow[])
+      const countsPayload = (userRolesResult.data as Record<string, number> | null) ?? {}
+      setRoleMembers(
+        Object.fromEntries(
+          Object.entries(countsPayload).map(([roleId, count]) => [roleId, Number(count) || 0])
+        )
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to load role data'
+      toast.error(message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    if (error) {
-      toast.error(error.message ?? 'Unable to load role data from Supabase.')
+    void loadData()
+  }, [])
+
+  const permissionById = useMemo(() => {
+    return new Map(permissions.map((permission) => [permission.id, permission]))
+  }, [permissions])
+
+  const permissionsByRole = useMemo(() => {
+    const map = new Map<string, PermissionRow[]>()
+    for (const role of roles) {
+      map.set(role.id, [])
     }
-  }, [error])
 
-  const resetForm = () => {
-    setNewRole({
-      name: '',
-      description: '',
-      capabilities: [],
-      permissions: ['']
-    })
-  }
-
-  const handleCloseModal = () => {
-    setIsModalOpen(false)
-    resetForm()
-  }
-
-  const toggleCapability = (capability: string) => {
-    setNewRole((prev) => {
-      const exists = prev.capabilities.includes(capability)
-      return {
-        ...prev,
-        capabilities: exists
-          ? prev.capabilities.filter((item) => item !== capability)
-          : [...prev.capabilities, capability],
+    for (const mapping of rolePermissions) {
+      const permission = permissionById.get(mapping.permission_id)
+      if (!permission) continue
+      if (!map.has(mapping.role_id)) {
+        map.set(mapping.role_id, [])
       }
-    })
-  }
+      map.get(mapping.role_id)!.push(permission)
+    }
 
-  const updatePermission = (index: number, value: string) => {
-    setNewRole((prev) => {
-      const updated = [...prev.permissions]
-      updated[index] = value
-      return { ...prev, permissions: updated }
-    })
-  }
+    return map
+  }, [permissionById, rolePermissions, roles])
 
-  const addPermissionField = () => {
-    setNewRole((prev) => ({ ...prev, permissions: [...prev.permissions, ''] }))
-  }
-
-  const removePermissionField = (index: number) => {
-    setNewRole((prev) => {
-      const updated = prev.permissions.filter((_, idx) => idx !== index)
-      return { ...prev, permissions: updated.length > 0 ? updated : [''] }
-    })
-  }
-
-  const roleCounts = useMemo(() => {
-    return profiles.reduce((accumulator: Record<string, number>, profile) => {
-      const key = String(profile.role ?? 'viewer')
-      accumulator[key] = (accumulator[key] ?? 0) + 1
-      return accumulator
-    }, {} as Record<string, number>)
-  }, [profiles])
-
-  const enrichedRoles = useMemo(() => {
-    return ROLE_OPTIONS.map((role) => ({
-      ...role,
-      members: roleCounts[role.value] ?? 0
-    }))
-  }, [roleCounts])
-
-  const roleSummary = useMemo(() => {
-    const total = ROLE_OPTIONS.length
-    const usersCovered = profiles.length
-    const activeRoles = enrichedRoles.filter((role) => role.members > 0).length
-
-    return { total, usersCovered, activeRoles }
-  }, [enrichedRoles, profiles.length])
+  const roleAreas = useMemo(() => {
+    const areas = new Set(permissions.map((permission) => permission.module))
+    return ['ALL', ...Array.from(areas).sort()]
+  }, [permissions])
 
   const filteredRoles = useMemo(() => {
-    const trimmedSearch = roleSearch.trim().toLowerCase()
-    return enrichedRoles.filter((role) => {
+    const normalizedSearch = roleSearch.trim().toLowerCase()
+    return roles.filter((role) => {
       const matchesSearch =
-        trimmedSearch.length === 0 ||
-        role.label.toLowerCase().includes(trimmedSearch) ||
-        role.description.toLowerCase().includes(trimmedSearch)
+        normalizedSearch.length === 0 ||
+        role.name.toLowerCase().includes(normalizedSearch) ||
+        (role.description ?? '').toLowerCase().includes(normalizedSearch)
 
+      const rolePermissionKeys = permissionsByRole.get(role.id)?.map((permission) => permission.key) ?? []
       const matchesArea =
-        focusArea === 'ALL' || role.capabilities.some((capability) => capability === focusArea)
+        focusArea === 'ALL' || permissions.some((permission) => rolePermissionKeys.includes(permission.key) && permission.module === focusArea)
 
       return matchesSearch && matchesArea
     })
-  }, [enrichedRoles, focusArea, roleSearch])
+  }, [focusArea, permissions, permissionsByRole, roleSearch, roles])
 
-  const focusAreas = useMemo(() => {
-    const uniqueCapabilities = new Set(ROLE_OPTIONS.flatMap((role) => role.capabilities))
-    return ['ALL', ...Array.from(uniqueCapabilities)]
-  }, [])
+  const roleSummary = useMemo(() => {
+    return {
+      totalRoles: roles.length,
+      totalPermissions: permissions.length,
+      activeRoles: roles.filter((role) => (roleMembers[role.id] ?? 0) > 0).length,
+    }
+  }, [roleMembers, permissions.length, roles])
 
-  const availableCapabilities = focusAreas.filter((area) => area !== 'ALL')
+  const availableRoles = useMemo(() => {
+    return ROLE_OPTIONS.map((roleOption) => {
+      const dbRole = roles.find((role) => role.name === roleOption.value)
+      const memberCount = dbRole ? (roleMembers[dbRole.id] ?? 0) : 0
 
-  const accessInsights = useMemo(() => {
-    const largestRole = enrichedRoles.length > 0
-      ? enrichedRoles.reduce(
-          (current, role) => (role.members > current.members ? role : current),
-          enrichedRoles[0]!
-        )
-      : null
-
-    return [
-      {
-        label: 'Active Role Coverage',
-        value: `${roleSummary.activeRoles}/${ROLE_OPTIONS.length}`,
-        delta: `${profiles.length} members`,
-        helper: 'Roles with at least one assigned Supabase profile',
-        icon: ClipboardList
-      },
-      {
-        label: 'Largest Team',
-        value: largestRole ? largestRole.label : '—',
-        delta: `${largestRole?.members ?? 0} members`,
-        helper: 'Role with highest membership count',
-        icon: UsersIcon
-      },
-      {
-        label: 'Administrator Seats',
-        value: `${roleCounts.admin ?? 0}`,
-        delta: 'Monitor least-privilege posture',
-        helper: 'Admin profiles with full system access',
-        icon: ShieldCheck
+      return {
+        ...roleOption,
+        id: dbRole?.id ?? null,
+        description: dbRole?.description ?? roleOption.description,
+        memberCount,
+        permissionCount: roleOption.permissions.length,
       }
-    ]
-  }, [enrichedRoles, profiles.length, roleCounts, roleSummary.activeRoles])
+    })
+  }, [roleMembers, roles])
+
+  const moduleGroups = useMemo(() => {
+    const grouped = new Map<string, PermissionRow[]>()
+    permissions.forEach((permission) => {
+      if (!grouped.has(permission.module)) {
+        grouped.set(permission.module, [])
+      }
+      grouped.get(permission.module)!.push(permission)
+    })
+    return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right))
+  }, [permissions])
+
+  const permissionIdsForRole = (roleId: string) => new Set((rolePermissions.filter((entry) => entry.role_id === roleId)).map((entry) => entry.permission_id))
+
+  const togglePermission = async (roleId: string, permissionId: string) => {
+    const assigned = permissionIdsForRole(roleId).has(permissionId)
+    if (assigned) {
+      const { error } = await supabase
+        .from('role_permissions')
+        .delete()
+        .eq('role_id', roleId)
+        .eq('permission_id', permissionId)
+      if (error) {
+        toast.error(error.message ?? 'Unable to revoke permission')
+        return
+      }
+      setRolePermissions((previous) => previous.filter((entry) => !(entry.role_id === roleId && entry.permission_id === permissionId)))
+      toast.success('Permission revoked')
+      return
+    }
+
+    const { error } = await supabase.from('role_permissions').insert({
+      role_id: roleId,
+      permission_id: permissionId,
+    })
+
+    if (error) {
+      toast.error(error.message ?? 'Unable to grant permission')
+      return
+    }
+
+    setRolePermissions((previous) => [...previous, { role_id: roleId, permission_id: permissionId }])
+    toast.success('Permission granted')
+  }
+
+  const createRole = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmedName = newRole.name.trim()
+    if (!trimmedName) {
+      toast.error('Role name is required')
+      return
+    }
+
+    const { error } = await supabase.from('roles').insert({
+      name: trimmedName,
+      description: newRole.description.trim() || null,
+    })
+
+    if (error) {
+      toast.error(error.message ?? 'Unable to create role')
+      return
+    }
+
+    toast.success('Role created')
+    setIsModalOpen(false)
+    setNewRole({ name: '', description: '' })
+    await loadData()
+  }
+
+  if (loading) {
+    return (
+      <PageLayout title="Role Management" activeItem="users" contentClassName="px-4 sm:px-6 lg:px-8 py-8">
+        <Spinner text="Loading roles..." />
+      </PageLayout>
+    )
+  }
 
   return (
     <PageLayout
@@ -171,25 +232,9 @@ function RoleManagement() {
       activeItem="users"
       actions={
         <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={async () => {
-              const { error: refreshError } = await refresh()
-              if (refreshError) {
-                toast.error(refreshError.message ?? 'Failed to refresh role assignments')
-              } else {
-                toast.success('Role assignments refreshed')
-              }
-            }}
-            disabled={loading}
-          >
+          <Button size="sm" variant="outline" onClick={() => void loadData()}>
             <Filter className="mr-2 h-4 w-4" />
             Refresh data
-          </Button>
-          <Button size="sm" variant="outline">
-            <ShieldCheck className="mr-2 h-4 w-4" />
-            Audit Permissions
           </Button>
           <Button size="sm" onClick={() => setIsModalOpen(true)}>
             <Plus className="mr-2 h-4 w-4" />
@@ -204,45 +249,96 @@ function RoleManagement() {
             <div>
               <CardTitle className="text-2xl font-semibold">Design your access model</CardTitle>
               <CardDescription className="text-white/80">
-                Align Nutaria teams to the right capabilities and keep permissions auditable with a
-                modern, principle-of-least-privilege approach.
+                Manage RBAC roles and permissions directly from the database-backed access model.
               </CardDescription>
             </div>
             <div className="flex items-center gap-3 rounded-xl bg-white/10 px-4 py-3">
-              <Settings2 className="h-10 w-10 flex-shrink-0 rounded-full bg-white/20 p-2 text-white" />
+              <ShieldCheck className="h-10 w-10 flex-shrink-0 rounded-full bg-white/20 p-2 text-white" />
               <div>
-                <p className="text-sm font-medium uppercase tracking-wide text-white/70">
-                  Current posture
-                </p>
-                <p className="text-lg font-semibold">Trusted</p>
+                <p className="text-sm font-medium uppercase tracking-wide text-white/70">Current posture</p>
+                <p className="text-lg font-semibold">Permission-first</p>
               </div>
             </div>
           </CardHeader>
+        </Card>
+
+        <Card className="border border-olive-light/50 bg-white">
+          <CardHeader className="gap-2">
+            <CardTitle className="text-lg">Available Roles</CardTitle>
+            <CardDescription>
+              Every canonical role in the system and the permissions it includes.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {availableRoles.map((role) => (
+                <div key={role.value} className="flex h-full flex-col rounded-xl border border-olive-light/40 bg-olive-light/10 p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-lg font-semibold text-text-dark">{role.label}</p>
+                      <p className="mt-1 text-sm text-text-dark/70">{role.description}</p>
+                    </div>
+                    <div className="rounded-full bg-olive px-3 py-1 text-xs font-semibold text-white">
+                      {role.memberCount} users
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {role.capabilities.map((capability) => (
+                      <span
+                        key={capability}
+                        className="rounded-full border border-olive-light/60 bg-white px-3 py-1 text-xs font-medium text-text-dark"
+                      >
+                        {capability}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-text-dark">
+                      <CheckCircle2 className="h-4 w-4 text-olive" />
+                      Includes {role.permissionCount} permission{role.permissionCount === 1 ? '' : 's'}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {role.permissions.map((permission) => (
+                        <span
+                          key={permission}
+                          className="rounded-md bg-white px-2.5 py-1 text-xs text-text-dark/80 shadow-sm"
+                        >
+                          {permission}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
         </Card>
 
         <div className="grid gap-4 md:grid-cols-3">
           <Card className="border-olive-light/40 bg-white">
             <CardHeader className="pb-3">
               <CardTitle>Total Roles</CardTitle>
-              <CardDescription>Covering key operational domains</CardDescription>
+              <CardDescription>Canonical roles in the database</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-3xl font-semibold text-text-dark">{roleSummary.total}</p>
+              <p className="text-3xl font-semibold text-text-dark">{roleSummary.totalRoles}</p>
             </CardContent>
           </Card>
           <Card className="border-olive-light/40 bg-white">
             <CardHeader className="pb-3">
-              <CardTitle>Users Assigned</CardTitle>
-              <CardDescription>Team members with mapped access</CardDescription>
+              <CardTitle>Total Permissions</CardTitle>
+              <CardDescription>Scoped capability keys available</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-3xl font-semibold text-olive">{roleSummary.usersCovered}</p>
+              <p className="text-3xl font-semibold text-olive">{roleSummary.totalPermissions}</p>
             </CardContent>
           </Card>
           <Card className="border-olive-light/40 bg-white">
             <CardHeader className="pb-3">
               <CardTitle>Active Roles</CardTitle>
-              <CardDescription>Roles currently assigned to teammates</CardDescription>
+              <CardDescription>Roles currently assigned to at least one user</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-semibold text-text-dark">{roleSummary.activeRoles}</p>
@@ -255,11 +351,9 @@ function RoleManagement() {
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <CardTitle className="text-lg">Role Catalogue</CardTitle>
-                <CardDescription>
-                  Curated views of the capabilities and permissions assigned to each Nutaria role.
-                </CardDescription>
+                <CardDescription>View and update role permission mappings.</CardDescription>
               </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="role-search" className="text-xs uppercase tracking-wide text-text-dark/60">
                     Search
@@ -276,316 +370,140 @@ function RoleManagement() {
                   <Label htmlFor="focus-area" className="text-xs uppercase tracking-wide text-text-dark/60">
                     Focus area
                   </Label>
-                  <div className="relative">
-                    <select
-                      id="focus-area"
-                      value={focusArea}
-                      onChange={(event) => setFocusArea(event.target.value)}
-                      className="flex h-10 items-center rounded-md border border-input bg-background px-10 pr-8 text-sm text-text-dark shadow-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2"
-                    >
-                      {focusAreas.map((area) => (
-                        <option key={area} value={area}>
-                          {area === 'ALL' ? 'All capabilities' : area}
-                        </option>
-                      ))}
-                    </select>
-                    <Filter className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/60" />
-                  </div>
+                  <select
+                    id="focus-area"
+                    value={focusArea}
+                    onChange={(event) => setFocusArea(event.target.value)}
+                    className="flex h-10 items-center rounded-md border border-input bg-background px-3 text-sm text-text-dark shadow-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-olive focus-visible:ring-offset-2"
+                  >
+                    {roleAreas.map((area) => (
+                      <option key={area} value={area}>
+                        {area === 'ALL' ? 'All modules' : area}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {loading ? (
-              <div className="flex items-center justify-center px-4 py-16 text-sm text-text-dark/60">
-                Loading role assignments…
-              </div>
-            ) : filteredRoles.length === 0 ? (
+            {filteredRoles.length === 0 ? (
               <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-olive-light/50 bg-olive-light/20 py-12">
                 <Layers className="h-10 w-10 text-olive" />
-                <p className="text-sm text-text-dark/70">
-                  No roles found for the current filters. Try clearing your search or switching the
-                  capability filter.
-                </p>
+                <p className="text-sm text-text-dark/70">No roles found for the current filters.</p>
               </div>
             ) : (
               <div className="grid gap-4 lg:grid-cols-2">
-                {filteredRoles.map((role) => (
-                  <Card key={role.value} className="border border-olive-light/40">
-                    <CardHeader className="flex flex-col gap-4">
-                      <div className="flex items-start gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-olive/10">
-                          <Layers className="h-5 w-5 text-olive" />
+                {filteredRoles.map((role) => {
+                  const rolePermissionIds = permissionIdsForRole(role.id)
+                  const memberCount = roleMembers[role.id] ?? 0
+                  return (
+                    <Card key={role.id} className="border border-olive-light/40">
+                      <CardHeader className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-olive/10">
+                            <BadgeCheck className="h-5 w-5 text-olive" />
+                          </div>
+                          <div>
+                            <CardTitle className="text-lg text-text-dark">{role.name}</CardTitle>
+                            <CardDescription>{role.description ?? 'No description provided.'}</CardDescription>
+                          </div>
                         </div>
-                        <div>
-                          <CardTitle className="text-lg text-text-dark">{role.label}</CardTitle>
-                          <CardDescription>{role.description}</CardDescription>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {role.capabilities.map((capability) => (
-                          <span
-                            key={capability}
-                            className="inline-flex items-center rounded-full border border-olive-light/60 bg-olive-light/20 px-3 py-1 text-xs font-medium uppercase tracking-wide text-text-dark/70"
-                          >
-                            {capability}
-                          </span>
-                        ))}
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="flex items-center justify-between rounded-lg bg-olive-light/10 px-4 py-3">
                         <div className="flex items-center gap-2 text-sm text-text-dark/70">
                           <UsersIcon className="h-4 w-4 text-olive" />
-                          {role.members} team member{role.members === 1 ? '' : 's'}
+                          {memberCount} team member{memberCount === 1 ? '' : 's'}
                         </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="secondary">
-                            Edit Role
-                          </Button>
-                          <Button size="sm" variant="ghost">
-                            View Members
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase tracking-wide text-text-dark/60">
-                          Key permissions
-                        </p>
-                        <ul className="grid gap-3">
-                          {role.permissions.map((permission) => (
-                            <li
-                              key={permission}
-                              className="rounded-lg border border-olive-light/50 bg-white px-4 py-3 text-sm text-text-dark/80 shadow-sm"
-                            >
-                              {permission}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {moduleGroups.map(([moduleName, modulePermissions]) => {
+                          const visiblePermissions = modulePermissions.filter((permission) => {
+                            if (focusArea !== 'ALL' && focusArea !== moduleName) return false
+                            return true
+                          })
+
+                          if (visiblePermissions.length === 0) return null
+
+                          return (
+                            <div key={moduleName} className="space-y-2 rounded-lg border border-olive-light/40 bg-olive-light/10 p-4">
+                              <div className="flex items-center gap-2">
+                                <ClipboardList className="h-4 w-4 text-olive" />
+                                <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/60">{moduleName}</p>
+                              </div>
+                              <div className="grid gap-2">
+                                {visiblePermissions.map((permission) => {
+                                  const assigned = rolePermissionIds.has(permission.id)
+                                  return (
+                                    <button
+                                      key={permission.id}
+                                      type="button"
+                                      onClick={() => void togglePermission(role.id, permission.id)}
+                                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition ${
+                                        assigned
+                                          ? 'border-olive bg-olive/10 text-text-dark'
+                                          : 'border-olive-light/40 bg-white text-text-dark/70 hover:border-olive'
+                                      }`}
+                                    >
+                                      <span>
+                                        <span className="font-medium">{permission.key}</span>
+                                        <span className="block text-xs text-text-dark/50">{permission.description ?? permission.key}</span>
+                                      </span>
+                                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${assigned ? 'bg-olive text-white' : 'bg-gray-100 text-gray-600'}`}>
+                                        {assigned ? 'Enabled' : 'Disabled'}
+                                      </span>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </CardContent>
+                    </Card>
+                  )
+                })}
               </div>
             )}
           </CardContent>
         </Card>
 
-        <Card className="border border-olive-light/50 bg-white">
-          <CardHeader>
-            <CardTitle className="text-lg">Permission Coverage Matrix</CardTitle>
-            <CardDescription>
-              Visualise how each role engages with Nutaria modules to identify overlaps or gaps.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-olive-light/50">
-              <thead className="bg-olive-light/30 text-left text-xs font-medium uppercase tracking-wide text-text-dark/70">
-                <tr>
-                  <th scope="col" className="px-4 py-3">
-                    Capability Area
-                  </th>
-                  <th scope="col" className="px-4 py-3">
-                    Detail
-                  </th>
-                  {ROLE_OPTIONS.map((role) => (
-                    <th key={role.value} scope="col" className="px-4 py-3">
-                      {role.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-olive-light/40 text-sm text-text-dark/80">
-                {ROLE_CAPABILITY_MATRIX.map((row) => (
-                  <tr key={row.area} className="hover:bg-olive-light/10">
-                    <td className="px-4 py-3 font-medium text-text-dark">{row.area}</td>
-                    <td className="px-4 py-3 text-text-dark/70">{row.description}</td>
-                  {ROLE_OPTIONS.map((role) => {
-                    const level = row.access[role.value as keyof typeof row.access] ?? 'None'
-                      const color =
-                        level === 'Full'
-                          ? 'bg-emerald-100 text-emerald-700'
-                          : level === 'Edit'
-                            ? 'bg-blue-100 text-blue-700'
-                            : level === 'View'
-                              ? 'bg-amber-100 text-amber-700'
-                              : level === 'Request'
-                                ? 'bg-purple-100 text-purple-700'
-                                : 'bg-gray-100 text-gray-600'
-                      return (
-                      <td key={role.value} className="px-4 py-3">
-                          <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${color}`}>
-                            {level}
-                          </span>
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-
-        <Card className="border border-olive-light/50 bg-white">
-          <CardHeader>
-            <CardTitle className="text-lg">Access Insights</CardTitle>
-            <CardDescription>
-              Track how disciplined access management supports Nutaria’s governance posture.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 md:grid-cols-3">
-              {accessInsights.map((insight) => {
-                const Icon = insight.icon
-                return (
-                  <div
-                    key={insight.label}
-                    className="flex flex-col gap-3 rounded-xl border border-olive-light/40 bg-olive-light/20 p-4"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-white">
-                        <Icon className="h-5 w-5 text-olive" />
-                      </span>
-                      <div>
-                        <p className="text-xs uppercase tracking-wide text-text-dark/60">
-                          {insight.label}
-                        </p>
-                        <p className="text-lg font-semibold text-text-dark">{insight.value}</p>
-                      </div>
-                    </div>
-                    <p className="text-sm text-text-dark/70">{insight.helper}</p>
-                    <span className="text-xs font-medium text-olive">{insight.delta} vs prior period</span>
-                  </div>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+          <div className="flex w-full max-w-xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-olive-light/40 px-6 py-4">
               <div>
                 <h2 className="text-xl font-semibold text-text-dark">Create Role</h2>
-                <p className="text-sm text-text-dark/70">
-                  Define a capability set and permissions for a new Nutaria role.
-                </p>
+                <p className="text-sm text-text-dark/70">Add a new role and define its baseline description.</p>
               </div>
-              <Button variant="ghost" size="sm" onClick={handleCloseModal}>
+              <Button variant="ghost" size="sm" onClick={() => setIsModalOpen(false)}>
                 Cancel
               </Button>
             </div>
-            <form
-              className="space-y-6 bg-beige/10 px-6 py-6"
-              onSubmit={(event) => {
-                event.preventDefault()
-                // Future implementation: persist new role
-                handleCloseModal()
-              }}
-            >
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="role-name">Role name</Label>
-                  <Input
-                    id="role-name"
-                    placeholder="Enter role name"
-                    value={newRole.name}
-                    onChange={(event) => setNewRole((prev) => ({ ...prev, name: event.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="role-description">Short description</Label>
-                  <Input
-                    id="role-description"
-                    placeholder="Describe the scope of this role"
-                    value={newRole.description}
-                    onChange={(event) =>
-                      setNewRole((prev) => ({ ...prev, description: event.target.value }))
-                    }
-                  />
-                </div>
+            <form className="space-y-6 bg-beige/10 px-6 py-6" onSubmit={createRole}>
+              <div className="space-y-2">
+                <Label htmlFor="role-name">Role name</Label>
+                <Input
+                  id="role-name"
+                  placeholder="Enter role name"
+                  value={newRole.name}
+                  onChange={(event) => setNewRole((previous) => ({ ...previous, name: event.target.value }))}
+                />
               </div>
-
-              <div className="space-y-3 rounded-lg border border-olive-light/40 bg-white p-4">
-                <div className="flex flex-col gap-1">
-                  <Label className="text-sm font-medium text-text-dark">Capabilities</Label>
-                  <p className="text-xs text-text-dark/60">
-                    Select the operational areas this role should be responsible for.
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {availableCapabilities.map((capability) => {
-                    const isActive = newRole.capabilities.includes(capability)
-                    return (
-                      <button
-                        key={capability}
-                        type="button"
-                        onClick={() => toggleCapability(capability)}
-                        className={`rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-wide transition ${
-                          isActive
-                            ? 'border-olive bg-olive text-white shadow-sm'
-                            : 'border-olive-light/60 bg-olive-light/20 text-text-dark/70 hover:border-olive'
-                        }`}
-                      >
-                        {capability}
-                      </button>
-                    )
-                  })}
-                  {availableCapabilities.length === 0 && (
-                    <span className="text-xs text-text-dark/60">
-                      No capability tags available yet. They will appear once roles define them.
-                    </span>
-                  )}
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="role-description">Short description</Label>
+                <Input
+                  id="role-description"
+                  placeholder="Describe the scope of this role"
+                  value={newRole.description}
+                  onChange={(event) => setNewRole((previous) => ({ ...previous, description: event.target.value }))}
+                />
               </div>
-
-              <div className="space-y-3 rounded-lg border border-olive-light/40 bg-white p-4">
-                <div className="flex flex-col gap-1">
-                  <Label className="text-sm font-medium text-text-dark">Key permissions</Label>
-                  <p className="text-xs text-text-dark/60">
-                    Provide explicit permissions or actions this role can perform.
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  {newRole.permissions.map((permission, index) => (
-                    <div key={index} className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <Input
-                        placeholder="Enter permission name"
-                        value={permission}
-                        onChange={(event) => updatePermission(index, event.target.value)}
-                        className="flex-1"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => removePermissionField(index)}
-                          disabled={newRole.permissions.length === 1}
-                        >
-                          Remove
-                        </Button>
-                        {index === newRole.permissions.length - 1 && (
-                          <Button type="button" variant="secondary" size="sm" onClick={addPermissionField}>
-                            Add
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               <div className="flex justify-end gap-3 border-t border-olive-light/40 pt-4">
-                <Button type="button" variant="outline" onClick={handleCloseModal}>
+                <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" className="bg-olive hover:bg-olive-dark">
-                  Create Role
-                </Button>
+                <Button type="submit">Create Role</Button>
               </div>
             </form>
           </div>
@@ -596,4 +514,3 @@ function RoleManagement() {
 }
 
 export default RoleManagement
-

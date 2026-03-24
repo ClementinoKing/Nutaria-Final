@@ -47,6 +47,7 @@ import { PackagingStep } from '@/components/process/steps/PackagingStep'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { ProcessStepRun, ProcessStep } from '@/types/processExecution'
 import { formatSecondsToHms } from '@/lib/metalDetectorTimer'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 function ProcessStepsProgressSkeleton() {
   return (
@@ -316,7 +317,7 @@ function ProcessStepsProgress() {
     if (error) {
       setSelectedLot(null)
       setSelectedLots([])
-      setSelectedLotError(error.message ?? 'Failed to load lot details')
+      setSelectedLotError(getUserFriendlyErrorMessage(error, 'We could not load the lot details. Please refresh and try again.'))
     } else {
       const lot = (data as Lot | null) ?? null
       setSelectedLot(lot)

@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Plus, RefreshCcw, X, Pencil, Trash2, Sparkles } from 'lucide-react'
+import { Plus, RefreshCcw, X, Pencil, Power, Trash2, Sparkles } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { Spinner } from '@/components/ui/spinner'
@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { supabase } from '@/lib/supabaseClient'
 import SettingsTour from '@/components/tour/SettingsTour'
 import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   usePackagingSettings,
   type BoxPackRule,
@@ -461,7 +462,7 @@ function PackagingManagement() {
   const handleToggleUnit = async (unit: PackagingUnit) => {
     const result = await toggleUnitActive(unit.id, !unit.is_active)
     if (result.error) {
-      toast.error(result.error.message ?? 'Unable to update unit status.')
+      toast.error(getUserFriendlyErrorMessage(result.error, 'We could not update the unit status. Please try again.'))
       return
     }
     toast.success(`Unit ${unit.is_active ? 'deactivated' : 'activated'}.`)
@@ -470,7 +471,7 @@ function PackagingManagement() {
   const handleToggleRule = async (rule: BoxPackRule) => {
     const result = await toggleRuleActive(rule.id, !rule.is_active)
     if (result.error) {
-      toast.error(result.error.message ?? 'Unable to update rule status.')
+      toast.error(getUserFriendlyErrorMessage(result.error, 'We could not update the rule status. Please try again.'))
       return
     }
     toast.success(`Rule ${rule.is_active ? 'deactivated' : 'activated'}.`)
@@ -482,7 +483,7 @@ function PackagingManagement() {
 
     const result = await deleteRule(rule.id)
     if (result.error) {
-      toast.error(result.error.message ?? 'Unable to delete rule.')
+      toast.error(getUserFriendlyErrorMessage(result.error, 'We could not delete the rule. Please try again.'))
       return
     }
     toast.success('Rule deleted.')
@@ -651,8 +652,19 @@ function PackagingManagement() {
             >
               <Pencil className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleToggleRule(row)}>
-              {row.is_active ? 'Deactivate' : 'Activate'}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`${
+                row.is_active
+                  ? 'bg-olive-light/10 text-olive hover:bg-olive-light/20 hover:text-olive-dark'
+                  : 'bg-gray-100 text-text-dark hover:bg-gray-200'
+              }`}
+              onClick={() => handleToggleRule(row)}
+              title={row.is_active ? 'Deactivate box pack rule' : 'Activate box pack rule'}
+              aria-label={row.is_active ? 'Deactivate box pack rule' : 'Activate box pack rule'}
+            >
+              <Power className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
@@ -678,8 +690,19 @@ function PackagingManagement() {
             >
               <Pencil className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleToggleRule(row)}>
-              {row.is_active ? 'Deactivate' : 'Activate'}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`${
+                row.is_active
+                  ? 'bg-olive-light/10 text-olive hover:bg-olive-light/20 hover:text-olive-dark'
+                  : 'bg-gray-100 text-text-dark hover:bg-gray-200'
+              }`}
+              onClick={() => handleToggleRule(row)}
+              title={row.is_active ? 'Deactivate box pack rule' : 'Activate box pack rule'}
+              aria-label={row.is_active ? 'Deactivate box pack rule' : 'Activate box pack rule'}
+            >
+              <Power className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
@@ -923,7 +946,7 @@ function PackagingManagement() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load packaging settings from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the packaging settings right now. Please refresh and try again.')}
             </div>
           ) : null}
 

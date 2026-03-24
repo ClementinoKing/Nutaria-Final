@@ -22,6 +22,7 @@ import {
 import { useQualityParameters, type QualityParameter } from '@/hooks/useQualityParameters'
 import SettingsTour from '@/components/tour/SettingsTour'
 import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface FormData {
   code: string
@@ -502,7 +503,7 @@ function QualityParameters() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load quality parameters from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the quality parameters right now. Please refresh and try again.')}
             </div>
           ) : null}
 

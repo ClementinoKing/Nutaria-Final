@@ -27,7 +27,6 @@ import {
   CheckCircle2,
   Eye,
   ListChecks,
-  ShieldCheck,
   Sun,
   Moon,
   FileText,
@@ -43,7 +42,9 @@ import { LucideIcon } from 'lucide-react'
 import {
   FEATURE_CARRIERS,
 } from '@/lib/features'
-import { ROLE_OPTIONS } from '@/constants/roles'
+import { getRoleOption, normalizeRoleName } from '@/constants/roles'
+import { usePermissions } from '@/hooks/usePermissions'
+import { PERMISSIONS, type AccessContext, type PermissionKey } from '@/lib/rbac'
 
 interface NavigationSubItem {
   name: string
@@ -59,6 +60,7 @@ interface NavigationItem {
   path?: string
   submenu?: NavigationSubItem[]
   badge?: number
+  requiredPermissions?: PermissionKey[]
 }
 
 interface SidebarProps {
@@ -71,16 +73,18 @@ interface SidebarProps {
     email: string | null
     role: string | null
   } | null
+  accessContext: AccessContext | null
   onLogout: () => Promise<{ error?: Error }>
   isDesktop?: boolean
 }
 
-function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLogout, isDesktop = false }: SidebarProps) {
+function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, accessContext, onLogout, isDesktop = false }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { remainingCount: dailyRemainingCount } = useDailyChecks()
   const { theme, toggleTheme } = useTheme()
-  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users' | 'checks'
+  const { canAny } = usePermissions()
+  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users'
   
   const [expandedMenus, setExpandedMenus] = useState<Record<ExpandedMenuKey, boolean>>({
     inventory: false,
@@ -88,7 +92,6 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
     suppliersCustomers: false,
     settings: false,
     users: false,
-    checks: false,
   })
 
   const navigationItems: NavigationItem[] = [
@@ -102,9 +105,9 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
         { name: 'Stock Movements', icon: ArrowRight, key: 'stock-movements', path: '/inventory/stock-movements' },
       ]
     },
-    { name: 'Supplies', icon: ArrowDownCircle, key: 'supplies', path: '/supplies' },
-    { name: 'Payments', icon: Banknote, key: 'payments', path: '/payments' },
-    { name: 'Reports', icon: BarChart3, key: 'reports', path: '/reports' },
+    { name: 'Supplies', icon: ArrowDownCircle, key: 'supplies', path: '/supplies', requiredPermissions: [PERMISSIONS.WORKFLOW_SUPPLY_CREATE, PERMISSIONS.WORKFLOW_SUPPLY_EDIT] },
+    { name: 'Payments', icon: Banknote, key: 'payments', path: '/payments', requiredPermissions: [PERMISSIONS.REPORTS_VIEW] },
+    { name: 'Reports', icon: BarChart3, key: 'reports', path: '/reports', requiredPermissions: [PERMISSIONS.REPORTS_VIEW] },
     { 
       name: 'Process', 
       icon: Cog, 
@@ -113,6 +116,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
         { name: 'Process View', icon: Eye, key: 'process-view', path: '/process/view' },
         { name: 'Process Steps', icon: Layers, key: 'process-steps', path: '/process/process-steps' },
         { name: 'Completed Processes', icon: CheckCircle2, key: 'completed-processes', path: '/process/completed' },
+        { name: 'Mixed Packs', icon: Package, key: 'mixed-packs', path: '/process/mixed-packs' },
       ]
     },
     { 
@@ -127,21 +131,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
           : []),
       ]
     },
-    { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments' },
-    {
-      name: 'Checks',
-      icon: ListChecks,
-      key: 'checks',
-      submenu: [
-        { name: 'Metal Detector Checks', icon: ShieldCheck, key: 'metal-detector-checks', path: '/checks/metal-detector' },
-        { name: 'Daily Checks', icon: ListChecks, key: 'daily-checks', path: '/checks/daily' },
-      ],
-      badge: dailyRemainingCount,
-    },
+    { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments', requiredPermissions: [PERMISSIONS.WORKFLOW_SHIPMENT_CREATE, PERMISSIONS.WORKFLOW_SHIPMENT_EDIT] },
+    { name: 'Daily Checks', icon: ListChecks, key: 'daily-checks', path: '/checks/daily', badge: dailyRemainingCount, requiredPermissions: [PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE] },
     {
       name: 'Users',
       icon: UsersIcon,
       key: 'users',
+      requiredPermissions: [PERMISSIONS.USERS_MANAGE],
       submenu: [
         { name: 'User Management', icon: UserCheck, key: 'user-management', path: '/user-management' },
         { name: 'Role Management', icon: BadgeCheck, key: 'role-management', path: '/role-management' },
@@ -151,6 +147,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
       name: 'Settings',
       icon: Settings,
       key: 'settings',
+      requiredPermissions: [PERMISSIONS.SETTINGS_MANAGE],
       submenu: [
         { name: 'Units', icon: Ruler, key: 'units', path: '/inventory/units' },
         { name: 'Warehouses', icon: Warehouse, key: 'warehouses', path: '/inventory/warehouses' },
@@ -162,9 +159,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
         { name: 'Packaging', icon: Package, key: 'packaging', path: '/settings/packaging' },
       ],
     },
-    { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit' },
+    { name: 'Audit Logs', icon: FileText, key: 'audit', path: '/audit', requiredPermissions: [PERMISSIONS.AUDIT_LOGS_VIEW] },
     { name: 'Help', icon: HelpCircle, key: 'help', path: '/help' },
   ]
+
+  const visibleNavigationItems = navigationItems.filter((item) =>
+    item.requiredPermissions ? canAny(item.requiredPermissions) : true
+  )
 
   const closeSidebarOnMobile = () => {
     if (!isDesktop) {
@@ -194,12 +195,10 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
     '/settings/process-step-names',
     '/settings/packaging',
   ]
-  const processPaths = ['/process/view', '/process/process-steps']
-  const checksPaths = ['/checks/metal-detector', '/checks/daily', '/daily-checks']
+  const processPaths = ['/process/view', '/process/process-steps', '/process/completed', '/process/mixed-packs']
   const isInventoryActive = inventoryPaths.some(path => location.pathname.startsWith(path))
   const isSettingsActive = settingsPaths.some(path => location.pathname.startsWith(path))
   const isProcessActive = processPaths.some(path => location.pathname.startsWith(path))
-  const isChecksActive = checksPaths.some(path => location.pathname.startsWith(path))
   const isSuppliersCustomersActive = location.pathname.startsWith('/suppliers-customers')
   const isUsersActive = ['/user-management', '/role-management'].some(path => location.pathname.startsWith(path))
  
@@ -220,10 +219,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
     if (isUsersActive) {
       setExpandedMenus(prev => ({ ...prev, users: true }))
     }
-    if (isChecksActive) {
-      setExpandedMenus(prev => ({ ...prev, checks: true }))
-    }
-  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive, isChecksActive])
+  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive])
 
   const toggleMenu = (menuKey: ExpandedMenuKey) => {
     setExpandedMenus(prev => ({
@@ -244,15 +240,15 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
         return isSuppliersCustomersActive
       case 'users':
         return isUsersActive
-      case 'checks':
-        return isChecksActive
       default:
         return false
     }
   }
 
   const roleLabel =
-    ROLE_OPTIONS.find((option) => option.value === (profile?.role ?? ''))?.label ??
+    accessContext?.roles?.[0]?.name ??
+    getRoleOption(profile?.role)?.label ??
+    normalizeRoleName(profile?.role) ??
     (profile?.role ? profile.role.toUpperCase() : 'User')
   const displayName = profile?.full_name?.trim() || profile?.email || user?.email || 'User'
   const initialsSource = profile?.full_name?.trim() || profile?.email || user?.email || 'U'
@@ -289,13 +285,13 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
 
       {/* Navigation */}
       <nav className="flex-1 space-y-2 overflow-y-auto p-4">
-        {navigationItems.map((item) => {
+        {visibleNavigationItems.map((item) => {
           const Icon = item.icon
           const isActive = item.submenu ? isMenuActive(item.key) : (activeItem === item.key || location.pathname === item.path)
           const isExpanded = item.submenu && (item.key as ExpandedMenuKey) in expandedMenus 
             ? expandedMenus[item.key as ExpandedMenuKey] 
             : false
-          const showBadge = item.key === 'checks' && item.badge !== undefined && Number.isFinite(item.badge) && item.badge > 0
+          const showBadge = item.badge !== undefined && Number.isFinite(item.badge) && item.badge > 0
           
           if (item.submenu) {
             return (
@@ -363,18 +359,18 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, onLog
                 'relative flex w-full items-center space-x-3 rounded-lg px-4 py-3 text-left transition-colors',
                 isActive ? 'bg-olive text-white' : 'text-white/80 hover:bg-white/10 hover:text-white'
               )}
-            >
-              <div className="flex items-center gap-3">
+              >
+              <div className="flex flex-1 items-center gap-3">
                 <Icon className="h-6 w-6 flex-shrink-0" />
                 {sidebarOpen && <span className="text-sm font-medium">{item.name}</span>}
               </div>
               {showBadge && (
                 sidebarOpen ? (
-                <span className="ml-auto inline-flex min-h-[1.5rem] min-w-[1.5rem] items-center justify-center rounded-full bg-orange-500 px-2 text-xs font-semibold text-white">
+                  <span className="ml-auto inline-flex min-h-[1.5rem] min-w-[1.5rem] items-center justify-center rounded-full bg-orange-500 px-2 text-xs font-semibold text-white">
                     {item.badge}
                   </span>
                 ) : (
-                <span className="absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-orange-500" />
+                  <span className="absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-orange-500" />
                 )
               )}
             </button>

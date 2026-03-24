@@ -10,103 +10,198 @@ export interface RoleCapabilityMatrix {
   area: string
   description: string
   access: {
-    admin: string
-    planner: string
-    qa: string
-    viewer: string
+    'Super Admin': string
+    Admin: string
+    'Production Administrator': string
+    'Production Manager': string
+    Operator: string
   }
 }
 
 export const ROLE_OPTIONS: RoleOption[] = [
   {
-    value: 'admin',
-    label: 'Administrator',
-    description: 'Full access across governance, configuration, user management, and auditing.',
-    capabilities: ['Governance', 'Security', 'Configuration'],
+    value: 'Super Admin',
+    label: 'Super Admin',
+    description: 'Full system-wide access, including users, roles, permissions, settings, and audit logs.',
+    capabilities: ['Global Access', 'Identity', 'Audit', 'Configuration'],
     permissions: [
-      'Manage users and roles',
-      'Configure inventory settings',
-      'View and edit all operational data',
-      'Approve access reviews'
+      'users.manage',
+      'users.reset_password',
+      'workflow.supply.create',
+      'workflow.supply.edit',
+      'workflow.shipment.create',
+      'workflow.shipment.edit',
+      'workflow.checklist.manage',
+      'workflow.approve',
+      'reports.view',
+      'dashboards.view',
+      'settings.manage',
+      'audit_logs.view'
     ]
   },
   {
-    value: 'planner',
-    label: 'Production Planner',
-    description: 'Oversees day-to-day inventory, production planning, and fulfilment workflows.',
-    capabilities: ['Supply Chain', 'Production', 'Fulfilment'],
+    value: 'Admin',
+    label: 'Admin',
+    description: 'Full access within the platform, including users, workflow data, reports, and access administration.',
+    capabilities: ['Platform Admin', 'Identity', 'Workflow'],
     permissions: [
-      'Manage supplies and shipments',
-      'Update production schedules',
-      'Coordinate supplier allocations'
+      'users.manage',
+      'users.reset_password',
+      'workflow.supply.create',
+      'workflow.supply.edit',
+      'workflow.shipment.create',
+      'workflow.shipment.edit',
+      'workflow.checklist.manage',
+      'workflow.approve',
+      'reports.view',
+      'dashboards.view',
+      'settings.manage',
+      'audit_logs.view'
     ]
   },
   {
-    value: 'qa',
-    label: 'Quality Assurance',
-    description: 'Focused access to quality, grading, and compliance records.',
-    capabilities: ['Quality', 'Compliance'],
-    permissions: ['Log grading events', 'Audit quality checks', 'Export compliance reports']
+    value: 'Production Administrator',
+    label: 'Production Administrator',
+    description: 'Capture and edit supply, shipment, and checklist data with reporting access.',
+    capabilities: ['Supply', 'Shipment', 'Checklist', 'Reporting'],
+    permissions: [
+      'workflow.supply.create',
+      'workflow.supply.edit',
+      'workflow.shipment.create',
+      'workflow.shipment.edit',
+      'workflow.checklist.manage',
+      'reports.view',
+      'dashboards.view',
+      'audit_logs.view'
+    ]
   },
   {
-    value: 'viewer',
-    label: 'Viewer',
-    description: 'Read-only visibility into core operational dashboards and records.',
-    capabilities: ['Analytics', 'Reporting'],
-    permissions: ['View inventory dashboards', 'Export summary reports']
+    value: 'Production Manager',
+    label: 'Production Manager',
+    description: 'Operational control plus approvals, dashboards, and reports.',
+    capabilities: ['Supply', 'Shipment', 'Checklist', 'Approvals', 'Reporting'],
+    permissions: [
+      'workflow.supply.create',
+      'workflow.supply.edit',
+      'workflow.shipment.create',
+      'workflow.shipment.edit',
+      'workflow.checklist.manage',
+      'workflow.approve',
+      'reports.view',
+      'dashboards.view',
+      'audit_logs.view'
+    ]
+  },
+  {
+    value: 'Operator',
+    label: 'Operator',
+    description: 'Data capture for supply, shipment, and checklist workflows without approvals or admin access.',
+    capabilities: ['Supply Capture', 'Shipment Capture', 'Checklist'],
+    permissions: [
+      'workflow.supply.create',
+      'workflow.supply.edit',
+      'workflow.shipment.create',
+      'workflow.shipment.edit',
+      'workflow.checklist.manage'
+    ]
   }
 ]
 
 export const ROLE_CAPABILITY_MATRIX: RoleCapabilityMatrix[] = [
   {
-    area: 'Inventory & Stock',
-    description: 'Units, warehouses, and product catalogues',
+    area: 'User & Access Admin',
+    description: 'Users, roles, permissions, and security settings',
     access: {
-      admin: 'Full',
-      planner: 'Full',
-      qa: 'View',
-      viewer: 'View'
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'None',
+      'Production Manager': 'None',
+      Operator: 'None'
     }
   },
   {
-    area: 'Process & Production',
-    description: 'Batch events, process analytics, line status',
+    area: 'Supply Workflow',
+    description: 'Supply capture, edits, and operational handling',
     access: {
-      admin: 'Full',
-      planner: 'Full',
-      qa: 'Edit',
-      viewer: 'View'
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'Full',
+      'Production Manager': 'Full',
+      Operator: 'Capture'
     }
   },
   {
-    area: 'Shipments & Logistics',
-    description: 'Outbound shipments, freight documentation, tracking',
+    area: 'Shipment Workflow',
+    description: 'Shipment capture, edits, and fulfillment handling',
     access: {
-      admin: 'Full',
-      planner: 'Edit',
-      qa: 'View',
-      viewer: 'View'
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'Full',
+      'Production Manager': 'Full',
+      Operator: 'Capture'
     }
   },
   {
-    area: 'Compliance & QA',
-    description: 'Quality checks, grading, certification packs',
+    area: 'Checklist & QA',
+    description: 'Checklist records and production validation',
     access: {
-      admin: 'Full',
-      planner: 'View',
-      qa: 'Full',
-      viewer: 'View'
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'Full',
+      'Production Manager': 'Full',
+      Operator: 'Capture'
     }
   },
   {
-    area: 'User & Role Admin',
-    description: 'Identity management, access reviews, session control',
+    area: 'Approvals',
+    description: 'Workflow approval and validation steps',
     access: {
-      admin: 'Full',
-      planner: 'Request',
-      qa: 'Request',
-      viewer: 'None'
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'None',
+      'Production Manager': 'Full',
+      Operator: 'None'
+    }
+  },
+  {
+    area: 'Reports & Dashboards',
+    description: 'Dashboards, KPIs, and operational reports',
+    access: {
+      'Super Admin': 'Full',
+      Admin: 'Full',
+      'Production Administrator': 'View',
+      'Production Manager': 'Full',
+      Operator: 'None'
     }
   }
 ]
 
+export function normalizeRoleName(role: string | null | undefined): string | null {
+  if (!role) return null
+  const normalized = role.trim().toLowerCase()
+  switch (normalized) {
+    case 'super admin':
+      return 'Super Admin'
+    case 'admin':
+      return 'Admin'
+    case 'production administrator':
+      return 'Production Administrator'
+    case 'production manager':
+      return 'Production Manager'
+    case 'operator':
+      return 'Operator'
+    case 'planner':
+      return 'Production Administrator'
+    case 'qa':
+      return 'Production Manager'
+    case 'viewer':
+      return 'Operator'
+    default:
+      return role
+  }
+}
+
+export function getRoleOption(role: string | null | undefined): RoleOption | undefined {
+  const normalized = normalizeRoleName(role)
+  return ROLE_OPTIONS.find((option) => option.value === normalized)
+}

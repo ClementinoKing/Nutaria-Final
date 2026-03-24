@@ -8,6 +8,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { toast } from 'sonner'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -532,7 +533,7 @@ function ProcessStepNames() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load process step names from database.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the process step names right now. Please refresh and try again.')}
             </div>
           ) : null}
 

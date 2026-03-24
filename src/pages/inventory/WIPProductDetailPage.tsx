@@ -7,6 +7,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { Button } from '@/components/ui/button'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface LotRow {
   id: string
@@ -43,7 +44,7 @@ function WIPProductDetailPage() {
         .single()
 
       if (productError || !productData) {
-        setError(productError?.message ?? 'Product not found')
+        setError(getUserFriendlyErrorMessage(productError, 'We could not find this product. Please refresh and try again.'))
         setProduct(null)
         setRows([])
         setLoading(false)
@@ -64,7 +65,7 @@ function WIPProductDetailPage() {
         .order('created_at', { ascending: false })
 
       if (outputsError) {
-        setError(outputsError.message)
+        setError(getUserFriendlyErrorMessage(outputsError, 'We could not load the WIP product details. Please refresh and try again.'))
         setRows([])
         setLoading(false)
         return
@@ -119,7 +120,7 @@ function WIPProductDetailPage() {
       result.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
       setRows(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load WIP product detail')
+      setError(getUserFriendlyErrorMessage(e, 'We could not load the WIP product details. Please refresh and try again.'))
       setProduct(null)
       setRows([])
     } finally {

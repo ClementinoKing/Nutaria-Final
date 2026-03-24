@@ -12,6 +12,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { useDocumentTypes, type DocumentType } from '@/hooks/useDocumentTypes'
 import SettingsTour from '@/components/tour/SettingsTour'
 import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -558,7 +559,7 @@ function DocumentTypes() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load document types from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the document types right now. Please refresh and try again.')}
             </div>
           ) : null}
 

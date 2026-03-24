@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
 import SettingsTour from '@/components/tour/SettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -375,6 +376,19 @@ function Processes() {
         (product.sku && product.sku.toLowerCase().includes(term))
     )
   }, [availableRawProducts, productSearchTerm])
+
+  const getAvailableStepNames = (currentStepNameId: number | null) => {
+    const selectedStepNameIds = new Set(
+      formData.steps
+        .map((step: FormStep) => step.step_name_id)
+        .filter((stepNameId): stepNameId is number => typeof stepNameId === 'number' && stepNameId > 0)
+    )
+
+    return processStepNames.filter((stepName) => {
+      const isCurrentSelection = currentStepNameId === stepName.id
+      return isCurrentSelection || !selectedStepNameIds.has(stepName.id)
+    })
+  }
 
   const initializeFormForProducts = useCallback((productIds: number[]) => {
     const normalizedProductIds = productIds.filter((value) => Number.isInteger(value) && value > 0)
@@ -1066,7 +1080,7 @@ function Processes() {
         <CardContent>
           {error ? (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load processes from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the processes right now. Please refresh and try again.')}
             </div>
           ) : null}
 
@@ -1268,7 +1282,7 @@ function Processes() {
                     </div>
                   ) : productsError ? (
                     <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                      {productsError.message ?? 'Unable to load products.'}
+                      {getUserFriendlyErrorMessage(productsError, 'We could not load the products needed for this form. Please refresh and try again.')}
                     </div>
                   ) : availableRawProducts.length === 0 ? (
                     <div className="rounded-md border border-olive-light/30 bg-olive-light/10 px-3 py-2 text-sm text-text-dark/70">
@@ -1450,7 +1464,7 @@ function Processes() {
                                 required
                               >
                                 <option value="">Select step name</option>
-                                {processStepNames.map((stepName: ProcessStepName) => (
+                                {getAvailableStepNames(step.step_name_id).map((stepName: ProcessStepName) => (
                                   <option key={stepName.id} value={stepName.id}>
                                     {stepName.name} ({stepName.code})
                                   </option>

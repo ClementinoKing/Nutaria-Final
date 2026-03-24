@@ -54,6 +54,7 @@ interface UsePackagingRunReturn {
     quantity_kg: number
     packing_type: string | null
     pack_size_kg?: number | null
+    damaged_pack_count?: number | null
   }) => Promise<ProcessPackagingPackEntry>
   deletePackEntry: (id: number) => Promise<void>
   addStorageAllocation: (data: {
@@ -512,6 +513,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
       quantity_kg: number
       packing_type: string | null
       pack_size_kg?: number | null
+      damaged_pack_count?: number | null
     }): Promise<ProcessPackagingPackEntry> => {
       if (!packagingRun) {
         throw new Error('Packaging run must be created before adding pack entries')
@@ -535,6 +537,7 @@ export function usePackagingRun(options: UsePackagingRunOptions): UsePackagingRu
           quantity_kg: data.quantity_kg,
           packing_type: data.packing_type ?? null,
           pack_size_kg: data.pack_size_kg ?? null,
+          damaged_pack_count: data.damaged_pack_count ?? 0,
           metal_check_status: latestCheck.status,
           metal_check_attempts: attempts,
           metal_check_last_id: latestCheck.id,

@@ -6,6 +6,13 @@ import App from './App.jsx'
 import { AuthProvider } from './context/AuthContext.jsx'
 import { DailyChecksProvider } from './context/DailyChecksContext.jsx'
 import { ThemeProvider } from './context/ThemeContext.jsx'
+import { toast } from 'sonner'
+import { getFriendlyToastErrorMessage } from './lib/errorMessages'
+
+const originalToastError = toast.error.bind(toast)
+toast.error = ((message, options) =>
+  originalToastError(getFriendlyToastErrorMessage(message), options)
+) as typeof toast.error
 
 const Toaster = lazy(() => import('sonner').then((module) => ({ default: module.Toaster })))
 

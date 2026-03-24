@@ -6,6 +6,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface RunRow {
   id: number
@@ -50,7 +51,7 @@ function CompletedProcessesList() {
         .order('completed_at', { ascending: false })
 
       if (fetchError) {
-        setError(fetchError.message)
+        setError(getUserFriendlyErrorMessage(fetchError, 'We could not load the completed processes. Please refresh and try again.'))
         setRuns([])
         setLoading(false)
         return
@@ -216,7 +217,7 @@ function CompletedProcessesList() {
         <CardContent>
           {error ? (
             <div className="rounded-md border border-orange-200 bg-orange-50 p-4 text-sm text-orange-800">
-              {error}
+              {getUserFriendlyErrorMessage(error, 'We could not load the completed processes. Please refresh and try again.')}
             </div>
           ) : runs.length === 0 ? (
             <div className="rounded-md border border-dashed border-olive-light/60 bg-olive-light/10 p-8 text-center text-sm text-text-dark/70">

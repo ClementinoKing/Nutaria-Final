@@ -439,7 +439,9 @@ export interface ProcessPackagingMetalCheck {
 export interface ProcessPackagingPackEntry {
   id: number
   packaging_run_id: number
-  sorting_output_id: number
+  sorting_output_id: number | null
+  mixed_pack_batch_id?: number | null
+  source_mode?: 'SORTING_OUTPUT' | 'MIXED_PACK'
   product_id: number | null
   packet_unit_code?: string | null
   pack_identifier: string
@@ -447,6 +449,7 @@ export interface ProcessPackagingPackEntry {
   packing_type: string | null
   pack_size_kg?: number | null
   pack_count?: number | null
+  damaged_pack_count?: number | null
   remainder_kg?: number | null
   metal_check_status?: 'PASS' | 'FAIL' | null
   metal_check_attempts?: number

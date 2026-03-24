@@ -12,6 +12,7 @@ import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -606,7 +607,7 @@ function Units() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load units from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the units right now. Please refresh and try again.')}
             </div>
           ) : null}
 
@@ -633,7 +634,7 @@ function Units() {
                 <h2 className="text-lg font-semibold text-text-dark">
                   {isEditMode ? 'Edit Unit' : 'Add Unit'}
                 </h2>
-                <p className="text-sm text-text-dark/70">Enter a symbol and the name will be generated automatically.</p>
+                <p className="text-sm text-text-dark/70">Enter a symbol first, then the name will be generated automatically.</p>
               </div>
               <Button
                 type="button"
@@ -649,20 +650,6 @@ function Units() {
 
             <form onSubmit={handleSubmit} className="px-6 py-6 space-y-5">
               <div>
-                <Label htmlFor="unit-name">Name (auto-generated)</Label>
-                <Input
-                  id="unit-name"
-                  data-tour="units-name-field"
-                  name="name"
-                  placeholder="Enter unit name"
-                  value={formData.name}
-                  onChange={handleFormChange}
-                  className="mt-1"
-                  disabled
-                />
-              </div>
-
-              <div>
                 <Label htmlFor="unit-symbol">Symbol</Label>
                 <Input
                   id="unit-symbol"
@@ -677,6 +664,20 @@ function Units() {
                 {formErrors.symbol ? (
                   <p className="mt-1 text-sm text-red-600">{formErrors.symbol}</p>
                 ) : null}
+              </div>
+
+              <div>
+                <Label htmlFor="unit-name">Name (auto-generated)</Label>
+                <Input
+                  id="unit-name"
+                  data-tour="units-name-field"
+                  name="name"
+                  placeholder="Enter unit name"
+                  value={formData.name}
+                  onChange={handleFormChange}
+                  className="mt-1"
+                  disabled
+                />
               </div>
 
               <div className="flex items-center justify-end gap-3">

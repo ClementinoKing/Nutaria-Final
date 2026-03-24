@@ -12,6 +12,7 @@ import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
 import SettingsTour from '@/components/tour/SettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -2482,7 +2483,7 @@ function Products() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load products from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the products right now. Please refresh and try again.')}
             </div>
           ) : null}
 

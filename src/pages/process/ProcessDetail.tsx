@@ -210,6 +210,19 @@ function ProcessDetail() {
     steps: [],
   })
 
+  const getAvailableStepNames = (currentStepNameId: number | null) => {
+    const selectedStepNameIds = new Set(
+      formState.steps
+        .map((step: FormStep) => step.step_name_id)
+        .filter((stepNameId): stepNameId is number => typeof stepNameId === 'number' && stepNameId > 0)
+    )
+
+    return processStepNames.filter((stepName) => {
+      const isCurrentSelection = currentStepNameId === stepName.id
+      return isCurrentSelection || !selectedStepNameIds.has(stepName.id)
+    })
+  }
+
   const fetchWarehouses = useCallback(async () => {
     setWarehousesLoading(true)
 
@@ -1581,7 +1594,7 @@ function ProcessDetail() {
                               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                             >
                               <option value="">Select step name</option>
-                              {processStepNames.map((stepName: ProcessStepName) => (
+                              {getAvailableStepNames(step.step_name_id).map((stepName: ProcessStepName) => (
                                 <option key={stepName.id} value={stepName.id}>
                                   {stepName.name} ({stepName.code})
                                 </option>

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useProcessDefinitions } from '@/hooks/useProcessDefinitions'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import { supabase } from '@/lib/supabaseClient'
 import {
   createProcessRunWithLots,
@@ -389,7 +390,9 @@ function ProcessSteps() {
         <Card className="border-red-300 bg-red-50 text-red-700">
           <CardContent className="py-4">
             <div className="font-medium">We could not load process definitions.</div>
-            <div className="mt-1 text-sm">{definitionsError.message ?? 'Please refresh.'}</div>
+            <div className="mt-1 text-sm">
+              {getUserFriendlyErrorMessage(definitionsError, 'Please refresh the page and try again.')}
+            </div>
           </CardContent>
         </Card>
       )}

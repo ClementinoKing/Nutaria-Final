@@ -8,6 +8,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 type MovementType =
   | 'IN_RECEIPT'
@@ -83,7 +84,7 @@ function StockMovements() {
         .order('created_at', { ascending: true })
 
       if (batchesError) {
-        setError(batchesError.message)
+        setError(getUserFriendlyErrorMessage(batchesError, 'We could not load the stock movements right now. Please refresh and try again.'))
         setMovements([])
         setLoading(false)
         return
@@ -159,7 +160,7 @@ function StockMovements() {
         .order('performed_at', { ascending: true })
 
       if (inventoryMoveError) {
-        setError(inventoryMoveError.message)
+        setError(getUserFriendlyErrorMessage(inventoryMoveError, 'We could not load the stock movements right now. Please refresh and try again.'))
         setMovements([])
         setLoading(false)
         return
@@ -300,7 +301,7 @@ function StockMovements() {
       allMovements.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
       setMovements(allMovements)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load stock movements')
+      setError(getUserFriendlyErrorMessage(e, 'We could not load the stock movements right now. Please refresh and try again.'))
       setMovements([])
     } finally {
       setLoading(false)

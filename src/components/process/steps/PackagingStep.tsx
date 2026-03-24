@@ -67,6 +67,7 @@ interface PackEntryStockRow {
   packet_unit_code: string | null
   pack_identifier: string | null
   pack_count: number | null
+  damaged_pack_count: number | null
   quantity_kg: number | null
   pack_size_kg: number | null
 }
@@ -123,6 +124,17 @@ function normalizeUnitCode(code: string | null | undefined): string {
 
 function normalizeUnitType(value: string | null | undefined): string {
   return String(value ?? '').trim().toUpperCase()
+}
+
+function getPackEntryPacketUsage(quantityKg: number, packSizeKg: number, damagedPackCount: number) {
+  const goodPackCount =
+    packSizeKg > 0 && Number.isFinite(quantityKg) && quantityKg > 0 ? Math.floor(quantityKg / packSizeKg) : 0
+  const sanitizedDamagedPackCount = Number.isFinite(damagedPackCount) ? Math.max(0, Math.floor(damagedPackCount)) : 0
+  return {
+    goodPackCount,
+    damagedPackCount: sanitizedDamagedPackCount,
+    totalPackCount: goodPackCount + sanitizedDamagedPackCount,
+  }
 }
 
 const YES_NO_NA_OPTIONS = [
@@ -285,6 +297,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     product_id: '',
     packet_unit_code: '',
     quantity_kg: '',
+    damaged_pack_count: '',
   })
   const selectedWipProductIdForFilter = useMemo(() => {
     const selectedSortingOutputId = Number(packEntryForm.sorting_output_id) || 0
@@ -618,7 +631,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
 
         const { data: packEntriesData } = await supabase
           .from('process_packaging_pack_entries')
-          .select('id, packaging_run_id, packet_unit_code, pack_identifier, pack_count, quantity_kg, pack_size_kg')
+          .select('id, packaging_run_id, packet_unit_code, pack_identifier, pack_count, damaged_pack_count, quantity_kg, pack_size_kg')
 
         const packagingRunIds = Array.from(
           new Set(
@@ -738,12 +751,14 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
             if (!operationalProductId) return
 
             const storedPackCount = Number(entry.pack_count) || 0
+            const damagedPackCount = Number(entry.damaged_pack_count) || 0
             const quantityKg = Number(entry.quantity_kg) || 0
             const packSizeKg = Number(entry.pack_size_kg) || 0
             const derivedPackCount = storedPackCount > 0 ? storedPackCount : packSizeKg > 0 ? Math.floor(quantityKg / packSizeKg) : 0
-            if (derivedPackCount <= 0) return
+            const totalConsumedPacks = derivedPackCount + Math.max(0, damagedPackCount)
+            if (totalConsumedPacks <= 0) return
 
-            consumedByProductId[operationalProductId] = (consumedByProductId[operationalProductId] || 0) + derivedPackCount
+            consumedByProductId[operationalProductId] = (consumedByProductId[operationalProductId] || 0) + totalConsumedPacks
           })
 
           const packEntryToPackagingRunId = new Map<number, number>()
@@ -1387,11 +1402,22 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     () => getAvailablePacksForPacketUnit(selectedPacketUnitForPackEntry),
     [getAvailablePacksForPacketUnit, selectedPacketUnitForPackEntry]
   )
+  const packEntryQuantityKg = parseFloat(packEntryForm.quantity_kg || '0')
+  const packEntryDamagedPackCount = Math.max(0, parseInt(packEntryForm.damaged_pack_count || '0', 10) || 0)
+  const packEntryPacketUsage = useMemo(
+    () =>
+      getPackEntryPacketUsage(
+        packEntryQuantityKg,
+        Number(selectedPacketUnitForPackEntry?.net_weight_kg) || 0,
+        packEntryDamagedPackCount
+      ),
+    [packEntryQuantityKg, selectedPacketUnitForPackEntry?.net_weight_kg, packEntryDamagedPackCount]
+  )
   useEffect(() => {
     setPackEntryForm((prev) => {
       if (!selectedWipForPackEntry) {
         if (!prev.product_id) return prev
-        return { ...prev, product_id: '' }
+        return { ...prev, product_id: '', damaged_pack_count: '' }
       }
       const selectedStillValid = finishedProducts.some((product) => String(product.id) === prev.product_id)
       if (selectedStillValid) return prev
@@ -1556,7 +1582,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     const selectedId = Number(packEntryForm.sorting_output_id)
     const stillEligible = eligibleWipsForPacking.some((w) => w.id === selectedId)
     if (!stillEligible) {
-      setPackEntryForm((prev) => ({ ...prev, sorting_output_id: '', quantity_kg: '' }))
+      setPackEntryForm((prev) => ({ ...prev, sorting_output_id: '', quantity_kg: '', damaged_pack_count: '' }))
     }
   }, [eligibleWipsForPacking, packEntryForm.sorting_output_id])
 
@@ -1928,6 +1954,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     const selectedPackSizeKg = Number(selectedPacketUnit?.net_weight_kg) || 0
     const operationalProductId = Number(selectedPacketUnit?.operational_product_id) || 0
     const quantityKg = parseFloat(packEntryForm.quantity_kg)
+    const damagedPackCount = Math.max(0, parseInt(packEntryForm.damaged_pack_count || '0', 10) || 0)
     const selectedWip = sortedWips.find((w) => w.id === sortingOutputId)
     const failedRejectedKg = selectedWip ? getFailedRejectedWeightBySortingOutput(selectedWip.id) : 0
     const latestCheck = sortingOutputId ? getLatestMetalCheck(sortingOutputId) : null
@@ -1972,7 +1999,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
       return
     }
 
-    const requiredPacks = Math.max(0, Math.floor(quantityKg / selectedPackSizeKg))
+    const { totalPackCount: requiredPacks } = getPackEntryPacketUsage(quantityKg, selectedPackSizeKg, damagedPackCount)
     const snapshot = await loadOperationalPackagingStockSnapshot(runWarehouseId)
     const availablePacks = getAvailablePacksForPacketUnit(selectedPacketUnit, snapshot.accepted, snapshot.consumed)
     if (requiredPacks > availablePacks) {
@@ -1993,6 +2020,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         quantity_kg: quantityKg,
         packing_type: mapPackagingTypeToPackingType(selectedPacketUnit.packaging_type),
         pack_size_kg: selectedPackSizeKg,
+        damaged_pack_count: damagedPackCount,
       })
       const remainderUsageNeededKg = Math.max(0, quantityKg - Math.max(0, remainingKgBase))
       if (remainderUsageNeededKg > 0 && addedRemainderSources.length > 0) {
@@ -2040,6 +2068,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
         product_id: '',
         packet_unit_code: '',
         quantity_kg: '',
+        damaged_pack_count: '',
       })
       setRemainderPrefillSource(null)
       setAddedRemainderSources([])
@@ -2517,14 +2546,15 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         }
                         if (selectedPacketUnitForPackEntry) {
                           const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry.net_weight_kg) || 0
-                          const requiredPacks =
-                            selectedPackSizeKg > 0 && Number.isFinite(numericValue) && numericValue > 0
-                              ? Math.floor(numericValue / selectedPackSizeKg)
-                              : 0
+                          const { totalPackCount: requiredPacks } = getPackEntryPacketUsage(
+                            numericValue,
+                            selectedPackSizeKg,
+                            packEntryDamagedPackCount
+                          )
                           if (requiredPacks > selectedPacketUnitAvailablePacks) {
                             if (!packAvailabilityOverflowToastShownRef.current) {
                               toast.error(
-                                `Packs required (${requiredPacks}) cannot exceed available packs (${selectedPacketUnitAvailablePacks}).`
+                                `Packets required (${requiredPacks}) cannot exceed available packs (${selectedPacketUnitAvailablePacks}).`
                               )
                               packAvailabilityOverflowToastShownRef.current = true
                             }
@@ -2541,18 +2571,56 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Packs (auto)</Label>
+                    <Label>Good packs (auto)</Label>
                     <Input
                       type="text"
                       readOnly
                       value={(() => {
-                        const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry?.net_weight_kg) || 0
-                        const quantityKg = parseFloat(packEntryForm.quantity_kg || '0')
-                        if (selectedPackSizeKg <= 0 || !Number.isFinite(quantityKg) || quantityKg <= 0) return ''
-                        return Math.floor(quantityKg / selectedPackSizeKg).toString()
+                        if (packEntryPacketUsage.goodPackCount <= 0) return ''
+                        return packEntryPacketUsage.goodPackCount.toString()
                       })()}
                       disabled={saving || externalLoading}
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Damaged packs</Label>
+                    <Input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={packEntryForm.damaged_pack_count}
+                      onChange={(e) => {
+                        const rawValue = e.target.value
+                        packAvailabilityOverflowToastShownRef.current = false
+                        if (rawValue === '') {
+                          setPackEntryForm({ ...packEntryForm, damaged_pack_count: rawValue })
+                          return
+                        }
+                        const numericValue = Math.max(0, Math.floor(Number(rawValue)))
+                        if (selectedPacketUnitForPackEntry) {
+                          const selectedPackSizeKg = Number(selectedPacketUnitForPackEntry.net_weight_kg) || 0
+                          const { totalPackCount: requiredPacks } = getPackEntryPacketUsage(
+                            parseFloat(packEntryForm.quantity_kg || '0'),
+                            selectedPackSizeKg,
+                            numericValue
+                          )
+                          if (requiredPacks > selectedPacketUnitAvailablePacks) {
+                            if (!packAvailabilityOverflowToastShownRef.current) {
+                              toast.error(
+                                `Packets required (${requiredPacks}) cannot exceed available packs (${selectedPacketUnitAvailablePacks}).`
+                              )
+                              packAvailabilityOverflowToastShownRef.current = true
+                            }
+                          }
+                        }
+                        setPackEntryForm({ ...packEntryForm, damaged_pack_count: String(numericValue) })
+                      }}
+                      disabled={saving || externalLoading}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Total packets used (auto)</Label>
+                    <Input type="text" readOnly value={packEntryPacketUsage.totalPackCount > 0 ? String(packEntryPacketUsage.totalPackCount) : ''} disabled={saving || externalLoading} />
                   </div>
                   <div className="space-y-2">
                     <Label>Remainder (kg, auto)</Label>
@@ -2600,6 +2668,7 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                       : packSizeKg > 0
                       ? Math.floor(pe.quantity_kg / packSizeKg)
                       : null
+                  const damagedPackCount = Math.max(0, Number(pe.damaged_pack_count) || 0)
                   const remainderKg =
                     typeof pe.remainder_kg === 'number'
                       ? pe.remainder_kg
@@ -2621,7 +2690,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         )}
                         {packCount !== null && (
                           <span className="text-text-dark/60">
-                            {' '}({packCount} packs{remainderKg !== null && remainderKg > 0 ? ` + ${remainderKg.toFixed(2)} kg remainder` : ''})
+                            {' '}
+                            ({packCount} good packs{damagedPackCount > 0 ? ` + ${damagedPackCount} damaged` : ''}
+                            {remainderKg !== null && remainderKg > 0 ? ` + ${remainderKg.toFixed(2)} kg remainder` : ''})
                           </span>
                         )}
                       </span>
@@ -3290,7 +3361,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                 <div className="divide-y divide-olive-light/20">
                   {packEntries.map((entry) => (
                     <div key={`summary-${entry.id}`} className="px-4 py-2 text-sm text-text-dark/80">
-                      {(entry.packet_unit_code || entry.pack_identifier)}: produced {Number(entry.pack_count) || 0} packs · allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
+                      {(entry.packet_unit_code || entry.pack_identifier)}: produced {Number(entry.pack_count) || 0} good packs
+                      {Number(entry.damaged_pack_count) > 0 ? ` + ${Number(entry.damaged_pack_count)} damaged` : ''}
+                      {' '}· allocated {getAllocatedPacksByEntry(entry.id)} · remaining {getRemainingPackCountByEntry(entry.id)}
                     </div>
                   ))}
                 </div>
@@ -3315,7 +3388,9 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
                         .filter((entry) => (Number(entry.pack_count) || 0) > 0)
                         .map((entry) => (
                           <option key={entry.id} value={entry.id}>
-                            {(entry.packet_unit_code || entry.pack_identifier)} · {(Number(entry.pack_count) || 0)} packs · {getRemainingPackCountByEntry(entry.id)} remaining
+                            {(entry.packet_unit_code || entry.pack_identifier)} · {(Number(entry.pack_count) || 0)} good packs
+                            {Number(entry.damaged_pack_count) > 0 ? ` + ${Number(entry.damaged_pack_count)} damaged` : ''}
+                            {' '}· {getRemainingPackCountByEntry(entry.id)} remaining
                           </option>
                         ))}
                     </select>

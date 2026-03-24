@@ -1,7 +1,8 @@
-import { Suspense, lazy } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import type { Location as RouterLocation } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
+import { hasAllPermissions, hasAnyPermission, PERMISSIONS, type PermissionKey } from '@/lib/rbac'
 import {
   FEATURE_CARRIERS,
 } from './lib/features'
@@ -9,7 +10,6 @@ import {
 const Login = lazy(() => import('./pages/Login'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const DailyChecks = lazy(() => import('./pages/daily/DailyChecks'))
-const MetalDetectorChecks = lazy(() => import('./pages/checks/MetalDetectorChecks'))
 const Units = lazy(() => import('./pages/inventory/Units'))
 const Warehouses = lazy(() => import('./pages/inventory/Warehouses'))
 const Products = lazy(() => import('./pages/inventory/Products'))
@@ -39,6 +39,7 @@ const ProcessStepsProgress = lazy(() => import('./pages/process/ProcessStepsProg
 const LegacyProcessStepsRedirect = lazy(() => import('./pages/process/LegacyProcessStepsRedirect'))
 const CompletedProcessesList = lazy(() => import('./pages/process/CompletedProcessesList'))
 const CompletedProcessDetail = lazy(() => import('./pages/process/CompletedProcessDetail'))
+const MixedPacks = lazy(() => import('./pages/process/MixedPacks'))
 const Customers = lazy(() => import('./pages/suppliers-customers/Customers'))
 const CustomerDetail = lazy(() => import('./pages/suppliers-customers/CustomerDetail'))
 const Suppliers = lazy(() => import('./pages/suppliers-customers/Suppliers'))
@@ -73,6 +74,12 @@ interface ProtectedRouteProps {
   children: React.ReactNode
 }
 
+interface PermissionRouteProps {
+  children: React.ReactNode
+  anyOf?: PermissionKey[]
+  allOf?: PermissionKey[]
+}
+
 function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, loading } = useAuth()
 
@@ -90,8 +97,32 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   return user ? children : <Navigate to="/login" replace />
 }
 
+function PermissionRoute({ children, anyOf, allOf }: PermissionRouteProps) {
+  const { accessContext, accessLoading, loading } = useAuth()
+
+  if (loading || accessLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-beige">
+        <div className="flex flex-col items-center gap-2">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-olive border-t-transparent"></div>
+          <div className="text-text-dark">Loading...</div>
+        </div>
+      </div>
+    )
+  }
+
+  const allowed = anyOf
+    ? hasAnyPermission(accessContext, anyOf)
+    : allOf
+      ? hasAllPermissions(accessContext, allOf)
+      : true
+
+  return allowed ? <>{children}</> : <Navigate to="/dashboard" replace />
+}
+
 function App() {
   const location = useLocation()
+  const { user, loading } = useAuth()
   const state = location.state as { backgroundLocation?: RouterLocation } | null
   const isSupplyEditRoute = /^\/supplies\/\d+\/edit$/.test(location.pathname)
   const backgroundLocation = isSupplyEditRoute ? state?.backgroundLocation : undefined
@@ -112,7 +143,9 @@ function App() {
           path="/checks/daily"
           element={
             <ProtectedRoute>
-              <DailyChecks />
+              <PermissionRoute anyOf={[PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE]}>
+                <DailyChecks />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -120,7 +153,7 @@ function App() {
           path="/checks/metal-detector"
           element={
             <ProtectedRoute>
-              <MetalDetectorChecks />
+              <Navigate to="/checks/daily" replace />
             </ProtectedRoute>
           }
         />
@@ -328,7 +361,9 @@ function App() {
           path="/reports"
           element={
             <ProtectedRoute>
-              <Reports />
+              <PermissionRoute anyOf={[PERMISSIONS.REPORTS_VIEW]}>
+                <Reports />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -360,7 +395,9 @@ function App() {
           path="/settings/supplier-types"
           element={
             <ProtectedRoute>
-              <SupplierTypes />
+              <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                <SupplierTypes />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -368,7 +405,9 @@ function App() {
           path="/settings/document-types"
           element={
             <ProtectedRoute>
-              <DocumentTypes />
+              <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                <DocumentTypes />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -376,7 +415,9 @@ function App() {
           path="/settings/quality-parameters"
           element={
             <ProtectedRoute>
-              <QualityParameters />
+              <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                <QualityParameters />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -384,7 +425,9 @@ function App() {
           path="/settings/process-step-names"
           element={
             <ProtectedRoute>
-              <ProcessStepNames />
+              <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                <ProcessStepNames />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -392,7 +435,9 @@ function App() {
           path="/settings/packaging"
           element={
             <ProtectedRoute>
-              <PackagingManagement />
+              <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                <PackagingManagement />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -401,7 +446,9 @@ function App() {
             path="/suppliers-customers/carriers"
             element={
               <ProtectedRoute>
-                <Carriers />
+                <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                  <Carriers />
+                </PermissionRoute>
               </ProtectedRoute>
             }
           />
@@ -411,7 +458,9 @@ function App() {
             path="/settings/carriers"
             element={
               <ProtectedRoute>
-                <Navigate to="/suppliers-customers/carriers" replace />
+                <PermissionRoute anyOf={[PERMISSIONS.SETTINGS_MANAGE]}>
+                  <Navigate to="/suppliers-customers/carriers" replace />
+                </PermissionRoute>
               </ProtectedRoute>
             }
           />
@@ -453,6 +502,14 @@ function App() {
           element={
             <ProtectedRoute>
               <CompletedProcessDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/mixed-packs"
+          element={
+            <ProtectedRoute>
+              <MixedPacks />
             </ProtectedRoute>
           }
         />
@@ -589,7 +646,9 @@ function App() {
           path="/user-management"
           element={
             <ProtectedRoute>
-              <UserManagement />
+              <PermissionRoute anyOf={[PERMISSIONS.USERS_MANAGE]}>
+                <UserManagement />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -597,7 +656,9 @@ function App() {
           path="/role-management"
           element={
             <ProtectedRoute>
-              <RoleManagement />
+              <PermissionRoute anyOf={[PERMISSIONS.USERS_MANAGE, PERMISSIONS.SETTINGS_MANAGE]}>
+                <RoleManagement />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />
@@ -605,7 +666,9 @@ function App() {
           path="/audit"
           element={
             <ProtectedRoute>
-              <AuditLogs />
+              <PermissionRoute anyOf={[PERMISSIONS.AUDIT_LOGS_VIEW]}>
+                <AuditLogs />
+              </PermissionRoute>
             </ProtectedRoute>
           }
         />

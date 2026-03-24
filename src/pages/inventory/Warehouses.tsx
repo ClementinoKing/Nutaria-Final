@@ -12,6 +12,7 @@ import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import { toast } from 'sonner'
 import type { PostgrestError } from '@supabase/supabase-js'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -694,7 +695,7 @@ function Warehouses() {
 
           {error ? (
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error.message ?? 'Unable to load warehouses from Supabase.'}
+              {getUserFriendlyErrorMessage(error, 'We could not load the warehouses right now. Please refresh and try again.')}
             </div>
           ) : null}
 

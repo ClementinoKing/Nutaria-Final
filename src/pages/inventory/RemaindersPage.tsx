@@ -6,6 +6,7 @@ import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface RemainderRow {
   id: string
@@ -66,7 +67,7 @@ function RemaindersPage() {
         .order('created_at', { ascending: false })
 
       if (fetchError) {
-        setError(fetchError.message)
+        setError(getUserFriendlyErrorMessage(fetchError, 'We could not load the remainders right now. Please refresh and try again.'))
         setRows([])
         return
       }
@@ -106,7 +107,7 @@ function RemaindersPage() {
 
       setRows(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load remainders')
+      setError(getUserFriendlyErrorMessage(e, 'We could not load the remainders right now. Please refresh and try again.'))
       setRows([])
     } finally {
       setLoading(false)

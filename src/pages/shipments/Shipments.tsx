@@ -569,7 +569,11 @@ function Shipments() {
           pack_entry:process_packaging_pack_entries(
             id,
             product_id,
+            mixed_pack_batch_id,
             product:products(id, name, sku),
+            mixed_pack_batch:mixed_pack_batch_id(
+              pack_name
+            ),
             pack_identifier,
             pack_size_kg,
             sorting_output:process_sorting_outputs(
@@ -593,13 +597,22 @@ function Shipments() {
         return
       }
 
-      const { data: shipmentUsageRows } = await supabase
-        .from('shipment_pack_items')
-        .select(`
-          packaging_allocation_id,
-          units_count,
-          shipment:shipments(doc_status)
-        `)
+      const [shipmentUsageRes, mixedPackUsageRes] = await Promise.all([
+        supabase
+          .from('shipment_pack_items')
+          .select(`
+            packaging_allocation_id,
+            units_count,
+            shipment:shipments(doc_status)
+          `),
+        supabase
+          .from('mixed_pack_source_allocations')
+          .select('allocation_id, mixed_pack_reserved_units')
+          .gt('mixed_pack_reserved_units', 0),
+      ])
+
+      const shipmentUsageRows = shipmentUsageRes.data
+      const mixedPackUsageRows = mixedPackUsageRes.data
 
       const usedUnitsByAllocation = new Map<number, number>()
       ;((shipmentUsageRows ?? []) as Array<{
@@ -614,6 +627,13 @@ function Shipments() {
         usedUnitsByAllocation.set(row.packaging_allocation_id, (usedUnitsByAllocation.get(row.packaging_allocation_id) ?? 0) + used)
       })
 
+      const reservedUnitsByAllocation = new Map<number, number>()
+      ;((mixedPackUsageRows ?? []) as Array<{ allocation_id: number | null; mixed_pack_reserved_units: number | null }>).forEach((row) => {
+        if (!row.allocation_id) return
+        const reserved = Number(row.mixed_pack_reserved_units) || 0
+        reservedUnitsByAllocation.set(row.allocation_id, reserved)
+      })
+
       type AllocationRow = {
         id: number
         storage_type: 'BOX' | 'BAG' | 'SHOP_PACKING'
@@ -626,7 +646,9 @@ function Shipments() {
         pack_entry: Array<{
           id: number
           product_id: number | null
+          mixed_pack_batch_id?: number | null
           product?: { id?: number; name?: string | null; sku?: string | null } | null
+          mixed_pack_batch?: { pack_name?: string | null } | null
           pack_identifier: string
           pack_size_kg: number | null
           sorting_output: Array<{
@@ -654,14 +676,15 @@ function Shipments() {
           const sortingOutput = unwrap(packEntry?.sorting_output ?? null)
           const productId = sortingOutput?.product_id ?? packEntry?.product_id
           if (!productId) return null
-          const productName = sortingOutput?.product?.name ?? packEntry?.product?.name ?? 'Unknown'
-          const productSku = sortingOutput?.product?.sku ?? packEntry?.product?.sku ?? ''
+          const productName = packEntry?.mixed_pack_batch?.pack_name ?? sortingOutput?.product?.name ?? packEntry?.product?.name ?? 'Unknown'
+          const productSku = packEntry?.mixed_pack_batch?.pack_name ? '' : (sortingOutput?.product?.sku ?? packEntry?.product?.sku ?? '')
           const packagingRun = unwrap(packEntry?.packaging_run ?? null)
           const stepRun = unwrap(packagingRun?.process_step_runs)
           const lotRun = unwrap(stepRun?.process_lot_runs)
           const lotNo = lotRun?.supply_batches?.lot_no ?? null
           const usedUnits = usedUnitsByAllocation.get(allocation.id) ?? 0
-          const availableUnits = Math.max(0, (Number(allocation.units_count) || 0) - usedUnits)
+          const reservedUnits = reservedUnitsByAllocation.get(allocation.id) ?? 0
+          const availableUnits = Math.max(0, (Number(allocation.units_count) || 0) - usedUnits - reservedUnits)
           const unitQuantityKg =
             (Number(allocation.units_count) || 0) > 0
               ? (Number(allocation.total_quantity_kg) || 0) / (Number(allocation.units_count) || 1)

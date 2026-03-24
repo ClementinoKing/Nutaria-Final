@@ -7,6 +7,7 @@ import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { Button } from '@/components/ui/button'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 
 interface PackEntryRow {
@@ -14,6 +15,7 @@ interface PackEntryRow {
   quantity_kg: number
   pack_identifier: string
   pack_count: number | null
+  damaged_pack_count: number | null
   remainder_kg: number | null
   packing_type: string | null
   created_at: string | null
@@ -86,7 +88,7 @@ function AllocationDetailsPage() {
         .single()
 
       if (productError || !productData) {
-        setError(productError?.message ?? 'Product not found')
+        setError(getUserFriendlyErrorMessage(productError, 'We could not find this product. Please refresh and try again.'))
         setLoading(false)
         return
       }
@@ -100,6 +102,7 @@ function AllocationDetailsPage() {
           quantity_kg,
           pack_identifier,
           pack_count,
+          damaged_pack_count,
           remainder_kg,
           packing_type,
           created_at,
@@ -134,7 +137,7 @@ function AllocationDetailsPage() {
         .order('created_at', { ascending: false })
 
       if (entryError) {
-        setError(entryError.message)
+        setError(getUserFriendlyErrorMessage(entryError, 'We could not load the allocation details right now. Please refresh and try again.'))
         setEntries([])
         setProcessRuns([])
         setReworks([])
@@ -176,6 +179,7 @@ function AllocationDetailsPage() {
           quantity_kg: Number(row.quantity_kg) || 0,
           pack_identifier: row.pack_identifier,
           pack_count: row.pack_count ?? null,
+          damaged_pack_count: row.damaged_pack_count ?? null,
           remainder_kg: row.remainder_kg ?? null,
           packing_type: row.packing_type ?? null,
           created_at: row.created_at ?? null,
@@ -242,7 +246,7 @@ function AllocationDetailsPage() {
         setReworks([])
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load packed product detail')
+      setError(getUserFriendlyErrorMessage(e, 'We could not load the allocation details right now. Please refresh and try again.'))
       setEntries([])
       setProcessRuns([])
       setReworks([])
@@ -260,6 +264,10 @@ function AllocationDetailsPage() {
     () => entries.reduce((sum, entry) => sum + (entry.pack_count ?? 0), 0),
     [entries]
   )
+  const totalDamagedPacks = useMemo(
+    () => entries.reduce((sum, entry) => sum + (entry.damaged_pack_count ?? 0), 0),
+    [entries]
+  )
   const uniqueLots = useMemo(
     () => new Set(entries.map((entry) => entry.lot_no).filter((lot): lot is string => Boolean(lot))).size,
     [entries]
@@ -270,9 +278,9 @@ function AllocationDetailsPage() {
       { key: 'pack', header: 'Pack size', render: (r: PackEntryRow) => r.pack_identifier },
       {
         key: 'packs',
-        header: 'Packs / Remainder',
+        header: 'Packs / Damaged / Remainder',
         render: (r: PackEntryRow) =>
-          `${r.pack_count ?? '—'} packs${r.remainder_kg && r.remainder_kg > 0 ? ` + ${r.remainder_kg.toFixed(2)} kg` : ''}`,
+          `${r.pack_count ?? '—'} good${(r.damaged_pack_count ?? 0) > 0 ? ` + ${r.damaged_pack_count} damaged` : ''}${r.remainder_kg && r.remainder_kg > 0 ? ` + ${r.remainder_kg.toFixed(2)} kg` : ''}`,
       },
       {
         key: 'quantity',
@@ -363,7 +371,7 @@ function AllocationDetailsPage() {
           <CardHeader className="pb-2">
             <CardDescription>{product ? product.name : 'Packed product'}</CardDescription>
             <CardTitle className="text-2xl font-semibold text-text-dark">
-              {totalKg.toLocaleString()} kg · {totalPacks.toLocaleString()} packs · {uniqueLots} lot{uniqueLots === 1 ? '' : 's'}
+              {totalKg.toLocaleString()} kg · {totalPacks.toLocaleString()} packs · {totalDamagedPacks.toLocaleString()} damaged · {uniqueLots} lot{uniqueLots === 1 ? '' : 's'}
             </CardTitle>
           </CardHeader>
         </Card>

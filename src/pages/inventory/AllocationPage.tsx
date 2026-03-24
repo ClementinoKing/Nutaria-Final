@@ -4,12 +4,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { ArrowLeft, ChevronDown, Download, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Download, Grid2X2, Hash, Package, Plus, Search, SlidersHorizontal, Truck, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
+import SettingsTour from '@/components/tour/SettingsTour'
+import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface AllocationRow {
   id: string
@@ -52,7 +55,7 @@ function AllocationPage() {
   const [qtyMin, setQtyMin] = useState('')
   const [qtyMax, setQtyMax] = useState('')
   const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable')
-  const [unitDisplay, setUnitDisplay] = useState<'kg' | 'units' | 'packs'>('kg')
+  const [unitDisplay, setUnitDisplay] = useState<'units' | 'packs'>('packs')
   const [showFilters, setShowFilters] = useState(false)
   const [isColumnMenuOpen, setIsColumnMenuOpen] = useState(false)
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set())
@@ -77,8 +80,12 @@ function AllocationPage() {
           created_at,
           pack_entry:process_packaging_pack_entries(
             product_id,
+            mixed_pack_batch_id,
             pack_identifier,
             packet_unit_code,
+            mixed_pack_batch:mixed_pack_batch_id(
+              pack_name
+            ),
             sorting_output:process_sorting_outputs(
               product_id,
               product:products(id, name, sku)
@@ -108,7 +115,7 @@ function AllocationPage() {
         .order('created_at', { ascending: false })
 
       if (entriesError) {
-        setError(entriesError.message)
+        setError(getUserFriendlyErrorMessage(entriesError, 'We could not load the allocations right now. Please refresh and try again.'))
         setRows([])
         return
       }
@@ -126,8 +133,10 @@ function AllocationPage() {
         pack_entry:
           | {
               product_id: number | null
+              mixed_pack_batch_id?: number | null
               pack_identifier: string | null
               packet_unit_code: string | null
+              mixed_pack_batch?: { pack_name?: string | null } | null
               sorting_output: {
                 product_id: number
                 product: { id: number; name: string | null; sku: string | null } | null
@@ -174,8 +183,10 @@ function AllocationPage() {
             }
           | Array<{
               product_id: number | null
+              mixed_pack_batch_id?: number | null
               pack_identifier: string | null
               packet_unit_code: string | null
+              mixed_pack_batch?: { pack_name?: string | null } | null
               sorting_output: {
                 product_id: number
                 product: { id: number; name: string | null; sku: string | null } | null
@@ -254,8 +265,8 @@ function AllocationPage() {
 
       const result: AllocationRow[] = list.map((entry) => {
         const packEntry = unwrap(entry.pack_entry)
-        const productName = packEntry?.sorting_output?.product?.name ?? 'Unknown'
-        const productSku = packEntry?.sorting_output?.product?.sku ?? ''
+        const productName = packEntry?.mixed_pack_batch?.pack_name ?? packEntry?.sorting_output?.product?.name ?? 'Unknown'
+        const productSku = packEntry?.mixed_pack_batch?.pack_name ? '' : (packEntry?.sorting_output?.product?.sku ?? '')
         const stepRun = unwrap(packEntry?.packaging_run?.process_step_runs)
         const lotRun = stepRun?.process_lot_runs ?? null
         const batch = lotRun?.supply_batches ?? null
@@ -303,7 +314,7 @@ function AllocationPage() {
 
       setRows(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load allocations')
+      setError(getUserFriendlyErrorMessage(e, 'We could not load the allocations right now. Please refresh and try again.'))
       setRows([])
     } finally {
       setLoading(false)
@@ -370,8 +381,8 @@ function AllocationPage() {
       if (warehouseFilter && row.warehouse_name !== warehouseFilter) return false
       if (packFilter && row.pack_identifier !== packFilter) return false
       if (lotFilter && row.lot_no !== lotFilter) return false
-      if (minQty !== null && row.total_quantity_kg < minQty) return false
-      if (maxQty !== null && row.total_quantity_kg > maxQty) return false
+      if (minQty !== null && row.total_packs < minQty) return false
+      if (maxQty !== null && row.total_packs > maxQty) return false
       if ((fromDate || toDate) && !row.allocated_at) return false
       if (fromDate && row.allocated_at && new Date(row.allocated_at) < fromDate) return false
       if (toDate && row.allocated_at && new Date(row.allocated_at) > toDate) return false
@@ -448,23 +459,15 @@ function AllocationPage() {
   }
 
   const columns = useMemo(() => {
-    const unitLabel = unitDisplay === 'kg' ? 'kg' : unitDisplay === 'packs' ? 'packs' : 'units'
+    const unitLabel = unitDisplay === 'packs' ? 'packs' : 'units'
     const statusStyles: Record<AllocationRow['status'], string> = {
       Allocated: 'bg-slate-100 text-slate-700 border-slate-200',
       'Partially Shipped': 'bg-amber-50 text-amber-800 border-amber-200',
       Completed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     }
-    const formatValue = (value: number) =>
-      unitDisplay === 'kg' ? value.toFixed(2) : value.toLocaleString()
+    const formatValue = (value: number) => value.toLocaleString()
 
     const formatMetric = (row: AllocationRow) => {
-      if (unitDisplay === 'kg') {
-        return {
-          allocated: row.total_quantity_kg,
-          shipped: row.shipped_quantity_kg,
-          remaining: row.remaining_quantity_kg,
-        }
-      }
       if (unitDisplay === 'packs') {
         return {
           allocated: row.total_packs,
@@ -530,15 +533,32 @@ function AllocationPage() {
                 <div className="h-full rounded-full bg-olive" style={{ width: `${percent}%` }} />
               </div>
               <div className="flex items-center justify-between text-xs text-text-dark/60">
-                <span>{formatValue(shipped)} shipped</span>
-                <span>{formatValue(metrics.remaining)} remaining</span>
+                <span className="inline-flex items-center gap-1">
+                  <Truck className="h-3.5 w-3.5 text-olive" />
+                  {formatValue(shipped)}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <Package className="h-3.5 w-3.5 text-text-dark/50" />
+                  {formatValue(metrics.remaining)}
+                </span>
               </div>
             </div>
           )
         },
         mobileRender: (r: AllocationRow) => {
           const metrics = formatMetric(r)
-          return `${formatValue(metrics.shipped)} shipped · ${formatValue(metrics.remaining)} remaining`
+          return (
+            <div className="flex items-center justify-end gap-3 text-xs text-text-dark/60">
+              <span className="inline-flex items-center gap-1">
+                <Truck className="h-3.5 w-3.5 text-olive" />
+                {formatValue(metrics.shipped)}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Package className="h-3.5 w-3.5 text-text-dark/50" />
+                {formatValue(metrics.remaining)}
+              </span>
+            </div>
+          )
         },
       },
       {
@@ -622,20 +642,9 @@ function AllocationPage() {
       {
         key: 'action',
         header: '',
-        headerClassName: 'text-right w-20',
-        cellClassName: 'text-right',
-        render: (r: AllocationRow) =>
-          r.product_id ? (
-            <span className="text-sm font-medium text-olive hover:underline">View</span>
-          ) : (
-            '—'
-          ),
-        mobileRender: (r: AllocationRow) =>
-          r.product_id ? (
-            <span className="text-sm font-medium text-olive hover:underline">View</span>
-          ) : (
-            '—'
-          ),
+        render: () => null,
+        mobileRender: () => null,
+        hideOnMobile: true,
       },
     ]
   }, [unitDisplay])
@@ -686,6 +695,59 @@ function AllocationPage() {
     qtyMax,
   ])
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'header',
+        target: '[data-tour="allocations-header"]',
+        title: 'Packaging Allocations',
+        description: 'Access search, filters, exports, and quick actions from the header.',
+        placement: 'bottom',
+      },
+      {
+        id: 'kpis',
+        target: '[data-tour="allocations-kpis"]',
+        title: 'Operational KPIs',
+        description: 'Track totals, shipped units, and remaining capacity at a glance.',
+        placement: 'bottom',
+      },
+      {
+        id: 'controls',
+        target: '[data-tour="allocations-controls"]',
+        title: 'Table controls',
+        description: 'Adjust columns, density, and unit display to fit your workflow.',
+        placement: 'top',
+      },
+      {
+        id: 'table',
+        target: '[data-tour="allocations-table"]',
+        title: 'Allocation register',
+        description: 'Review each allocation with shipped vs remaining progress.',
+        placement: 'top',
+      },
+      {
+        id: 'filters',
+        target: '[data-tour="allocations-filter-button"]',
+        title: 'Filter drawer',
+        description: 'Open advanced filters for product, warehouse, lots, and date ranges.',
+        placement: 'left',
+        beforeEnter: () => setShowFilters(true),
+      },
+    ],
+    []
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    openTour,
+    previousStep,
+    nextStep,
+  } = useSettingsTour(tourSteps)
+
   const toggleColumn = (key: string) => {
     setHiddenColumns((prev) => {
       const next = new Set(prev)
@@ -698,16 +760,21 @@ function AllocationPage() {
     })
   }
 
-  const totalKg = useMemo(() => filteredRows.reduce((s, r) => s + r.total_quantity_kg, 0), [filteredRows])
   const totalUnits = useMemo(() => filteredRows.reduce((s, r) => s + r.units_count, 0), [filteredRows])
   const totalPacks = useMemo(
     () => filteredRows.reduce((s, r) => s + r.total_packs, 0),
     [filteredRows]
   )
   const totalShippedUnits = useMemo(() => filteredRows.reduce((s, r) => s + r.shipped_units, 0), [filteredRows])
-  const totalShippedKg = useMemo(() => filteredRows.reduce((s, r) => s + r.shipped_quantity_kg, 0), [filteredRows])
   const totalRemainingUnits = useMemo(() => filteredRows.reduce((s, r) => s + r.remaining_units, 0), [filteredRows])
-  const totalRemainingKg = useMemo(() => filteredRows.reduce((s, r) => s + r.remaining_quantity_kg, 0), [filteredRows])
+  const totalShippedPacks = useMemo(
+    () => filteredRows.reduce((s, r) => s + r.shipped_units * r.packs_per_unit, 0),
+    [filteredRows]
+  )
+  const totalRemainingPacks = useMemo(
+    () => filteredRows.reduce((s, r) => s + r.remaining_units * r.packs_per_unit, 0),
+    [filteredRows]
+  )
 
   if (loading) {
     return (
@@ -724,7 +791,7 @@ function AllocationPage() {
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >
       <div className="space-y-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between" data-tour="allocations-header">
           <div className="space-y-2">
             <Link
               to="/inventory/stock-levels"
@@ -750,7 +817,7 @@ function AllocationPage() {
                 className="h-10 pl-9"
               />
             </div>
-            <Button variant="outline" onClick={() => setShowFilters((prev) => !prev)}>
+            <Button variant="outline" onClick={() => setShowFilters(true)} data-tour="allocations-filter-button">
               <SlidersHorizontal className="mr-2 h-4 w-4" />
               Filters
               {activeFilterCount > 0 ? (
@@ -763,6 +830,9 @@ function AllocationPage() {
               <Download className="mr-2 h-4 w-4" />
               Export
             </Button>
+            <Button variant="outline" onClick={() => void openTour()}>
+              Take tour
+            </Button>
             <Button className="bg-olive hover:bg-olive-dark">
               <Plus className="mr-2 h-4 w-4" />
               New Allocation
@@ -770,17 +840,16 @@ function AllocationPage() {
           </div>
         </div>
 
-        <div className="rounded-xl border border-olive-light/30 bg-white/80 px-4 py-4 shadow-sm">
+        <div className="rounded-xl border border-olive-light/30 bg-white/80 px-4 py-4 shadow-sm" data-tour="allocations-kpis">
           <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
             {[
-              { label: 'Total allocated quantity', value: `${totalKg.toLocaleString()} kg` },
               { label: 'Total allocations', value: filteredRows.length.toLocaleString() },
               { label: 'Total allocated packs', value: totalPacks.toLocaleString() },
               { label: 'Total allocated units', value: totalUnits.toLocaleString() },
+              { label: 'Shipped packs', value: totalShippedPacks.toLocaleString() },
               { label: 'Shipped units', value: totalShippedUnits.toLocaleString() },
-              { label: 'Shipped quantity', value: `${totalShippedKg.toLocaleString()} kg` },
+              { label: 'Remaining packs', value: totalRemainingPacks.toLocaleString() },
               { label: 'Remaining units', value: totalRemainingUnits.toLocaleString() },
-              { label: 'Remaining quantity', value: `${totalRemainingKg.toLocaleString()} kg` },
             ].map((metric) => (
               <div
                 key={metric.label}
@@ -793,56 +862,8 @@ function AllocationPage() {
           </div>
         </div>
 
-        <div className="rounded-xl border border-olive-light/30 bg-white px-4 py-3 shadow-sm">
+        <div className="rounded-xl border border-olive-light/30 bg-white px-4 py-3 shadow-sm" data-tour="allocations-controls">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                Status
-              </span>
-              {['ALL', 'Allocated', 'Partially Shipped', 'Completed'].map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() => setStatusFilter(status as typeof statusFilter)}
-                  className={cn(
-                    'rounded-full border px-3 py-1 text-xs font-semibold transition',
-                    statusFilter === status
-                      ? 'border-olive bg-olive text-white'
-                      : 'border-olive-light/40 bg-white text-text-dark/70 hover:border-olive/70'
-                  )}
-                >
-                  {status === 'ALL' ? 'All' : status}
-                </button>
-              ))}
-              <span className="ml-2 text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                Storage
-              </span>
-              {['ALL', ...storageOptions.map((opt) => opt.value)].map((storage) => (
-                <button
-                  key={storage}
-                  type="button"
-                  onClick={() => setStorageFilter(storage)}
-                  className={cn(
-                    'rounded-full border px-3 py-1 text-xs font-semibold transition',
-                    storageFilter === storage
-                      ? 'border-olive bg-olive text-white'
-                      : 'border-olive-light/40 bg-white text-text-dark/70 hover:border-olive/70'
-                  )}
-                >
-                  {storage === 'ALL' ? 'All' : storage}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-2">
-              {activeFilterCount > 0 ? (
-                <Button variant="ghost" onClick={clearFilters}>
-                  Clear filters
-                </Button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-olive-light/30 pt-3">
             <p className="text-sm text-text-dark/60">
               Showing {paginatedRows.length.toLocaleString()} of {filteredRows.length.toLocaleString()} allocations
             </p>
@@ -853,7 +874,7 @@ function AllocationPage() {
                   <ChevronDown className="ml-2 h-4 w-4" />
                 </Button>
                 {isColumnMenuOpen ? (
-                  <div className="absolute right-0 mt-2 w-56 rounded-lg border border-olive-light/40 bg-white p-3 shadow-lg">
+                  <div className="absolute right-0 z-30 mt-2 w-56 rounded-lg border border-olive-light/40 bg-white p-3 shadow-lg">
                     <p className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
                       Toggle Columns
                     </p>
@@ -877,158 +898,51 @@ function AllocationPage() {
                   type="button"
                   onClick={() => setDensity('comfortable')}
                   className={cn(
-                    'rounded-md px-3 py-1 text-xs font-semibold',
+                    'rounded-md p-2 text-xs font-semibold',
                     density === 'comfortable' ? 'bg-olive text-white' : 'text-text-dark/70'
                   )}
+                  aria-label="Comfortable density"
                 >
-                  Comfortable
+                  <Grid2X2 className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
                   onClick={() => setDensity('compact')}
                   className={cn(
-                    'rounded-md px-3 py-1 text-xs font-semibold',
+                    'rounded-md p-2 text-xs font-semibold',
                     density === 'compact' ? 'bg-olive text-white' : 'text-text-dark/70'
                   )}
+                  aria-label="Compact density"
                 >
-                  Compact
+                  <Grid2X2 className="h-4 w-4 opacity-60" />
                 </button>
               </div>
               <div className="flex items-center gap-1 rounded-lg border border-olive-light/40 bg-white p-1">
-                {(['kg', 'units', 'packs'] as const).map((unit) => (
+                {(['packs', 'units'] as const).map((unit) => (
                   <button
                     key={unit}
                     type="button"
                     onClick={() => setUnitDisplay(unit)}
                     className={cn(
-                      'rounded-md px-3 py-1 text-xs font-semibold uppercase',
+                      'rounded-md p-2 text-xs font-semibold uppercase',
                       unitDisplay === unit ? 'bg-olive text-white' : 'text-text-dark/70'
                     )}
+                    aria-label={unit === 'packs' ? 'Show packs' : 'Show units'}
                   >
-                    {unit}
+                    {unit === 'packs' ? <Package className="h-4 w-4" /> : <Hash className="h-4 w-4" />}
                   </button>
                 ))}
               </div>
+              {activeFilterCount > 0 ? (
+                <Button variant="ghost" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              ) : null}
             </div>
           </div>
-
-          {showFilters ? (
-            <div className="mt-4 grid gap-4 border-t border-olive-light/30 pt-4 md:grid-cols-2 xl:grid-cols-4">
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Product
-                </label>
-                <SearchableSelect
-                  options={productOptions}
-                  value={productFilter}
-                  onChange={setProductFilter}
-                  placeholder="Select product"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Warehouse
-                </label>
-                <SearchableSelect
-                  options={warehouseOptions}
-                  value={warehouseFilter}
-                  onChange={setWarehouseFilter}
-                  placeholder="Select warehouse"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Storage type
-                </label>
-                <SearchableSelect
-                  options={storageOptions}
-                  value={storageFilter === 'ALL' ? '' : storageFilter}
-                  onChange={(value) => setStorageFilter(value || 'ALL')}
-                  placeholder="Select storage type"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Pack type
-                </label>
-                <SearchableSelect
-                  options={packOptions}
-                  value={packFilter}
-                  onChange={setPackFilter}
-                  placeholder="Select pack type"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Supply lot
-                </label>
-                <SearchableSelect
-                  options={lotOptions}
-                  value={lotFilter}
-                  onChange={setLotFilter}
-                  placeholder="Select supply lot"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                  Status
-                </label>
-                <SearchableSelect
-                  options={[
-                    { value: 'Allocated', label: 'Allocated' },
-                    { value: 'Partially Shipped', label: 'Partially Shipped' },
-                    { value: 'Completed', label: 'Completed' },
-                  ]}
-                  value={statusFilter === 'ALL' ? '' : statusFilter}
-                  onChange={(value) =>
-                    setStatusFilter((value as AllocationRow['status']) || 'ALL')
-                  }
-                  placeholder="Select status"
-                />
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                    Date from
-                  </label>
-                  <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                    Date to
-                  </label>
-                  <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-                </div>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                    Quantity min (kg)
-                  </label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={qtyMin}
-                    onChange={(e) => setQtyMin(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
-                    Quantity max (kg)
-                  </label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={qtyMax}
-                    onChange={(e) => setQtyMax(e.target.value)}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
         </div>
 
-        <Card className="border-olive-light/30 bg-white">
+        <Card className="border-olive-light/30 bg-white" data-tour="allocations-table">
           <CardHeader className="pb-3">
             <CardTitle className="text-text-dark">Allocation register</CardTitle>
             <CardDescription>
@@ -1101,7 +1015,160 @@ function AllocationPage() {
           </CardContent>
         </Card>
       </div>
-
+      {showFilters ? (
+        <div className="fixed inset-0 z-[90]">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => setShowFilters(false)}
+          />
+          <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-olive-light/30 px-5 py-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-text-dark/50">Filters</p>
+                <h2 className="text-lg font-semibold text-text-dark">Refine allocations</h2>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowFilters(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="h-[calc(100%-144px)] overflow-y-auto px-5 py-4">
+              <div className="space-y-5">
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Product
+                  </label>
+                  <SearchableSelect
+                    options={productOptions}
+                    value={productFilter}
+                    onChange={setProductFilter}
+                    placeholder="Select product"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Warehouse
+                  </label>
+                  <SearchableSelect
+                    options={warehouseOptions}
+                    value={warehouseFilter}
+                    onChange={setWarehouseFilter}
+                    placeholder="Select warehouse"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Storage type
+                  </label>
+                  <SearchableSelect
+                    options={storageOptions}
+                    value={storageFilter === 'ALL' ? '' : storageFilter}
+                    onChange={(value) => setStorageFilter(value || 'ALL')}
+                    placeholder="Select storage type"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Pack type
+                  </label>
+                  <SearchableSelect
+                    options={packOptions}
+                    value={packFilter}
+                    onChange={setPackFilter}
+                    placeholder="Select pack type"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Supply lot
+                  </label>
+                  <SearchableSelect
+                    options={lotOptions}
+                    value={lotFilter}
+                    onChange={setLotFilter}
+                    placeholder="Select supply lot"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                    Status
+                  </label>
+                  <SearchableSelect
+                    options={[
+                      { value: 'Allocated', label: 'Allocated' },
+                      { value: 'Partially Shipped', label: 'Partially Shipped' },
+                      { value: 'Completed', label: 'Completed' },
+                    ]}
+                    value={statusFilter === 'ALL' ? '' : statusFilter}
+                    onChange={(value) =>
+                      setStatusFilter((value as AllocationRow['status']) || 'ALL')
+                    }
+                    placeholder="Select status"
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                      Date from
+                    </label>
+                    <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                      Date to
+                    </label>
+                    <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                      Quantity min (packs)
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={qtyMin}
+                      onChange={(e) => setQtyMin(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-text-dark/50">
+                      Quantity max (packs)
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={qtyMax}
+                      onChange={(e) => setQtyMax(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-t border-olive-light/30 px-5 py-4">
+              <Button variant="outline" onClick={clearFilters}>
+                Reset filters
+              </Button>
+              <Button className="bg-olive hover:bg-olive-dark" onClick={() => setShowFilters(false)}>
+                Apply filters
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <SettingsTour
+        open={isTourOpen}
+        step={currentTourStep}
+        totalSteps={tourSteps.length}
+        currentStepIndex={currentTourStepIndex}
+        isLastStep={isTourLastStep}
+        onBack={previousStep}
+        onNext={nextStep}
+        onClose={() => {
+          closeTour()
+          setShowFilters(false)
+        }}
+      />
     </PageLayout>
   )
 }

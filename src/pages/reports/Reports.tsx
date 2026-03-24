@@ -135,35 +135,23 @@ export default function Reports() {
     setLoading(true)
     setError(null)
     try {
-      const [suppliesRes, batchesRes, suppliersRes, paymentsRes, shipmentsRes] = await Promise.all([
-        supabase
-          .from('supplies')
-          .select('id, doc_no, supplier_id, received_at')
-          .order('received_at', { ascending: false, nullsFirst: false })
-          .limit(1000),
-        supabase
-          .from('supply_batches')
-          .select('id, supply_id, received_qty, accepted_qty, rejected_qty, current_qty, quality_status, unit_price'),
-        supabase
-          .from('suppliers')
-          .select('id, name, supplier_type, country, created_at')
-          .order('name', { ascending: true })
-          .limit(1000),
-        supabase.from('supply_payments').select('id, supply_id, amount, paid_at, reference'),
-        supabase.from('shipments').select('id, doc_status, planned_ship_date, shipped_at, created_at'),
-      ])
+      const { data, error } = await supabase.rpc('get_reports_payload')
 
-      if (suppliesRes.error) throw suppliesRes.error
-      if (batchesRes.error) throw batchesRes.error
-      if (suppliersRes.error) throw suppliersRes.error
-      if (paymentsRes.error) throw paymentsRes.error
-      if (shipmentsRes.error) throw shipmentsRes.error
+      if (error) throw error
 
-      setSupplies((suppliesRes.data ?? []) as SupplyRow[])
-      setSupplyBatches((batchesRes.data ?? []) as SupplyBatchRow[])
-      setSuppliers((suppliersRes.data ?? []) as SupplierRow[])
-      setPayments((paymentsRes.data ?? []) as PaymentRow[])
-      setShipments((shipmentsRes.data ?? []) as ShipmentRow[])
+      const payload = (data as {
+        supplies?: SupplyRow[]
+        supply_batches?: SupplyBatchRow[]
+        suppliers?: SupplierRow[]
+        payments?: PaymentRow[]
+        shipments?: ShipmentRow[]
+      }) ?? {}
+
+      setSupplies(payload.supplies ?? [])
+      setSupplyBatches(payload.supply_batches ?? [])
+      setSuppliers(payload.suppliers ?? [])
+      setPayments(payload.payments ?? [])
+      setShipments(payload.shipments ?? [])
     } catch (err) {
       console.error('Error loading report data:', err)
       setError('Unable to load report data. Please try again.')

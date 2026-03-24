@@ -9,6 +9,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { supabase } from '@/lib/supabaseClient'
 import { useSettingsTour, type TourStep } from '@/hooks/useSettingsTour'
 import SettingsTour from '@/components/tour/SettingsTour'
+import { getUserFriendlyErrorMessage } from '@/lib/errorMessages'
 
 interface ProductLookup {
   name: string
@@ -162,23 +163,23 @@ function OperationalSupplyDetail() {
       }
 
       if (entryResponse.error) {
-        setError(entryResponse.error.message || 'Failed to load operational supply entry.')
+        setError(getUserFriendlyErrorMessage(entryResponse.error, 'We could not load the operational supply entry. Please refresh and try again.'))
         setLoading(false)
         return
       }
 
       if (batchesResponse.error) {
-        setError(batchesResponse.error.message || 'Failed to load supply batches.')
+        setError(getUserFriendlyErrorMessage(batchesResponse.error, 'We could not load the supply batches. Please refresh and try again.'))
         setLoading(false)
         return
       }
       if (packagingChecksResponse.error) {
-        setError(packagingChecksResponse.error.message || 'Failed to load packaging checks.')
+        setError(getUserFriendlyErrorMessage(packagingChecksResponse.error, 'We could not load the packaging checks. Please refresh and try again.'))
         setLoading(false)
         return
       }
       if (packagingItemsResponse.error) {
-        setError(packagingItemsResponse.error.message || 'Failed to load packaging check items.')
+        setError(getUserFriendlyErrorMessage(packagingItemsResponse.error, 'We could not load the packaging check items. Please refresh and try again.'))
         setLoading(false)
         return
       }
