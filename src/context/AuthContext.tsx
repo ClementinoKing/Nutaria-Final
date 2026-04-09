@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react'
 import { User } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase, supabaseAuthStorageKey } from '@/lib/supabaseClient'
 import { classifyIdentifier, phoneToUsernameEmail, usernameToAuthEmail } from '@/lib/authIdentifier'
 import type { AccessContext } from '@/lib/rbac'
 
@@ -37,6 +37,33 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [profileLoading, setProfileLoading] = useState(false)
   const [accessLoading, setAccessLoading] = useState(true)
   const [authenticating, setAuthenticating] = useState(false)
+
+  const clearAuthState = useCallback(() => {
+    setUser(null)
+    setProfile(null)
+    setAccessContext(null)
+  }, [])
+
+  const clearSupabaseBrowserSession = useCallback(() => {
+    if (typeof window === 'undefined') return
+
+    const storageKeys = [
+      supabaseAuthStorageKey,
+      `${supabaseAuthStorageKey}-code-verifier`,
+      `${supabaseAuthStorageKey}-user`,
+    ]
+
+    for (const key of storageKeys) {
+      window.localStorage.removeItem(key)
+      window.sessionStorage.removeItem(key)
+    }
+  }, [])
+
+  const signOutLocally = useCallback(async () => {
+    clearSupabaseBrowserSession()
+    clearAuthState()
+    return {}
+  }, [clearAuthState, clearSupabaseBrowserSession])
 
   useEffect(() => {
     let ignore = false
@@ -91,8 +118,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           setProfile(null)
         } else if (data?.deleted_at) {
           setProfile(null)
-          await supabase.auth.signOut()
-          setUser(null)
+          await signOutLocally()
         } else {
           setProfile(data ?? null)
         }
@@ -110,7 +136,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => {
       ignore = true
     }
-  }, [user?.id])
+  }, [signOutLocally, user?.id])
 
   useEffect(() => {
     let ignore = false
@@ -184,29 +210,28 @@ export function AuthProvider({ children }: AuthProviderProps) {
         .maybeSingle()
 
       if (profileError) {
-        await supabase.auth.signOut()
+        await signOutLocally()
         return { error: new Error(profileError.message ?? 'Unable to load user profile'), user: data.user }
       }
 
       if (profileData?.deleted_at) {
-        await supabase.auth.signOut()
+        await signOutLocally()
         return { error: new Error('This account has been deactivated. Contact an administrator.') }
       }
     }
 
     setUser(data.user)
     return { user: data.user }
-  }, [])
+  }, [signOutLocally])
 
   const logout = useCallback(async () => {
-    const { error } = await supabase.auth.signOut()
+    const { error } = await signOutLocally()
     if (error) {
       console.error('Error signing out', error.message)
       return { error }
     }
-    setUser(null)
     return {}
-  }, [])
+  }, [signOutLocally])
 
   const value: AuthContextType = useMemo(
     () => ({

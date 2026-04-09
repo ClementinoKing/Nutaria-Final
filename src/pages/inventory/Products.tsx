@@ -221,6 +221,10 @@ function formatNumber(value: number | string | null | undefined): string {
   }).format(numeric)
 }
 
+function normalizeProductName(value: string): string {
+  return value.trim().toLowerCase()
+}
+
 function formatComponentsLine(product: Product): string | null {
   const components = product.product_components
     ?.map((row) => row?.component_product)
@@ -1471,6 +1475,9 @@ function Products() {
 
   const validateForm = (): boolean => {
     const errors: FormErrors = {}
+    const normalizedName = normalizeProductName(formData.name)
+    const normalizedType = (formData.product_type || 'RAW').toUpperCase()
+    const editingId = editingProduct?.id ?? null
 
     if (!formData.name.trim()) {
       errors.name = 'Name is required.'
@@ -1500,6 +1507,17 @@ function Products() {
     }
     if (formData.is_mixed_product && type !== 'FINISHED') {
       errors.product_type = 'Only finished products can be marked as mixed products.'
+    }
+    if (normalizedName.length > 0) {
+      const duplicate = products.find((product) => {
+        if (editingId !== null && product.id === editingId) return false
+        const existingName = normalizeProductName(product.name ?? '')
+        const existingType = (product.product_type ?? 'RAW').toUpperCase()
+        return existingName === normalizedName && existingType === normalizedType
+      })
+      if (duplicate) {
+        errors.name = `A ${normalizedType} product with this name already exists.`
+      }
     }
     setFormErrors(errors)
     return Object.keys(errors).length === 0

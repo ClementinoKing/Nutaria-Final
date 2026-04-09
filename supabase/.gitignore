@@ -1,6 +1,8 @@
 # Supabase
 .branches
 .temp
+.DS_Store
+**/.DS_Store
 
 # dotenvx
 .env.keys

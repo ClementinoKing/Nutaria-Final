@@ -207,6 +207,7 @@ function UserManagement() {
     event.preventDefault()
     setIsSubmitting(true)
 
+    const isEditing = selectedProfile != null
     const roleName = formState.roleName
     if (!roles.some((role) => role.name === roleName)) {
       toast.error('Please choose a valid role.')
@@ -215,7 +216,13 @@ function UserManagement() {
     }
 
     const sanitizedIdentifier = formState.identifier.trim()
-    if (!sanitizedIdentifier || !password.trim()) {
+    if (!sanitizedIdentifier) {
+      toast.error('Username, email, or phone is required.')
+      setIsSubmitting(false)
+      return
+    }
+
+    if (!isEditing && !password.trim()) {
       toast.error('Username, email, or phone and password are required to create a user')
       setIsSubmitting(false)
       return
@@ -243,11 +250,19 @@ function UserManagement() {
 
     const duplicateValue = classified.value
 
-    const { data: existingProfile } = await supabase
+    const duplicateProfileQuery = supabase
       .from('user_profiles')
-      .select('id')
+      .select('id, auth_user_id')
       .eq('email', duplicateValue)
-      .maybeSingle()
+    const { data: existingProfile, error: duplicateLookupError } = isEditing
+      ? await duplicateProfileQuery.neq('id', selectedProfile.id).maybeSingle()
+      : await duplicateProfileQuery.maybeSingle()
+
+    if (duplicateLookupError) {
+      toast.error(duplicateLookupError.message ?? 'Unable to validate this credential')
+      setIsSubmitting(false)
+      return
+    }
 
     if (existingProfile) {
       toast.error('A user with this credential already exists.')

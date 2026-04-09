@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Input } from './input'
@@ -33,8 +34,31 @@ export function SearchableSelect({
 }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = React.useState(false)
   const [searchTerm, setSearchTerm] = React.useState('')
+  const [dropdownStyle, setDropdownStyle] = React.useState<React.CSSProperties>({})
   const containerRef = React.useRef<HTMLDivElement>(null)
+  const triggerRef = React.useRef<HTMLButtonElement>(null)
+  const dropdownRef = React.useRef<HTMLDivElement>(null)
   const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const updateDropdownPosition = React.useCallback(() => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+
+    const rect = trigger.getBoundingClientRect()
+    const viewportHeight = window.innerHeight
+    const availableBelow = viewportHeight - rect.bottom - 12
+    const availableAbove = rect.top - 12
+    const openUpwards = availableBelow < 280 && availableAbove > availableBelow
+
+    setDropdownStyle({
+      position: 'fixed',
+      left: rect.left,
+      width: rect.width,
+      top: openUpwards ? undefined : rect.bottom + 8,
+      bottom: openUpwards ? viewportHeight - rect.top + 8 : undefined,
+      maxHeight: Math.max(180, Math.min(openUpwards ? availableAbove : availableBelow, 360)),
+    })
+  }, [])
 
   const selectedOption = React.useMemo(
     () => options.find((opt) => opt.value === value),
@@ -53,7 +77,8 @@ export function SearchableSelect({
     const handleClickOutside = (event: MouseEvent) => {
       if (
         containerRef.current &&
-        !containerRef.current.contains(event.target as Node)
+        !containerRef.current.contains(event.target as Node) &&
+        !dropdownRef.current?.contains(event.target as Node)
       ) {
         setIsOpen(false)
         setSearchTerm('')
@@ -73,6 +98,22 @@ export function SearchableSelect({
       inputRef.current.focus()
     }
   }, [isOpen])
+
+  React.useEffect(() => {
+    if (!isOpen) return
+
+    updateDropdownPosition()
+
+    const handlePositionChange = () => updateDropdownPosition()
+
+    window.addEventListener('resize', handlePositionChange)
+    window.addEventListener('scroll', handlePositionChange, true)
+
+    return () => {
+      window.removeEventListener('resize', handlePositionChange)
+      window.removeEventListener('scroll', handlePositionChange, true)
+    }
+  }, [isOpen, updateDropdownPosition])
 
   const handleSelect = (optionValue: string) => {
     onChange(optionValue)
@@ -100,6 +141,7 @@ export function SearchableSelect({
     <div ref={containerRef} className={cn('relative w-full', className)}>
       <div className="relative">
         <button
+          ref={triggerRef}
           type="button"
           id={id}
           onClick={handleToggle}
@@ -154,51 +196,61 @@ export function SearchableSelect({
         )}
       </div>
 
-      {isOpen && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-olive-light/60 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
-          <div className="p-2">
-            <Input
-              ref={inputRef}
-              type="text"
-              placeholder="Search..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="h-9 text-sm"
-              autoFocus
-            />
-          </div>
-          <div className="max-h-60 overflow-auto">
-            {filteredOptions.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-text-dark/60 dark:text-slate-400">
-                {emptyMessage}
+      {isOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              ref={dropdownRef}
+              style={dropdownStyle}
+              className="z-[140] overflow-hidden rounded-lg border border-olive-light/60 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+            >
+              <div className="p-2">
+                <Input
+                  ref={inputRef}
+                  type="text"
+                  placeholder="Search..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="h-9 text-sm"
+                  autoFocus
+                />
               </div>
-            ) : (
-              <ul
-                role="listbox"
-                className="p-1"
-                aria-label="Options"
+              <div
+                className="overflow-auto"
+                style={{ maxHeight: dropdownStyle.maxHeight ? Number(dropdownStyle.maxHeight) - 60 : 300 }}
               >
-                {filteredOptions.map((option) => (
-                  <li
-                    key={option.value}
-                    role="option"
-                    aria-selected={option.value === value}
-                    onClick={() => handleSelect(option.value)}
-                    className={cn(
-                      'cursor-pointer rounded-md px-3 py-2 text-sm transition-colors',
-                      'hover:bg-olive-light/20 dark:hover:bg-slate-700',
-                      option.value === value &&
-                        'bg-olive-light/30 dark:bg-slate-800',
-                    )}
+                {filteredOptions.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-text-dark/60 dark:text-slate-400">
+                    {emptyMessage}
+                  </div>
+                ) : (
+                  <ul
+                    role="listbox"
+                    className="p-1"
+                    aria-label="Options"
                   >
-                    {option.label}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
+                    {filteredOptions.map((option) => (
+                      <li
+                        key={option.value}
+                        role="option"
+                        aria-selected={option.value === value}
+                        onClick={() => handleSelect(option.value)}
+                        className={cn(
+                          'cursor-pointer rounded-md px-3 py-2 text-sm transition-colors',
+                          'hover:bg-olive-light/20 dark:hover:bg-slate-700',
+                          option.value === value &&
+                            'bg-olive-light/30 dark:bg-slate-800',
+                        )}
+                      >
+                        {option.label}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

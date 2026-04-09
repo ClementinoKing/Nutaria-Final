@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, Sparkles, X } from 'lucide-react'
+import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { useAuth } from '@/context/AuthContext'
@@ -537,7 +537,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const location = useLocation()
   const { supplyId: routeSupplyId } = useParams<{ supplyId?: string }>()
   const isDirectEditRoute = Boolean(routeSupplyId && location.pathname.endsWith('/edit'))
-  const { user } = useAuth()
+  const { user, accessContext } = useAuth()
   const { suppliers: supplierOptions, loading: suppliersLoading, error: suppliersError } = useSuppliers({
     pageSize: 500,
   })
@@ -607,6 +607,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const [receivedFrom, setReceivedFrom] = useState('')
   const [receivedTo, setReceivedTo] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
+  const [deletingSupplyId, setDeletingSupplyId] = useState<number | null>(null)
   const pageSize = 20
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false)
   const [draftFrom, setDraftFrom] = useState('')
@@ -720,6 +721,15 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
   const [formData, setFormData] = useState<FormData>(() => getInitialFormData())
   const isOperationalFlow = formData.category_code === 'SERVICE'
+  const canDeleteSupply = useMemo(
+    () =>
+      Boolean(
+        accessContext?.is_super_admin ||
+          accessContext?.roles?.some((role) => role.name === 'Super Admin') ||
+          accessContext?.legacy_role === 'Super Admin'
+      ),
+    [accessContext]
+  )
   const operationalMappedProductOptions = useMemo(
     () =>
       operationalMappedProducts.map((product) => ({
@@ -1019,6 +1029,43 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     [filteredSupplies, supplyBatches],
   )
 
+  const handleDeleteSupply = useCallback(
+    async (supply: Supply) => {
+      if (!canDeleteSupply) {
+        toast.error('You do not have permission to delete supplies.')
+        return
+      }
+
+      const supplyLabel = String(supply.doc_no ?? `#${supply.id}`)
+      const confirmed = window.confirm(`Delete supply ${supplyLabel}? This cannot be undone.`)
+      if (!confirmed) {
+        return
+      }
+
+      setDeletingSupplyId(supply.id)
+      const { error } = await supabase.rpc('force_delete_supply', {
+        p_supply_id: supply.id,
+      })
+
+      if (error) {
+        const message =
+          error.code === '42501'
+            ? 'Only Super Admin can force delete supplies.'
+            : error.code === '23503'
+              ? 'This supply still has protected downstream links and could not be removed.'
+            : error.message ?? 'Unable to delete supply.'
+        toast.error(message)
+        setDeletingSupplyId(null)
+        return
+      }
+
+      setSupplies((previous) => previous.filter((item) => item.id !== supply.id))
+      setDeletingSupplyId(null)
+      toast.success('Supply deleted successfully.')
+    },
+    [canDeleteSupply]
+  )
+
   const columns = [
     {
       key: 'document',
@@ -1081,7 +1128,56 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         </div>
       ),
     },
+    ...(canDeleteSupply
+      ? [
+          {
+            key: 'actions',
+            header: 'Actions',
+            headerClassName: 'text-right',
+            cellClassName: 'text-right',
+            mobileValueClassName: 'text-right',
+            render: (supply: Supply) => (
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="text-red-600 hover:text-red-700"
+                  disabled={deletingSupplyId === supply.id}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void handleDeleteSupply(supply)
+                  }}
+                  aria-label={`Delete supply ${String(supply.doc_no ?? supply.id)}`}
+                  title="Delete supply"
+                >
+                  <Trash2 className={`h-4 w-4 ${deletingSupplyId === supply.id ? 'animate-pulse' : ''}`} />
+                </Button>
+              </div>
+            ),
+            mobileRender: (supply: Supply) => (
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="text-red-600 hover:text-red-700"
+                  disabled={deletingSupplyId === supply.id}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void handleDeleteSupply(supply)
+                  }}
+                >
+                  <Trash2 className={`mr-2 h-4 w-4 ${deletingSupplyId === supply.id ? 'animate-pulse' : ''}`} />
+                  Delete
+                </Button>
+              </div>
+            ),
+          },
+        ]
+      : []),
   ]
+
 
   useEffect(() => {
     if (!isDatePickerOpen) {

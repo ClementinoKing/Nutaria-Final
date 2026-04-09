@@ -299,6 +299,51 @@ function OperationalSupplyDetail() {
     [rows]
   )
 
+  const tourSteps = useMemo<TourStep[]>(
+    () => [
+      {
+        id: 'summary',
+        target: '[data-tour="operational-supply-summary"]',
+        title: 'Operational supply summary',
+        description: 'Review the document, status, and total received at a glance.',
+        placement: 'bottom',
+      },
+      {
+        id: 'details',
+        target: '[data-tour="operational-supply-details"]',
+        title: 'Receiving details',
+        description: 'Verify supplier, warehouse, delivery reference, and condition.',
+        placement: 'top',
+      },
+      {
+        id: 'batches',
+        target: '[data-tour="operational-supply-batches"]',
+        title: 'Operational batches',
+        description: 'Each line represents an operational item received in this delivery.',
+        placement: 'top',
+      },
+      {
+        id: 'packaging',
+        target: '[data-tour="operational-supply-packaging"]',
+        title: 'Packaging checks',
+        description: 'Review packaging quality captured per operational batch.',
+        placement: 'top',
+      },
+    ],
+    []
+  )
+
+  const {
+    closeTour,
+    currentStep: currentTourStep,
+    currentStepIndex: currentTourStepIndex,
+    isLastStep: isTourLastStep,
+    isOpen: isTourOpen,
+    nextStep,
+    openTour,
+    previousStep,
+  } = useSettingsTour(tourSteps)
+
   if (loading) {
     return (
       <PageLayout
@@ -346,51 +391,6 @@ function OperationalSupplyDetail() {
       </PageLayout>
     )
   }
-
-  const tourSteps = useMemo<TourStep[]>(
-    () => [
-      {
-        id: 'summary',
-        target: '[data-tour="operational-supply-summary"]',
-        title: 'Operational supply summary',
-        description: 'Review the document, status, and total received at a glance.',
-        placement: 'bottom',
-      },
-      {
-        id: 'details',
-        target: '[data-tour="operational-supply-details"]',
-        title: 'Receiving details',
-        description: 'Verify supplier, warehouse, delivery reference, and condition.',
-        placement: 'top',
-      },
-      {
-        id: 'batches',
-        target: '[data-tour="operational-supply-batches"]',
-        title: 'Operational batches',
-        description: 'Each line represents an operational item received in this delivery.',
-        placement: 'top',
-      },
-      {
-        id: 'packaging',
-        target: '[data-tour="operational-supply-packaging"]',
-        title: 'Packaging checks',
-        description: 'Review packaging quality captured per operational batch.',
-        placement: 'top',
-      },
-    ],
-    []
-  )
-
-  const {
-    closeTour,
-    currentStep: currentTourStep,
-    currentStepIndex: currentTourStepIndex,
-    isLastStep: isTourLastStep,
-    isOpen: isTourOpen,
-    nextStep,
-    openTour,
-    previousStep,
-  } = useSettingsTour(tourSteps)
 
   return (
     <PageLayout

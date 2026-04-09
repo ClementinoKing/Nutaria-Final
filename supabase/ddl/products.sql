@@ -19,3 +19,5 @@ create table if not exists public.products (
 
 create index if not exists products_sku_idx on public.products using btree (sku) tablespace pg_default;
 create index if not exists products_category_idx on public.products using btree (category) tablespace pg_default;
+create unique index if not exists products_name_type_unique_idx
+  on public.products using btree (lower(btrim(name)), coalesce(upper(product_type), 'RAW'));
