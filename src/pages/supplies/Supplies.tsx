@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DatePicker } from '@/components/ui/date-picker'
 import { SearchableSelect } from '@/components/ui/searchable-select'
-import { Briefcase, CalendarRange, Camera, ChevronLeft, ChevronRight, Package, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { Briefcase, CalendarRange, ChevronLeft, ChevronRight, Package, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import PageLayout from '@/components/layout/PageLayout'
 import ResponsiveTable from '@/components/ResponsiveTable'
 import { useAuth } from '@/context/AuthContext'
@@ -21,8 +21,7 @@ import { SupplyDocumentsStep, SupplyDocument } from '@/components/supplies/Suppl
 import { VehicleInspectionsStep, VehicleInspection } from '@/components/supplies/VehicleInspectionsStep'
 import { PackagingQualityStep, PackagingQuality } from '@/components/supplies/PackagingQualityStep'
 import { SupplierSignOffStep, SupplierSignOff } from '@/components/supplies/SupplierSignOffStep'
-import { CameraCapture } from '@/components/CameraCapture'
-import { buildStorageObjectPath, uploadStoredFile } from '@/lib/fileStorage'
+import { buildStorageObjectPath, deleteStoredFile, uploadStoredFile } from '@/lib/fileStorage'
 import SettingsTour from '@/components/tour/SettingsTour'
 
 interface QualityEntry {
@@ -47,6 +46,13 @@ interface SupplyBatch {
   rejected_qty: string
   unit_price: string
   amount_paid: string
+  production_date: string
+  expiry_date: string
+  coa_document_id?: number | null
+  coa_document_name: string
+  coa_storage_path?: string
+  coa_expiry_date: string
+  coa_file: File | null
 }
 
 interface FormData {
@@ -83,6 +89,8 @@ interface SupplyBatchData {
   accepted_qty?: number
   rejected_qty?: number
   unit_price?: number | null
+  production_date?: string | null
+  expiry_date?: string | null
   quality_status?: string
   [key: string]: unknown
 }
@@ -332,6 +340,29 @@ function createBatchTempKey(): string {
   return `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+function createEmptySupplyBatch(): SupplyBatch {
+  return {
+    batch_id: null,
+    temp_key: createBatchTempKey(),
+    lot_no: '',
+    is_locked: false,
+    product_id: '',
+    unit_id: '',
+    qty: '',
+    accepted_qty: '0',
+    rejected_qty: '0',
+    unit_price: '',
+    amount_paid: '',
+    production_date: '',
+    expiry_date: '',
+    coa_document_id: null,
+    coa_document_name: '',
+    coa_storage_path: '',
+    coa_expiry_date: '',
+    coa_file: null,
+  }
+}
+
 function getSupplyBatchQualityKey(batch: SupplyBatch, index: number): string {
   if (batch.batch_id != null && Number.isFinite(Number(batch.batch_id))) {
     return `batch:${Number(batch.batch_id)}`
@@ -561,8 +592,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     invoiceNumber: '',
     driverLicenseName: '',
     batchNumber: '',
-    productionDate: '',
-    expiryDate: '',
     invoiceFile: null,
   }))
   const [vehicleInspection, setVehicleInspection] = useState<VehicleInspection>(() => ({
@@ -588,15 +617,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     signedByName: '',
     remarks: '',
   }))
-  const [supplierCoaStatus, setSupplierCoaStatus] = useState<'available' | 'missing' | 'expired' | null>(null)
-  const [supplierCoaLoading, setSupplierCoaLoading] = useState(false)
-  const [addCoaModalOpen, setAddCoaModalOpen] = useState(false)
-  const [addCoaFile, setAddCoaFile] = useState<File | null>(null)
-  const [addCoaExpiry, setAddCoaExpiry] = useState('')
-  const [addCoaCameraOpen, setAddCoaCameraOpen] = useState(false)
   const [categorySuppliersLoading, setCategorySuppliersLoading] = useState(false)
   const [categorySuppliers, setCategorySuppliers] = useState<Array<{ id: number | string; name?: unknown; supplier_type?: unknown }>>([])
-  const [addCoaUploading, setAddCoaUploading] = useState(false)
   const [editingSupplyId, setEditingSupplyId] = useState<number | null>(null)
   const [editLoadDone, setEditLoadDone] = useState(false)
   const [loadingData, setLoadingData] = useState(true)
@@ -700,21 +722,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       received_at: toLocalDateTimeInput(),
       received_by: currentUserName,
       doc_status: STATUS_OPTIONS[0]!,
-      supply_batches: [
-        {
-          batch_id: null,
-          temp_key: createBatchTempKey(),
-          lot_no: '',
-          is_locked: false,
-          product_id: '',
-          unit_id: '',
-          qty: '',
-          accepted_qty: '0',
-          rejected_qty: '0',
-          unit_price: '',
-          amount_paid: '',
-        },
-      ],
+      supply_batches: [createEmptySupplyBatch()],
     }),
     [computeNextDocNumber, currentUserName],
   )
@@ -1386,29 +1394,35 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     [products, rawProductOptions, formData.supply_batches]
   )
 
-  const handleSupplyBatchChange = (index: number, field: keyof SupplyBatch, value: string) => {
+  const handleSupplyBatchChange = (index: number, field: keyof SupplyBatch, value: string | File | null) => {
     const next = [...formData.supply_batches]
     if (!next[index] || next[index]!.is_locked) {
       return
     }
     if (
       field === 'product_id' &&
+      typeof value === 'string' &&
       value &&
       next.some((batch, idx) => idx !== index && batch.product_id === value)
     ) {
       toast.error('This raw material is already selected in another batch.')
       return
     }
-    const incomingValue = field === 'rejected_qty' ? sanitiseRejectedQuantityInput(value) : value
     const batchAt = next[index]
     if (batchAt) {
-      ;(batchAt as unknown as Record<string, string>)[field] = incomingValue
+      if (field === 'coa_file') {
+        ;(batchAt as unknown as Record<string, File | null>)[field] = value instanceof File ? value : null
+      } else {
+        const incomingValue =
+          field === 'rejected_qty' && typeof value === 'string' ? sanitiseRejectedQuantityInput(value) : value
+        ;(batchAt as unknown as Record<string, string | File | null>)[field] = incomingValue
+      }
     }
 
     const currentBatch = next[index]
     if (!currentBatch) return
 
-    if (field === 'rejected_qty' || field === 'qty') {
+    if ((field === 'rejected_qty' || field === 'qty') && typeof value === 'string') {
       const quantityNumber = Number.parseFloat(currentBatch.qty)
       const rejectedNumber = Number.parseFloat(currentBatch.rejected_qty)
       const hasQuantity = Number.isFinite(quantityNumber) && quantityNumber > 0
@@ -1428,6 +1442,12 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         currentBatch.rejected_qty = ''
         currentBatch.accepted_qty = ''
       }
+    } else if (field === 'coa_file') {
+      if (value instanceof File) {
+        currentBatch.coa_document_name = value.name
+      } else if (!currentBatch.coa_document_id) {
+        currentBatch.coa_document_name = ''
+      }
     }
 
     setFormData((prev) => ({
@@ -1439,22 +1459,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   const addSupplyBatch = () => {
     setFormData((prev) => ({
       ...prev,
-      supply_batches: [
-        ...prev.supply_batches,
-        {
-          batch_id: null,
-          temp_key: createBatchTempKey(),
-          lot_no: '',
-          is_locked: false,
-          product_id: '',
-          unit_id: '',
-          qty: '',
-          accepted_qty: '0',
-          rejected_qty: '0',
-          unit_price: '',
-          amount_paid: '',
-        },
-      ],
+      supply_batches: [...prev.supply_batches, createEmptySupplyBatch()],
     }))
   }
 
@@ -1686,6 +1691,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
       if (step === 5) {
         // Supply batches validation
+        const editableBatches = formData.supply_batches.filter((batch) => !batch.is_locked)
         if (formData.supply_batches.length === 0) {
           toast.error('Add at least one batch to continue.')
           return false
@@ -1703,7 +1709,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
 
         let errorMessage = ''
-        const invalidBatch = formData.supply_batches.find((batch) => {
+        const invalidBatch = editableBatches.find((batch) => {
           const quantity = Number.parseFloat(batch.qty)
           const rejected = Number.parseFloat(batch.rejected_qty)
 
@@ -1727,6 +1733,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             return true
           }
 
+          if (!batch.production_date || !batch.expiry_date) {
+            errorMessage = 'Production and expiry dates are required for each batch.'
+            return true
+          }
+
+          if (!batch.coa_file && !batch.coa_document_id) {
+            errorMessage = 'Upload a COA certificate for each batch.'
+            return true
+          }
+
           const unitPrice = Number.parseFloat(batch.unit_price)
           if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
             errorMessage = 'Unit price is required and must be greater than zero for each batch.'
@@ -1737,7 +1753,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         })
 
         if (invalidBatch) {
-          toast.error(errorMessage || 'Resolve issues with batch quantities before submitting.')
+          toast.error(errorMessage || 'Resolve issues with batch details before submitting.')
           return false
         }
 
@@ -2257,7 +2273,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     const batchAssessments = validLines.map((batch, index) => {
       const qualityKey = getSupplyBatchQualityKey(batch, index)
       const entries = qualityEntriesByBatchKey[qualityKey] ?? createInitialQualityEntries(qualityParameters)
-      const rejectedQty = Number.parseFloat(batch.rejected_qty)
       return {
         qualityKey,
         entries,
@@ -2273,8 +2288,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       INVOICE: { name: 'Invoice Number', is_required: true, allows_file_upload: true },
       DRIVER_LICENSE: { name: 'Driver License/Name', is_required: true, allows_file_upload: false },
       BATCH_NUMBER: { name: 'Supply Batch Number', is_required: true, allows_file_upload: false },
-      PRODUCTION_DATE: { name: 'Production Date', is_required: false, allows_file_upload: false },
-      EXPIRY_DATE: { name: 'Expiry Date', is_required: false, allows_file_upload: false },
     }
 
     const ensureSupplyDocumentTypes = async (codes: string[]): Promise<Set<string>> => {
@@ -2322,6 +2335,81 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       if (refreshedTypesError) throw refreshedTypesError
 
       return new Set((refreshedTypes ?? []).map((row) => String(row.code)))
+    }
+
+    const saveBatchCoaDocument = async (batchId: number, batch: SupplyBatch) => {
+      const existingDocumentId = batch.coa_document_id != null && Number.isFinite(Number(batch.coa_document_id))
+        ? Number(batch.coa_document_id)
+        : null
+      const existingStoragePath = batch.coa_storage_path?.trim() || null
+      const expiryToUse = batch.coa_expiry_date?.trim() ? batch.coa_expiry_date.trim() : null
+      const documentName = batch.coa_file?.name || batch.coa_document_name?.trim() || 'COA'
+      const existingDocument = existingDocumentId
+        ? { id: existingDocumentId, storage_path: existingStoragePath, name: batch.coa_document_name?.trim() || 'COA' }
+        : null
+
+      if (!batch.coa_file && !existingDocument) {
+        throw new Error(`Upload a COA certificate for batch ${batch.lot_no?.trim() || batchId}.`)
+      }
+
+      if (batch.coa_file) {
+        const storagePath = buildStorageObjectPath(
+          `supply_batches/${batchId}/certificates`,
+          `coa_${batch.coa_file.name}`,
+        )
+        await uploadStoredFile(storagePath, batch.coa_file)
+
+        if (existingDocument?.id) {
+          const { error: updateDocumentError } = await supabase
+            .from('documents')
+            .update({
+              name: documentName,
+              storage_path: storagePath,
+              doc_type: 'COA',
+              document_type_code: 'COA',
+              expiry_date: expiryToUse,
+              uploaded_by: profileId ?? null,
+            })
+            .eq('id', existingDocument.id)
+          if (updateDocumentError) throw updateDocumentError
+
+          if (existingDocument.storage_path && existingDocument.storage_path !== storagePath) {
+            try {
+              await deleteStoredFile(existingDocument.storage_path)
+            } catch (deleteError) {
+              console.warn('Unable to remove the previous COA file for a batch.', deleteError)
+            }
+          }
+        } else {
+          const { error: insertDocumentError } = await supabase.from('documents').insert({
+            owner_type: 'supply_batch',
+            owner_id: batchId,
+            name: documentName,
+            doc_type: 'COA',
+            document_type_code: 'COA',
+            storage_path: storagePath,
+            expiry_date: expiryToUse,
+            uploaded_by: profileId ?? null,
+          })
+          if (insertDocumentError) throw insertDocumentError
+        }
+
+        return
+      }
+
+      if (existingDocument?.id) {
+        const { error: updateDocumentError } = await supabase
+          .from('documents')
+          .update({
+            name: documentName,
+            doc_type: 'COA',
+            document_type_code: 'COA',
+            expiry_date: expiryToUse,
+            uploaded_by: profileId ?? null,
+          })
+          .eq('id', existingDocument.id)
+        if (updateDocumentError) throw updateDocumentError
+      }
     }
 
     setIsSubmitting(true)
@@ -2457,7 +2545,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             current_qty: acceptedQty,
             quality_status: batchQualityStatus,
             unit_price: unitPrice,
-            expiry_date: null,
+            production_date: line.production_date?.trim() || null,
+            expiry_date: line.expiry_date?.trim() || null,
           }
 
           if (hasExistingBatch) {
@@ -2467,6 +2556,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               .eq('id', existingBatchId)
               .eq('supply_id', editingSupplyId)
             if (updateBatchError) throw updateBatchError
+            await saveBatchCoaDocument(existingBatchId, line)
             upsertedBatchQualityRows.push({
               batchId: existingBatchId,
               checkStatus: assessment.checkStatus,
@@ -2488,6 +2578,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               .single()
             if (insertBatchError) throw insertBatchError
             if (insertedBatch?.id) {
+              await saveBatchCoaDocument(Number(insertedBatch.id), line)
               upsertedBatchQualityRows.push({
                 batchId: Number(insertedBatch.id),
                 checkStatus: assessment.checkStatus,
@@ -2525,26 +2616,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             document_type_code: 'BATCH_NUMBER',
             value: supplyDocuments.batchNumber,
             date_value: null,
-            boolean_value: null,
-            document_id: null,
-          })
-        }
-        if (supplyDocuments.productionDate) {
-          supplyDocumentsPayload.push({
-            supply_id: editingSupplyId,
-            document_type_code: 'PRODUCTION_DATE',
-            value: null,
-            date_value: supplyDocuments.productionDate,
-            boolean_value: null,
-            document_id: null,
-          })
-        }
-        if (supplyDocuments.expiryDate) {
-          supplyDocumentsPayload.push({
-            supply_id: editingSupplyId,
-            document_type_code: 'EXPIRY_DATE',
-            value: null,
-            date_value: supplyDocuments.expiryDate,
             boolean_value: null,
             document_id: null,
           })
@@ -2876,7 +2947,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             current_qty: acceptedQty,
             quality_status: batchQualityStatus,
             unit_price: unitPrice,
-            expiry_date: null,
+            production_date: line.production_date?.trim() || null,
+            expiry_date: line.expiry_date?.trim() || null,
             created_at: nowISO,
           }
         })
@@ -2919,6 +2991,8 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           checkStatus: 'PASS' as const,
           overallScore: null,
         }
+
+        await saveBatchCoaDocument(insertedBatch.id, validLines[index]!)
 
         const { data: qualityCheckRow, error: qualityCheckError } = await supabase
           .from('supply_quality_checks')
@@ -3035,30 +3109,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           document_type_code: 'BATCH_NUMBER',
           value: supplyDocuments.batchNumber,
           date_value: null,
-          boolean_value: null,
-          document_id: null,
-        })
-      }
-
-      // Production date
-      if (supplyDocuments.productionDate) {
-        supplyDocumentsPayload.push({
-          supply_id: newSupplyId,
-          document_type_code: 'PRODUCTION_DATE',
-          value: null,
-          date_value: supplyDocuments.productionDate,
-          boolean_value: null,
-          document_id: null,
-        })
-      }
-
-      // Expiry date
-      if (supplyDocuments.expiryDate) {
-        supplyDocumentsPayload.push({
-          supply_id: newSupplyId,
-          document_type_code: 'EXPIRY_DATE',
-          value: null,
-          date_value: supplyDocuments.expiryDate,
           boolean_value: null,
           document_id: null,
         })
@@ -3286,8 +3336,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         invoiceNumber: '',
         driverLicenseName: '',
         batchNumber: '',
-        productionDate: '',
-        expiryDate: '',
         invoiceFile: null,
       })
       setVehicleInspection({
@@ -3320,47 +3368,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       toast.error(errorMessage)
     } finally {
       setIsSubmitting(false)
-    }
-  }
-
-  const handleSaveSupplierCoa = async () => {
-    const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
-    if (!supplierId || !Number.isFinite(supplierId)) {
-      toast.error('Select a supplier first.')
-      return
-    }
-    if (!addCoaFile) {
-      toast.error('Upload a file or take a photo first.')
-      return
-    }
-    setAddCoaUploading(true)
-    try {
-      const storagePath = buildStorageObjectPath(`suppliers/${supplierId}/certificates`, `coa_${addCoaFile.name}`)
-      await uploadStoredFile(storagePath, addCoaFile)
-      const expiryToUse = addCoaExpiry.trim() ? addCoaExpiry.trim() : null
-      const { error: insertError } = await supabase.from('documents').insert({
-        owner_type: 'supplier',
-        owner_id: supplierId,
-        name: addCoaFile.name,
-        document_type_code: 'COA',
-        doc_type: 'COA',
-        storage_path: storagePath,
-        expiry_date: expiryToUse,
-        uploaded_by: profileId ?? null,
-      })
-      if (insertError) {
-        throw insertError
-      }
-      setSupplierCoaStatus('available')
-      setAddCoaModalOpen(false)
-      setAddCoaFile(null)
-      setAddCoaExpiry('')
-      toast.success('COA added to supplier.')
-    } catch (err) {
-      console.error('Error adding COA', err)
-      toast.error(err instanceof Error ? err.message : 'Failed to add COA.')
-    } finally {
-      setAddCoaUploading(false)
     }
   }
 
@@ -3409,8 +3416,17 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           accepted_qty?: number
           rejected_qty?: number
           unit_price?: number | null
+          production_date?: string | null
+          expiry_date?: string | null
         }>
         const batchIds = batches.map((batch) => Number(batch.id)).filter((id) => Number.isFinite(id))
+        let batchCertificateDocs: Array<{
+          id: number
+          owner_id: number
+          name: string
+          storage_path: string
+          expiry_date: string | null
+        }> = []
         const lockedBatchIds = new Set<number>()
         if (batchIds.length > 0) {
           const { data: linkedRuns, error: linkedRunsError } = await supabase
@@ -3424,7 +3440,30 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
               lockedBatchIds.add(batchId)
             }
           })
+
+          const { data: batchDocsData, error: batchDocsError } = await supabase
+            .from('documents')
+            .select('id, owner_id, name, storage_path, expiry_date, uploaded_at')
+            .eq('owner_type', 'supply_batch')
+            .eq('document_type_code', 'COA')
+            .in('owner_id', batchIds)
+            .order('uploaded_at', { ascending: false })
+          if (batchDocsError) throw batchDocsError
+          batchCertificateDocs = (batchDocsData ?? []) as Array<{
+            id: number
+            owner_id: number
+            name: string
+            storage_path: string
+            expiry_date: string | null
+          }>
         }
+        const batchCertificateByOwnerId = new Map<number, (typeof batchCertificateDocs)[number]>()
+        batchCertificateDocs.forEach((doc) => {
+          const ownerId = Number(doc.owner_id)
+          if (Number.isFinite(ownerId) && !batchCertificateByOwnerId.has(ownerId)) {
+            batchCertificateByOwnerId.set(ownerId, doc)
+          }
+        })
         const docs = (docsData ?? []) as { document_type_code: string; value: string | null; date_value: string | null; boolean_value: boolean | null }[]
         const vehicle = vehicleData as Record<string, unknown> | null
         const packagingChecks = (packagingChecksData ?? []) as Array<{ id: number; lot_id?: number | null }>
@@ -3464,21 +3503,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             received_at: supply.received_at ? toLocalDateTimeInput(new Date(supply.received_at as string)) : toLocalDateTimeInput(),
             received_by: currentUserName,
             doc_status: String(supply.doc_status ?? STATUS_OPTIONS[0]),
-            supply_batches: [
-        {
-          batch_id: null,
-          temp_key: createBatchTempKey(),
-          lot_no: '',
-          is_locked: false,
-          product_id: '',
-                unit_id: '',
-                qty: '',
-                accepted_qty: '0',
-                rejected_qty: '0',
-                unit_price: '',
-                amount_paid: '',
-              },
-            ],
+            supply_batches: [createEmptySupplyBatch()],
           })
 
           setOperationalDeliveryReference(String(operationalEntry?.delivery_reference ?? ''))
@@ -3556,6 +3581,10 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
 
         const getDoc = (code: string) => docs.find((d) => d.document_type_code === code)
+        const prodDoc = getDoc('PRODUCTION_DATE')
+        const expDoc = getDoc('EXPIRY_DATE')
+        const legacyProductionDate = (prodDoc?.date_value as string) ?? ''
+        const legacyExpiryDate = (expDoc?.date_value as string) ?? ''
         setFormData({
           category_code: (supply.category_code as 'PRODUCT' | 'SERVICE') ?? 'PRODUCT',
           doc_no: String(supply.doc_no ?? ''),
@@ -3570,6 +3599,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                   const received = Number(batch.received_qty ?? 0)
                   const accepted = Number(batch.accepted_qty ?? 0)
                   const rejected = Number(batch.rejected_qty ?? received - accepted)
+                  const productionDate = String(batch.production_date ?? legacyProductionDate ?? '').trim()
+                  const expiryDate = String(batch.expiry_date ?? legacyExpiryDate ?? '').trim()
+                  const certificate = batchCertificateByOwnerId.get(Number(batch.id))
                   return {
                     batch_id: Number(batch.id),
                     temp_key: `edit_${String(batch.id)}`,
@@ -3582,35 +3614,28 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                     rejected_qty: String(rejected >= 0 ? rejected : 0),
                     unit_price: batch.unit_price != null ? String(batch.unit_price) : '',
                     amount_paid: '',
+                    production_date: productionDate || '',
+                    expiry_date: expiryDate || '',
+                    coa_document_id: certificate?.id ?? null,
+                    coa_document_name: certificate?.name ?? '',
+                    coa_storage_path: certificate?.storage_path ?? '',
+                    coa_expiry_date: certificate?.expiry_date ?? '',
+                    coa_file: null,
                   }
                 })
               : [
                   {
-                    batch_id: null,
-                    temp_key: createBatchTempKey(),
-                    lot_no: '',
-                    is_locked: false,
-                    product_id: '',
-                    unit_id: '',
-                    qty: '',
-                    accepted_qty: '0',
-                    rejected_qty: '0',
-                    unit_price: '',
-                    amount_paid: '',
+                    ...createEmptySupplyBatch(),
                   },
                 ],
         })
         const invDoc = getDoc('INVOICE')
         const driverDoc = getDoc('DRIVER_LICENSE')
         const batchDoc = getDoc('BATCH_NUMBER')
-        const prodDoc = getDoc('PRODUCTION_DATE')
-        const expDoc = getDoc('EXPIRY_DATE')
         setSupplyDocuments({
           invoiceNumber: (invDoc?.value as string) ?? '',
           driverLicenseName: (driverDoc?.value as string) ?? '',
           batchNumber: (batchDoc?.value as string) ?? '',
-          productionDate: (prodDoc?.date_value as string) ?? '',
-          expiryDate: (expDoc?.date_value as string) ?? '',
           invoiceFile: null,
         })
         setVehicleInspection({
@@ -3728,8 +3753,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       invoiceNumber: '',
       driverLicenseName: '',
       batchNumber: '',
-      productionDate: '',
-      expiryDate: '',
       invoiceFile: null,
     })
     setVehicleInspection({
@@ -3856,8 +3879,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       invoiceNumber: '',
       driverLicenseName: '',
       batchNumber: '',
-      productionDate: '',
-      expiryDate: '',
       invoiceFile: null,
     })
     setVehicleInspection({
@@ -4079,7 +4100,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           id: 'batches',
           target: '[data-tour="supplies-batches"]',
           title: 'Enter supply batches',
-          description: 'Split the receipt into batches and record quantities and pricing.',
+          description: 'Split the receipt into batches and record quantities, pricing, dates, and each batch COA.',
           placement: 'top',
           beforeEnter: () => {
             openSupplyTourModal(5, 'PRODUCT')
@@ -4214,7 +4235,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         id: Number(product.id),
         name: String(product.name ?? ''),
         sku: String(product.sku ?? ''),
-        product_type: 'OP',
+        product_type: 'OP' as const,
         base_unit_id: product.base_unit_id != null ? Number(product.base_unit_id) : null,
       }))
     setOperationalMappedProducts(opProducts)
@@ -4326,7 +4347,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           .select('id, category_code, doc_no, supplier_id, warehouse_id, received_at, created_at, doc_status, reference')
           .order('received_at', { ascending: false, nullsFirst: false })
           .limit(500),
-        supabase.from('supply_batches').select('id, supply_id, lot_no, product_id, unit_id, current_qty, received_qty, accepted_qty, rejected_qty, quality_status, unit_price'),
+        supabase.from('supply_batches').select('id, supply_id, lot_no, product_id, unit_id, current_qty, received_qty, accepted_qty, rejected_qty, quality_status, unit_price, production_date, expiry_date'),
         supabase.from('supply_quality_checks').select('id, supply_id'),
         supabase.from('supply_quality_check_items').select('id, quality_check_id, parameter_id, results'),
         supabase.from('user_profiles').select('id, full_name, email'),
@@ -4449,57 +4470,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     setEditLoadDone(false)
     setCurrentStep(1)
   }, [routeSupplyId, location.pathname, loadingData, isModalOpen, editingSupplyId])
-
-  // Fetch supplier COA status only when on the documents step (step 2). Avoid synchronous setState to prevent extra render.
-  useEffect(() => {
-    if (currentStep !== 2) {
-      return
-    }
-    const supplierId = formData.supplier_id ? parseInt(formData.supplier_id, 10) : null
-    if (!supplierId || !Number.isFinite(supplierId)) {
-      setSupplierCoaStatus(null)
-      setSupplierCoaLoading(false)
-      return
-    }
-    let cancelled = false
-    supabase
-      .from('documents')
-      .select('id, expiry_date')
-      .eq('owner_type', 'supplier')
-      .eq('owner_id', supplierId)
-      .eq('document_type_code', 'COA')
-      .then(({ data, error }) => {
-        if (cancelled) return
-        setSupplierCoaLoading(false)
-        if (error) {
-          setSupplierCoaStatus('missing')
-          return
-        }
-        const docs = (data ?? []) as { id: number; expiry_date: string | null }[]
-        if (docs.length === 0) {
-          setSupplierCoaStatus('missing')
-          return
-        }
-        const now = new Date()
-        now.setHours(0, 0, 0, 0)
-        const hasValid = docs.some((d) => {
-          if (!d.expiry_date) return true
-          const exp = new Date(d.expiry_date)
-          exp.setHours(0, 0, 0, 0)
-          return exp >= now
-        })
-        const allExpired = docs.every((d) => {
-          if (!d.expiry_date) return false
-          const exp = new Date(d.expiry_date)
-          exp.setHours(0, 0, 0, 0)
-          return exp < now
-        })
-        setSupplierCoaStatus(hasValid ? 'available' : allExpired ? 'expired' : 'missing')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [currentStep, formData.supplier_id])
 
   if (loadingData && !isDirectEditRoute) {
     return (
@@ -5129,37 +5099,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                       onChange={setSupplyDocuments}
                       disabled={isSubmitting}
                     />
-                    {formData.supplier_id && (
-                      <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-olive-light/40 bg-white px-4 py-3">
-                        <span className="text-sm font-medium text-text-dark/80">Supplier COA:</span>
-                        {supplierCoaLoading ? (
-                          <span className="text-sm text-text-dark/60">Checking…</span>
-                        ) : supplierCoaStatus === 'available' ? (
-                          <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-800">
-                            COA available
-                          </span>
-                        ) : (
-                          <>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setAddCoaFile(null)
-                                setAddCoaExpiry('')
-                                setAddCoaModalOpen(true)
-                              }}
-                              disabled={isSubmitting}
-                            >
-                              Add a new COA
-                            </Button>
-                            <p className="text-xs text-text-dark/60">
-                              Use when the supplier&apos;s COA is expired or missing.
-                            </p>
-                          </>
-                        )}
-                      </div>
-                    )}
                   </section>
                 )}
 
@@ -5596,16 +5535,16 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                           Supply batches
                         </h3>
                         <p className="text-sm text-text-dark/70 dark:text-slate-300">
-                          Enter each batch and allocation. Quality evaluation is done in the next step per batch.
+                          Enter each batch, its production and expiry dates, COA certificate, and allocation. Quality evaluation is done in the next step per batch.
                         </p>
                       </div>
 
                       <div className="space-y-6">
                         {formData.supply_batches.map((batch, index) => (
-                          <div
-                            key={batch.batch_id != null ? `batch-${batch.batch_id}` : `temp-${batch.temp_key ?? index}`}
-                            className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-slate-500"
-                          >
+                        <div
+                          key={batch.batch_id != null ? `batch-${batch.batch_id}` : `temp-${batch.temp_key ?? index}`}
+                          className="rounded-xl border border-olive-light/40 bg-white/80 p-5 shadow-sm transition hover:border-olive-light/80 hover:shadow-md dark:border-slate-700 dark:bg-slate-900/70 dark:hover:border-slate-500"
+                        >
                             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                               <div>
                                 <p className="text-xs font-semibold uppercase tracking-widest text-text-dark/50 dark:text-slate-400">
@@ -5723,6 +5662,69 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                 <p className="text-xs text-text-dark/60 dark:text-slate-400">
                                   Calculated automatically from received minus rejected.
                                 </p>
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`production_date_${index}`}>Production Date *</Label>
+                                <DatePicker
+                                  id={`production_date_${index}`}
+                                  value={batch.production_date}
+                                  onChange={(value) => handleSupplyBatchChange(index, 'production_date', value)}
+                                  triggerClassName={baseFieldClass}
+                                  popoverClassName="w-[18rem]"
+                                  disabled={isSubmitting || batch.is_locked}
+                                  required
+                                  max={batch.expiry_date || undefined}
+                                />
+                              </div>
+                              <div className="space-y-2 lg:col-span-6">
+                                <Label htmlFor={`expiry_date_${index}`}>Expiry Date *</Label>
+                                <DatePicker
+                                  id={`expiry_date_${index}`}
+                                  value={batch.expiry_date}
+                                  onChange={(value) => handleSupplyBatchChange(index, 'expiry_date', value)}
+                                  triggerClassName={baseFieldClass}
+                                  popoverClassName="w-[18rem]"
+                                  disabled={isSubmitting || batch.is_locked}
+                                  required
+                                  min={batch.production_date || undefined}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
+                              <div className="space-y-2 lg:col-span-7">
+                                <Label htmlFor={`coa_file_${index}`}>COA Certificate *</Label>
+                                <Input
+                                  id={`coa_file_${index}`}
+                                  type="file"
+                                  accept="image/*,.pdf"
+                                  className={baseFieldClass}
+                                  disabled={isSubmitting || batch.is_locked}
+                                  onChange={(event) =>
+                                    handleSupplyBatchChange(index, 'coa_file', event.target.files?.[0] ?? null)
+                                  }
+                                />
+                                <p className="text-xs text-text-dark/60 dark:text-slate-400">
+                                  {batch.coa_file
+                                    ? `Selected: ${batch.coa_file.name}`
+                                    : batch.coa_document_name
+                                      ? `Current: ${batch.coa_document_name}`
+                                      : 'Upload the COA document for this batch.'}
+                                </p>
+                              </div>
+                              <div className="space-y-2 lg:col-span-5">
+                                <Label htmlFor={`coa_expiry_${index}`}>COA Expiry Date</Label>
+                                <DatePicker
+                                  id={`coa_expiry_${index}`}
+                                  value={batch.coa_expiry_date}
+                                  onChange={(value) => handleSupplyBatchChange(index, 'coa_expiry_date', value)}
+                                  triggerClassName={baseFieldClass}
+                                  popoverClassName="w-[18rem]"
+                                  disabled={isSubmitting || batch.is_locked}
+                                />
                               </div>
                             </div>
 
@@ -5921,77 +5923,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         </div>
       )}
 
-      {addCoaModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-olive-light/40 bg-white p-6 shadow-2xl">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-text-dark">Add COA to supplier</h3>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  setAddCoaModalOpen(false)
-                  setAddCoaFile(null)
-                  setAddCoaExpiry('')
-                }}
-              >
-                <X className="h-5 w-5" />
-              </Button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <Label>COA document</Label>
-                <div className="mt-2 flex gap-2">
-                  <Input
-                    type="file"
-                    accept="image/*,.pdf"
-                    onChange={(e) => setAddCoaFile(e.target.files?.[0] ?? null)}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setAddCoaCameraOpen(true)}
-                    title="Take photo"
-                  >
-                    <Camera className="h-4 w-4" />
-                  </Button>
-                </div>
-                {addCoaFile && (
-                  <p className="mt-1 text-sm text-text-dark/70">{addCoaFile.name}</p>
-                )}
-              </div>
-              <div>
-                <Label htmlFor="add_coa_expiry">Expiry date (optional)</Label>
-                <DatePicker
-                  id="add_coa_expiry"
-                  value={addCoaExpiry}
-                  onChange={(value) => setAddCoaExpiry(value)}
-                  className="mt-2"
-                />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setAddCoaModalOpen(false)
-                  setAddCoaFile(null)
-                  setAddCoaExpiry('')
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSaveSupplierCoa}
-                disabled={addCoaUploading || !addCoaFile}
-              >
-                {addCoaUploading ? 'Saving…' : 'Save COA'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
       <SettingsTour
         open={isTourOpen}
         step={currentTourStep}
@@ -6001,15 +5932,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         onBack={previousStep}
         onNext={nextStep}
         onClose={handleCloseTour}
-      />
-      <CameraCapture
-        isOpen={addCoaCameraOpen}
-        onClose={() => setAddCoaCameraOpen(false)}
-        onCapture={(file) => {
-          setAddCoaFile(file)
-          setAddCoaCameraOpen(false)
-        }}
-        disabled={addCoaUploading}
       />
     </>
   )

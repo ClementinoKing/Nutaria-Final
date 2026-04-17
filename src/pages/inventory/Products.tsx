@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type Dispatch, type SetStateAction } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -103,7 +103,7 @@ interface BulkEditFormData {
 }
 
 type CreationMode = 'OPERATIONAL' | 'PROCESSING' | 'MIXED' | null
-type ProductCatalogTab = 'RAW' | 'PROCESSED' | 'OPERATIONAL'
+type ProductCatalogTab = 'RAW' | 'PROCESSED' | 'MIXED' | 'OPERATIONAL'
 
 interface ProcessingDraftBase {
   id?: number
@@ -269,6 +269,54 @@ function createProcessingDraftBase(units: Unit[]): ProcessingDraftBase {
   }
 }
 
+function buildProcessingPayloadFromDrafts(
+  raws: ProcessingRawDraft[],
+  wips: ProcessingWipDraft[],
+  finished: ProcessingFinishedDraft[],
+) {
+  const rawIndexByKey = new Map(raws.map((row, index) => [row.temp_key, index] as const))
+  const wipIndexByKey = new Map(wips.map((row, index) => [row.temp_key, index] as const))
+
+  return {
+    raws: raws.map((row) => ({
+      id: row.id ?? null,
+      name: row.name.trim(),
+      base_unit_id: row.base_unit_id || null,
+      reorder_point: row.reorder_point || null,
+      safety_stock: row.safety_stock || null,
+      target_stock: row.target_stock || null,
+      status: (row.status || 'ACTIVE').toUpperCase(),
+      notes: row.notes.trim() || null,
+    })),
+    wips: wips.map((row) => ({
+      id: row.id ?? null,
+      name: row.name.trim(),
+      base_unit_id: row.base_unit_id || null,
+      reorder_point: row.reorder_point || null,
+      safety_stock: row.safety_stock || null,
+      target_stock: row.target_stock || null,
+      status: (row.status || 'ACTIVE').toUpperCase(),
+      notes: row.notes.trim() || null,
+      raw_component_indexes: row.raw_component_temp_keys
+        .map((key) => rawIndexByKey.get(key))
+        .filter((idx): idx is number => typeof idx === 'number'),
+    })),
+    finished: finished.map((row) => ({
+      id: row.id ?? null,
+      name: row.name.trim(),
+      base_unit_id: row.base_unit_id || null,
+      reorder_point: row.reorder_point || null,
+      safety_stock: row.safety_stock || null,
+      target_stock: row.target_stock || null,
+      status: (row.status || 'ACTIVE').toUpperCase(),
+      notes: row.notes.trim() || null,
+      wip_component_indexes: row.wip_component_temp_keys
+        .map((key) => wipIndexByKey.get(key))
+        .filter((idx): idx is number => typeof idx === 'number'),
+    })),
+  }
+}
+
 function Products() {
   const navigate = useNavigate()
   const [products, setProducts] = useState<Product[]>([])
@@ -309,6 +357,7 @@ function Products() {
   const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false)
   const [bulkEditForm, setBulkEditForm] = useState<BulkEditFormData>(createEmptyBulkEditForm())
   const [tourFlow, setTourFlow] = useState<CreationMode>(null)
+  const processingChainBaselineRef = useRef<{ name: string; payload: string } | null>(null)
 
   const fetchProducts = useCallback(async () => {
     setLoading(true)
@@ -569,6 +618,12 @@ function Products() {
     if (catalogTab === 'RAW') {
       return preparedProducts.filter((product: PreparedProduct) => (product.product_type ?? 'RAW').toUpperCase() === 'RAW')
     }
+    if (catalogTab === 'MIXED') {
+      return preparedProducts.filter((product: PreparedProduct) => {
+        const type = (product.product_type ?? '').toUpperCase()
+        return type === 'FINISHED' && Boolean(product.is_mixed_product)
+      })
+    }
     if (catalogTab === 'OPERATIONAL') {
       return preparedProducts.filter((product: PreparedProduct) => (product.product_type ?? '').toUpperCase() === 'OP')
     }
@@ -728,6 +783,7 @@ function Products() {
     ])
     setProcessingEditMode(false)
     setProcessingFallbackNotice(null)
+    processingChainBaselineRef.current = null
   }, [units])
 
   const toDraftBase = useCallback((product: Product): ProcessingDraftBase => ({
@@ -821,21 +877,23 @@ function Products() {
   }, [toDraftBase])
 
   const openProcessingChainEditor = useCallback((product: Product, loaded: LoadedChain) => {
+    const raws = loaded.raws.length > 0 ? loaded.raws : [createProcessingDraftBase(units)]
+    const wips =
+      loaded.wips.length > 0
+        ? loaded.wips
+        : [{ ...createProcessingDraftBase(units), raw_component_temp_keys: [] }]
+    const finished =
+      loaded.finished.length > 0
+        ? loaded.finished
+        : [{ ...createProcessingDraftBase(units), wip_component_temp_keys: [] }]
+
     setCreationMode('PROCESSING')
     setProcessingEditMode(true)
     setProcessingChainId(loaded.chainId)
     setProcessingChainName(loaded.chainName ?? '')
-    setProcessingRaws(loaded.raws.length > 0 ? loaded.raws : [createProcessingDraftBase(units)])
-    setProcessingWips(
-      loaded.wips.length > 0
-        ? loaded.wips
-        : [{ ...createProcessingDraftBase(units), raw_component_temp_keys: [] }],
-    )
-    setProcessingFinished(
-      loaded.finished.length > 0
-        ? loaded.finished
-        : [{ ...createProcessingDraftBase(units), wip_component_temp_keys: [] }],
-    )
+    setProcessingRaws(raws)
+    setProcessingWips(wips)
+    setProcessingFinished(finished)
     setProcessingStep(1)
     setFormErrors({})
     setComponentSearch('')
@@ -843,6 +901,10 @@ function Products() {
     setEditingProduct(product)
     setProcessingFallbackNotice(null)
     setIsModalOpen(true)
+    processingChainBaselineRef.current = {
+      name: loaded.chainName ?? '',
+      payload: JSON.stringify(buildProcessingPayloadFromDrafts(raws, wips, finished)),
+    }
   }, [units])
 
   const handleLinkLegacyProductToChain = useCallback(async () => {
@@ -1406,46 +1468,7 @@ function Products() {
   }
 
   const buildProcessingPayload = () => {
-    const rawIndexByKey = new Map(processingRaws.map((row, index) => [row.temp_key, index] as const))
-    const wipIndexByKey = new Map(processingWips.map((row, index) => [row.temp_key, index] as const))
-    return {
-      raws: processingRaws.map((row) => ({
-        id: row.id ?? null,
-        name: row.name.trim(),
-        base_unit_id: row.base_unit_id || null,
-        reorder_point: row.reorder_point || null,
-        safety_stock: row.safety_stock || null,
-        target_stock: row.target_stock || null,
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        notes: row.notes.trim() || null,
-      })),
-      wips: processingWips.map((row) => ({
-        id: row.id ?? null,
-        name: row.name.trim(),
-        base_unit_id: row.base_unit_id || null,
-        reorder_point: row.reorder_point || null,
-        safety_stock: row.safety_stock || null,
-        target_stock: row.target_stock || null,
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        notes: row.notes.trim() || null,
-        raw_component_indexes: row.raw_component_temp_keys
-          .map((key) => rawIndexByKey.get(key))
-          .filter((idx): idx is number => typeof idx === 'number'),
-      })),
-      finished: processingFinished.map((row) => ({
-        id: row.id ?? null,
-        name: row.name.trim(),
-        base_unit_id: row.base_unit_id || null,
-        reorder_point: row.reorder_point || null,
-        safety_stock: row.safety_stock || null,
-        target_stock: row.target_stock || null,
-        status: (row.status || 'ACTIVE').toUpperCase(),
-        notes: row.notes.trim() || null,
-        wip_component_indexes: row.wip_component_temp_keys
-          .map((key) => wipIndexByKey.get(key))
-          .filter((idx): idx is number => typeof idx === 'number'),
-      })),
-    }
+    return buildProcessingPayloadFromDrafts(processingRaws, processingWips, processingFinished)
   }
 
   const saveProductComponents = async (
@@ -1663,14 +1686,46 @@ function Products() {
       toast.error('Processing chain id is missing.')
       return
     }
+    const payload = buildProcessingPayload()
+    const trimmedChainName = processingChainName.trim()
+    const baseline = processingChainBaselineRef.current
+    const payloadSerialised = JSON.stringify(payload)
+
+    if (baseline && baseline.payload === payloadSerialised && baseline.name === trimmedChainName) {
+      toast.info('No changes to save.')
+      return
+    }
+
+    if (baseline && baseline.payload === payloadSerialised && baseline.name !== trimmedChainName) {
+      setIsSubmitting(true)
+      try {
+        const { error: renameError } = await supabase
+          .from('product_processing_chains')
+          .update({ name: trimmedChainName || null, updated_at: new Date().toISOString() })
+          .eq('id', processingChainId)
+        if (renameError) throw renameError
+        toast.success('Processing chain renamed successfully.')
+        await fetchProducts()
+        setIsModalOpen(false)
+        setCreationMode(FEATURE_PROCESSING_PRODUCT_WIZARD ? null : 'OPERATIONAL')
+        resetProcessingWizard()
+        return
+      } catch (error) {
+        const message = (error as PostgrestError)?.message ?? 'Unable to rename processing chain.'
+        toast.error(message)
+      } finally {
+        setIsSubmitting(false)
+      }
+      return
+    }
+
     if (!validateProcessingDrafts()) return
     setIsSubmitting(true)
     try {
-      const payload = buildProcessingPayload()
       const { error: rpcError } = await supabase.rpc('update_processing_product_chain', {
         p_chain_id: processingChainId,
         p_payload: payload,
-        p_chain_name: processingChainName.trim() || null,
+        p_chain_name: trimmedChainName || null,
       })
       if (rpcError) throw rpcError
       toast.success('Processing chain updated successfully.')
@@ -1828,7 +1883,12 @@ function Products() {
         render: (product: PreparedProduct) => {
           const t = (product.product_type ?? 'RAW').toUpperCase()
           const style = productTypeBadgeStyles[t] ?? productTypeBadgeStyles.RAW
-          const label = t === 'WIP' || t === 'OP' ? t : t.charAt(0) + t.slice(1).toLowerCase()
+          const label =
+            t === 'FINISHED' && product.is_mixed_product
+              ? 'Mixed'
+              : t === 'WIP' || t === 'OP'
+                ? t
+                : t.charAt(0) + t.slice(1).toLowerCase()
           return (
             <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${style}`}>
               {label}
@@ -1838,7 +1898,12 @@ function Products() {
         mobileRender: (product: PreparedProduct) => {
           const t = (product.product_type ?? 'RAW').toUpperCase()
           const style = productTypeBadgeStyles[t] ?? productTypeBadgeStyles.RAW
-          const label = t === 'WIP' || t === 'OP' ? t : t.charAt(0) + t.slice(1).toLowerCase()
+          const label =
+            t === 'FINISHED' && product.is_mixed_product
+              ? 'Mixed'
+              : t === 'WIP' || t === 'OP'
+                ? t
+                : t.charAt(0) + t.slice(1).toLowerCase()
           return (
             <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${style}`}>
               {label}
@@ -2033,7 +2098,7 @@ function Products() {
           id: 'intro',
           title: 'Products settings overview',
           description:
-            'Use this page to manage raw, processed, and operational products, along with the stock rules attached to each one.',
+            'Use this page to manage raw, processed, mixed, and operational products, along with the stock rules attached to each one.',
           placement: 'center',
         },
         {
@@ -2041,7 +2106,7 @@ function Products() {
           target: '[data-tour="products-tabs"]',
           title: 'Switch product catalogs',
           description:
-            'These tabs separate raw products, processed products, and operational products so each catalog stays easier to manage.',
+            'These tabs separate raw products, processed products, mixed products, and operational products so each catalog stays easier to manage.',
           placement: 'bottom',
           beforeEnter: () => {
             setCatalogTab('RAW')
@@ -2405,7 +2470,7 @@ function Products() {
       <Card className="border-olive-light/30 bg-white">
         <CardHeader>
           <CardTitle className="text-text-dark">Products</CardTitle>
-          <CardDescription>Default view shows raw products. Switch tabs to see processed and operational products.</CardDescription>
+          <CardDescription>Default view shows raw products. Switch tabs to see processed, mixed, and operational products.</CardDescription>
         </CardHeader>
         <div className="border-b border-olive-light/40" data-tour="products-tabs">
           <nav className="flex flex-wrap gap-0 px-6" aria-label="Product category tabs">
@@ -2432,6 +2497,18 @@ function Products() {
             >
               <Boxes className="h-4 w-4" />
               Processed Products
+            </button>
+            <button
+              type="button"
+              onClick={() => setCatalogTab('MIXED')}
+              className={`inline-flex items-center gap-2 border-b-2 px-5 py-3.5 text-sm font-medium transition-colors ${
+                catalogTab === 'MIXED'
+                  ? 'border-olive text-olive-dark text-text-dark'
+                  : 'border-transparent text-text-dark/70 hover:text-text-dark hover:border-olive-light/40'
+              }`}
+            >
+              <Sparkles className="h-4 w-4" />
+              Mixed Products
             </button>
             <button
               type="button"

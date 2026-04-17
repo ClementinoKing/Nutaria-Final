@@ -12,6 +12,7 @@ create table if not exists public.supply_batches (
   unit_price numeric,
   quality_status text,
   process_status text not null default 'UNPROCESSED',
+  production_date date,
   expiry_date date,
   created_at timestamp with time zone default now(),
   constraint supply_batches_quality_status_check check (

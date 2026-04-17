@@ -39,7 +39,7 @@ create table if not exists public.documents (
   constraint documents_owner_id_fkey foreign key (owner_id) references suppliers (id),
   constraint documents_uploaded_by_fkey foreign key (uploaded_by) references user_profiles (id),
   constraint documents_owner_type_check check (
-    owner_type = any (array['supply', 'shipment', 'supplier'])
+    owner_type = any (array['supply', 'shipment', 'supplier', 'supply_batch'])
   )
 ) tablespace pg_default;
 
@@ -72,9 +72,8 @@ alter table if exists public.suppliers
 alter table if exists public.documents
   drop constraint if exists documents_owner_type_check,
   add constraint documents_owner_type_check check (
-    owner_type = any (array['supply', 'shipment', 'supplier'])
+    owner_type = any (array['supply', 'shipment', 'supplier', 'supply_batch'])
   );
 
 alter table if exists public.documents
   add column if not exists expiry_date date null;
-

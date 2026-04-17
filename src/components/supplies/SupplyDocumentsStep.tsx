@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
-import { DatePicker } from '@/components/ui/date-picker'
 import { Camera, X, Sparkles } from 'lucide-react'
 import { CameraCapture } from '@/components/CameraCapture'
 
@@ -21,8 +20,6 @@ export interface SupplyDocument {
   invoiceNumber: string
   driverLicenseName: string
   batchNumber: string
-  productionDate: string
-  expiryDate: string
   invoiceFile: File | null
 }
 
@@ -116,30 +113,6 @@ export function SupplyDocumentsStep({ documents, onChange, disabled }: SupplyDoc
                 <Sparkles className="h-4 w-4" />
               </Button>
             </div>
-          </div>
-
-          <div className="space-y-2 lg:col-span-6">
-            <Label htmlFor="production_date">Production Date</Label>
-            <DatePicker
-              id="production_date"
-              value={documents.productionDate}
-              onChange={(value) => handleFieldChange('productionDate', value)}
-              triggerClassName={baseFieldClass}
-              popoverClassName="w-[18rem]"
-              disabled={disabled}
-            />
-          </div>
-
-          <div className="space-y-2 lg:col-span-6">
-            <Label htmlFor="expiry_date">Expiry Date</Label>
-            <DatePicker
-              id="expiry_date"
-              value={documents.expiryDate}
-              onChange={(value) => handleFieldChange('expiryDate', value)}
-              triggerClassName={baseFieldClass}
-              popoverClassName="w-[18rem]"
-              disabled={disabled}
-            />
           </div>
 
           <div className="space-y-2 lg:col-span-12">

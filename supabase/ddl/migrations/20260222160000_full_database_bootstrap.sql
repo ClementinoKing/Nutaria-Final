@@ -1503,8 +1503,8 @@ CREATE TABLE IF NOT EXISTS "public"."documents" (
     "uploaded_at" timestamp with time zone DEFAULT "now"(),
     "expiry_date" "date",
     "document_type_code" "text" NOT NULL,
-    CONSTRAINT "documents_owner_type_check" CHECK (("owner_type" = ANY (ARRAY['supply'::"text", 'shipment'::"text", 'supplier'::"text"])))
-);
+    CONSTRAINT "documents_owner_type_check" CHECK (("owner_type" = ANY (ARRAY['supply'::"text", 'shipment'::"text", 'supplier'::"text", 'supply_batch'::"text"])))
+  );
 
 
 ALTER TABLE "public"."documents" OWNER TO "postgres";
@@ -7654,7 +7654,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
-
 
 
 

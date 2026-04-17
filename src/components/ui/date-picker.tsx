@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, ChevronLeft, ChevronRight, ChevronsUpDown } from 'lucide-react'
-import { addMonths, format, getMonth, getYear, parse, setMonth, setYear, startOfMonth } from 'date-fns'
+import { CalendarDays } from 'lucide-react'
+import { format, parse, startOfMonth } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -76,7 +76,6 @@ export function DatePicker({
   const selectedDate = useMemo(() => parseDateValue(value), [value])
   const minDate = useMemo(() => parseDateValue(min), [min])
   const maxDate = useMemo(() => parseDateValue(max), [max])
-  const currentYear = new Date().getFullYear()
   const [viewMonth, setViewMonth] = useState<Date>(() =>
     clampMonth(selectedDate ?? minDate ?? new Date(), minDate, maxDate)
   )
@@ -85,26 +84,6 @@ export function DatePicker({
     if (!open) return
     setViewMonth(clampMonth(selectedDate ?? minDate ?? new Date(), minDate, maxDate))
   }, [open, selectedDate, minDate, maxDate])
-
-  const monthOptions = useMemo(
-    () =>
-      Array.from({ length: 12 }, (_, index) => ({
-        value: index,
-        label: format(new Date(2024, index, 1), 'MMMM'),
-      })),
-    []
-  )
-
-  const yearOptions = useMemo(() => {
-    const fallbackStart = currentYear - 100
-    const fallbackEnd = currentYear + 10
-    const startYear = minDate ? getYear(minDate) : fallbackStart
-    const endYear = maxDate ? getYear(maxDate) : fallbackEnd
-    return Array.from({ length: endYear - startYear + 1 }, (_, index) => startYear + index)
-  }, [currentYear, maxDate, minDate])
-
-  const previousMonthDisabled = minDate ? startOfMonth(viewMonth) <= startOfMonth(minDate) : false
-  const nextMonthDisabled = maxDate ? startOfMonth(viewMonth) >= startOfMonth(maxDate) : false
 
   return (
     <div className={cn('relative', className)}>
@@ -127,72 +106,9 @@ export function DatePicker({
           </Button>
         </PopoverTrigger>
         <PopoverContent
-          className={cn('w-[23.5rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border-border p-0 shadow-xl', popoverClassName)}
+          className={cn('w-[25rem] max-w-[calc(100vw-2rem)] overflow-visible rounded-xl border-border p-0 shadow-xl', popoverClassName)}
           align="start"
         >
-          <div className="flex items-center gap-2 border-b border-border/80 bg-muted/10 px-3 py-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 shrink-0 border-border bg-background shadow-sm"
-              onClick={() => setViewMonth((current) => clampMonth(addMonths(current, -1), minDate, maxDate))}
-              disabled={previousMonthDisabled}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-
-            <div className="grid flex-1 grid-cols-[minmax(0,1fr)_7rem] gap-2">
-              <div className="relative">
-                <select
-                  value={getMonth(viewMonth)}
-                  onChange={(event) =>
-                    setViewMonth((current) =>
-                      clampMonth(setMonth(current, Number(event.target.value)), minDate, maxDate)
-                    )
-                  }
-                  className="h-9 w-full appearance-none rounded-lg border border-border bg-background px-3 pr-9 text-sm font-semibold text-foreground shadow-sm outline-none transition-colors hover:border-olive/40 focus:border-olive/50 focus:ring-2 focus:ring-olive/20"
-                >
-                  {monthOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronsUpDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
-
-              <div className="relative">
-                <select
-                  value={getYear(viewMonth)}
-                  onChange={(event) =>
-                    setViewMonth((current) =>
-                      clampMonth(setYear(current, Number(event.target.value)), minDate, maxDate)
-                    )
-                  }
-                  className="h-9 w-full appearance-none rounded-lg border border-border bg-background px-3 pr-9 text-sm font-semibold text-foreground shadow-sm outline-none transition-colors hover:border-olive/40 focus:border-olive/50 focus:ring-2 focus:ring-olive/20"
-                >
-                  {yearOptions.map((year) => (
-                    <option key={year} value={year}>
-                      {year}
-                    </option>
-                  ))}
-                </select>
-                <ChevronsUpDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
-            </div>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 shrink-0 border-border bg-background shadow-sm"
-              onClick={() => setViewMonth((current) => clampMonth(addMonths(current, 1), minDate, maxDate))}
-              disabled={nextMonthDisabled}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
           <Calendar
             mode="single"
             selected={selectedDate}
@@ -201,12 +117,9 @@ export function DatePicker({
             startMonth={minDate}
             endMonth={maxDate}
             fromYear={minDate?.getFullYear() ?? 1900}
-            toYear={maxDate?.getFullYear() ?? currentYear + 10}
-            hideNavigation
+            toYear={maxDate?.getFullYear() ?? new Date().getFullYear() + 10}
+            captionLayout="dropdown"
             fixedWeeks
-            classNames={{
-              month_caption: 'hidden',
-            }}
             disabled={[
               ...(minDate ? [{ before: minDate }] : []),
               ...(maxDate ? [{ after: maxDate }] : []),
