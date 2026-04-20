@@ -64,6 +64,15 @@ interface SupplyBatchItem {
   [key: string]: unknown
 }
 
+interface BatchDocumentEntry {
+  id?: number
+  owner_id?: number
+  name?: string
+  storage_path?: string
+  expiry_date?: string | null
+  uploaded_at?: string | null
+}
+
 const STATUS_BADGES = {
   RECEIVED: 'bg-blue-100 text-blue-800',
   INSPECTING: 'bg-yellow-100 text-yellow-800',
@@ -106,6 +115,7 @@ function formatDate(value: string | Date | number | null | undefined): string {
 interface FetchedDetailData {
   supply: Record<string, unknown>
   supplyBatches: Record<string, unknown>[]
+  batchDocuments: BatchDocumentEntry[]
   supplyQualityChecks: Record<string, unknown>[]
   supplyQualityItems: Record<string, unknown>[]
   supplyDocuments: Record<string, unknown>[]
@@ -158,6 +168,11 @@ function SupplyDetail() {
     ? fetchedData!.supplyDocuments
     : Array.isArray(navigationState.supplyDocuments)
       ? navigationState.supplyDocuments
+      : []
+  const batchDocuments = Array.isArray(fetchedData?.batchDocuments)
+    ? (fetchedData.batchDocuments as BatchDocumentEntry[])
+    : Array.isArray(navigationState.batchDocuments)
+      ? (navigationState.batchDocuments as BatchDocumentEntry[])
       : []
   const supplyActivities = Array.isArray(fetchedData?.supplyActivities)
     ? fetchedData!.supplyActivities
@@ -231,6 +246,18 @@ function SupplyDetail() {
           setLoadingDetail(false)
           return
         }
+        const batchIds = (batchesData ?? [])
+          .map((batch) => Number((batch as { id?: number | null }).id))
+          .filter((id) => Number.isFinite(id))
+        const batchDocumentRows =
+          batchIds.length > 0
+            ? ((await supabase
+                .from('documents')
+                .select('id, owner_id, name, storage_path, expiry_date, uploaded_at')
+                .eq('owner_type', 'supply_batch')
+                .eq('document_type_code', 'COA')
+                .in('owner_id', batchIds)).data ?? [])
+            : []
         const supplyObj = supplyRow as Record<string, unknown>
         const packagingChecksRows = (packagingChecksData ?? []) as Record<string, unknown>[]
         const packagingCheckIds = packagingChecksRows
@@ -272,6 +299,7 @@ function SupplyDetail() {
         setFetchedData({
           supply: supplyObj,
           supplyBatches: (batchesData ?? []) as Record<string, unknown>[],
+          batchDocuments: batchDocumentRows as BatchDocumentEntry[],
           supplyQualityChecks: (qualityChecksData ?? []) as Record<string, unknown>[],
           supplyQualityItems: qualityItemsFiltered,
           supplyDocuments: (docsData ?? []) as Record<string, unknown>[],
@@ -358,6 +386,16 @@ function SupplyDetail() {
     () => new Map(Object.entries(fetchedData?.productLookup ?? navigationState.productLookup ?? {})),
     [fetchedData?.productLookup, navigationState.productLookup],
   )
+  const batchDocumentByOwnerId = useMemo(() => {
+    const map = new Map<number, BatchDocumentEntry>()
+    batchDocuments.forEach((doc) => {
+      const ownerId = Number(doc.owner_id)
+      if (Number.isFinite(ownerId) && !map.has(ownerId)) {
+        map.set(ownerId, doc)
+      }
+    })
+    return map
+  }, [batchDocuments])
   const unitLookup = useMemo(
     () => new Map(Object.entries(fetchedData?.unitLookup ?? navigationState.unitLookup ?? {})),
     [fetchedData?.unitLookup, navigationState.unitLookup],
@@ -1378,6 +1416,60 @@ function SupplyDetail() {
       render: (batch: SupplyBatchItem) => String(batch.quality_status ?? 'PENDING'),
       mobileRender: (batch: SupplyBatchItem) => String(batch.quality_status ?? 'PENDING'),
       cellClassName: 'text-sm text-text-dark/70 uppercase tracking-wide',
+      mobileValueClassName: 'text-right text-sm text-text-dark/70',
+    },
+    {
+      key: 'coa',
+      header: 'COA',
+      render: (batch: SupplyBatchItem) => {
+        const batchId = Number(batch.id)
+        const coaDocument = Number.isFinite(batchId) ? batchDocumentByOwnerId.get(batchId) : null
+        if (!coaDocument?.storage_path) {
+          return <span className="text-sm text-text-dark/50">Not attached</span>
+        }
+
+        return (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-olive-light/60 text-olive-dark hover:bg-olive-light/10"
+            onClick={(event) => {
+              event.stopPropagation()
+              navigate(
+                `/documents/view?source=supply&path=${encodeURIComponent(coaDocument.storage_path ?? '')}&name=${encodeURIComponent(coaDocument.name ?? 'COA')}`,
+              )
+            }}
+          >
+            View COA
+          </Button>
+        )
+      },
+      mobileRender: (batch: SupplyBatchItem) => {
+        const batchId = Number(batch.id)
+        const coaDocument = Number.isFinite(batchId) ? batchDocumentByOwnerId.get(batchId) : null
+        if (!coaDocument?.storage_path) {
+          return <span className="text-sm text-text-dark/50">Not attached</span>
+        }
+
+        return (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-olive-light/60 text-olive-dark hover:bg-olive-light/10"
+            onClick={(event) => {
+              event.stopPropagation()
+              navigate(
+                `/documents/view?source=supply&path=${encodeURIComponent(coaDocument.storage_path ?? '')}&name=${encodeURIComponent(coaDocument.name ?? 'COA')}`,
+              )
+            }}
+          >
+            View COA
+          </Button>
+        )
+      },
+      cellClassName: 'text-sm text-text-dark/70',
       mobileValueClassName: 'text-right text-sm text-text-dark/70',
     },
   ]

@@ -684,6 +684,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   ])
   const [operationalMappedProducts, setOperationalMappedProducts] = useState<Product[]>([])
   const [tourFlow, setTourFlow] = useState<'PRODUCT' | 'OPERATIONAL' | null>(null)
+  const docNoManuallyEditedRef = useRef(false)
   const isEditingSupply = editingSupplyId != null
 
   useEffect(() => {
@@ -1336,6 +1337,9 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
   }
 
   const handleInputChange = (field: keyof FormData, value: string) => {
+    if (field === 'doc_no') {
+      docNoManuallyEditedRef.current = true
+    }
     setFormData((prev) => ({
       ...prev,
       [field]: value,
@@ -1738,11 +1742,6 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
             return true
           }
 
-          if (!batch.coa_file && !batch.coa_document_id) {
-            errorMessage = 'Upload a COA certificate for each batch.'
-            return true
-          }
-
           const unitPrice = Number.parseFloat(batch.unit_price)
           if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
             errorMessage = 'Unit price is required and must be greater than zero for each batch.'
@@ -1943,25 +1942,29 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         }
         insertedSupplyId = editingSupplyId
       } else {
+        const operationalSupplyInsertPayload: Record<string, unknown> = {
+          category_code: 'SERVICE',
+          warehouse_id: warehouseId,
+          supplier_id: supplierId,
+          reference: operationalDeliveryReference.trim() || null,
+          received_at: receivedAtISO,
+          expected_at: null,
+          received_by: profileId ?? null,
+          doc_status: formData.doc_status,
+          quality_status: 'PASSED',
+          transport_reference: operationalDeliveryReference.trim() || null,
+          pallets_received: null,
+          notes: operationalRemarks.trim() || null,
+          created_at: nowISO,
+          updated_at: nowISO,
+        }
+        if (docNoManuallyEditedRef.current) {
+          operationalSupplyInsertPayload.doc_no = formData.doc_no.trim() || computeNextDocNumber()
+        }
+
         const { data: insertedSupply, error: insertSupplyError } = await supabase
           .from('supplies')
-          .insert({
-            category_code: 'SERVICE',
-            doc_no: formData.doc_no || computeNextDocNumber(),
-            warehouse_id: warehouseId,
-            supplier_id: supplierId,
-            reference: operationalDeliveryReference.trim() || null,
-            received_at: receivedAtISO,
-            expected_at: null,
-            received_by: profileId ?? null,
-            doc_status: formData.doc_status,
-            quality_status: 'PASSED',
-            transport_reference: operationalDeliveryReference.trim() || null,
-            pallets_received: null,
-            notes: operationalRemarks.trim() || null,
-            created_at: nowISO,
-            updated_at: nowISO,
-          })
+          .insert(operationalSupplyInsertPayload)
           .select('id')
           .single()
 
@@ -2289,6 +2292,11 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       DRIVER_LICENSE: { name: 'Driver License/Name', is_required: true, allows_file_upload: false },
       BATCH_NUMBER: { name: 'Supply Batch Number', is_required: true, allows_file_upload: false },
     }
+    const documentTypeDefaults: Record<string, { name: string; has_expiry_date: boolean }> = {
+      INVOICE: { name: 'Invoice', has_expiry_date: false },
+      SIGNATURE: { name: 'Supplier Signature', has_expiry_date: false },
+      COA: { name: 'Certificate of Analysis', has_expiry_date: false },
+    }
 
     const ensureSupplyDocumentTypes = async (codes: string[]): Promise<Set<string>> => {
       const uniqueCodes = Array.from(new Set(codes.filter(Boolean)))
@@ -2337,6 +2345,125 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       return new Set((refreshedTypes ?? []).map((row) => String(row.code)))
     }
 
+    const ensureDocumentTypeExists = async (documentTypeCode: string): Promise<void> => {
+      const normalizedCode = documentTypeCode.trim().toUpperCase()
+      if (!normalizedCode) {
+        return
+      }
+
+      const { data: existingType, error: existingTypeError } = await supabase
+        .from('document_types')
+        .select('code')
+        .eq('code', normalizedCode)
+        .maybeSingle()
+      if (existingTypeError) throw existingTypeError
+
+      if (!existingType) {
+        const defaults = documentTypeDefaults[normalizedCode] ?? {
+          name: normalizedCode
+            .replace(/_/g, ' ')
+            .toLowerCase()
+            .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+          has_expiry_date: false,
+        }
+
+        const { error: insertTypeError } = await supabase.from('document_types').insert({
+          code: normalizedCode,
+          name: defaults.name,
+          has_expiry_date: defaults.has_expiry_date,
+        })
+
+        if (insertTypeError && insertTypeError.code !== '23505') {
+          throw insertTypeError
+        }
+      }
+    }
+
+    const saveDocumentRecord = async (params: {
+      preferredDocumentId?: number | null
+      ownerType: 'supply' | 'supply_batch'
+      ownerId: number
+      documentTypeCode: string
+      docType: string
+      name: string
+      storagePath: string
+      expiryDate?: string | null
+      uploadedBy: number | string | null
+    }): Promise<number | null> => {
+      await ensureDocumentTypeExists(params.documentTypeCode)
+
+      let existingDocument:
+        | { id: number; storage_path: string | null }
+        | null = null
+
+      const preferredDocumentId = params.preferredDocumentId ?? null
+      if (preferredDocumentId != null) {
+        const { data: preferredDocument, error: preferredDocumentError } = await supabase
+          .from('documents')
+          .select('id, storage_path')
+          .eq('id', preferredDocumentId)
+          .maybeSingle()
+        if (preferredDocumentError) throw preferredDocumentError
+        existingDocument = preferredDocument ?? null
+      }
+
+      if (!existingDocument) {
+        const { data: existingDocuments, error: existingDocumentsError } = await supabase
+          .from('documents')
+          .select('id, storage_path')
+          .eq('owner_type', params.ownerType)
+          .eq('owner_id', params.ownerId)
+          .eq('document_type_code', params.documentTypeCode)
+          .order('uploaded_at', { ascending: false })
+          .limit(1)
+        if (existingDocumentsError) throw existingDocumentsError
+        existingDocument = (existingDocuments ?? [])[0] ?? null
+      }
+
+      if (existingDocument?.id) {
+        const { error: updateDocumentError } = await supabase
+          .from('documents')
+          .update({
+            name: params.name,
+            storage_path: params.storagePath,
+            doc_type: params.docType,
+            document_type_code: params.documentTypeCode,
+            expiry_date: params.expiryDate ?? null,
+            uploaded_by: params.uploadedBy,
+          })
+          .eq('id', existingDocument.id)
+        if (updateDocumentError) throw updateDocumentError
+
+        if (existingDocument.storage_path && existingDocument.storage_path !== params.storagePath) {
+          try {
+            await deleteStoredFile(existingDocument.storage_path)
+          } catch (deleteError) {
+            console.warn(`Unable to remove the previous ${params.docType} file.`, deleteError)
+          }
+        }
+
+        return existingDocument.id
+      }
+
+      const { data: insertedDocument, error: insertDocumentError } = await supabase
+        .from('documents')
+        .insert({
+          owner_type: params.ownerType,
+          owner_id: params.ownerId,
+          name: params.name,
+          storage_path: params.storagePath,
+          doc_type: params.docType,
+          document_type_code: params.documentTypeCode,
+          expiry_date: params.expiryDate ?? null,
+          uploaded_by: params.uploadedBy,
+        })
+        .select('id')
+        .single()
+      if (insertDocumentError) throw insertDocumentError
+
+      return insertedDocument?.id ?? null
+    }
+
     const saveBatchCoaDocument = async (batchId: number, batch: SupplyBatch) => {
       const existingDocumentId = batch.coa_document_id != null && Number.isFinite(Number(batch.coa_document_id))
         ? Number(batch.coa_document_id)
@@ -2349,7 +2476,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         : null
 
       if (!batch.coa_file && !existingDocument) {
-        throw new Error(`Upload a COA certificate for batch ${batch.lot_no?.trim() || batchId}.`)
+        return
       }
 
       if (batch.coa_file) {
@@ -2359,40 +2486,17 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         )
         await uploadStoredFile(storagePath, batch.coa_file)
 
-        if (existingDocument?.id) {
-          const { error: updateDocumentError } = await supabase
-            .from('documents')
-            .update({
-              name: documentName,
-              storage_path: storagePath,
-              doc_type: 'COA',
-              document_type_code: 'COA',
-              expiry_date: expiryToUse,
-              uploaded_by: profileId ?? null,
-            })
-            .eq('id', existingDocument.id)
-          if (updateDocumentError) throw updateDocumentError
-
-          if (existingDocument.storage_path && existingDocument.storage_path !== storagePath) {
-            try {
-              await deleteStoredFile(existingDocument.storage_path)
-            } catch (deleteError) {
-              console.warn('Unable to remove the previous COA file for a batch.', deleteError)
-            }
-          }
-        } else {
-          const { error: insertDocumentError } = await supabase.from('documents').insert({
-            owner_type: 'supply_batch',
-            owner_id: batchId,
-            name: documentName,
-            doc_type: 'COA',
-            document_type_code: 'COA',
-            storage_path: storagePath,
-            expiry_date: expiryToUse,
-            uploaded_by: profileId ?? null,
-          })
-          if (insertDocumentError) throw insertDocumentError
-        }
+        await saveDocumentRecord({
+          preferredDocumentId: existingDocument?.id ?? null,
+          ownerType: 'supply_batch',
+          ownerId: batchId,
+          documentTypeCode: 'COA',
+          docType: 'COA',
+          name: documentName,
+          storagePath,
+          expiryDate: expiryToUse,
+          uploadedBy: profileId ?? null,
+        })
 
         return
       }
@@ -2884,25 +2988,29 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
         return
       }
 
+      const supplyInsertPayload: Record<string, unknown> = {
+        category_code: formData.category_code,
+        warehouse_id: warehouseId,
+        supplier_id: supplierId,
+        reference: null,
+        received_at: receivedAtISO,
+        expected_at: null,
+        received_by: profileId ?? null,
+        doc_status: formData.doc_status,
+        quality_status: qualityStatus,
+        transport_reference: null,
+        pallets_received: null,
+        notes: null,
+        created_at: nowISO,
+        updated_at: nowISO,
+      }
+      if (docNoManuallyEditedRef.current) {
+        supplyInsertPayload.doc_no = formData.doc_no.trim() || computeNextDocNumber()
+      }
+
       const { data: insertedSupply, error: insertSupplyError } = await supabase
         .from('supplies')
-        .insert({
-          category_code: formData.category_code,
-          doc_no: formData.doc_no || computeNextDocNumber(),
-          warehouse_id: warehouseId,
-          supplier_id: supplierId,
-          reference: null,
-          received_at: receivedAtISO,
-          expected_at: null,
-          received_by: profileId ?? null,
-          doc_status: formData.doc_status,
-          quality_status: qualityStatus,
-          transport_reference: null,
-          pallets_received: null,
-          notes: null,
-          created_at: nowISO,
-          updated_at: nowISO,
-        })
+        .insert(supplyInsertPayload)
         .select('*')
         .single()
 
@@ -3049,7 +3157,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       
       // Invoice number
       if (supplyDocuments.invoiceNumber) {
-        let invoiceDocumentId = null
+        let invoiceDocumentId: number | null = null
         if (supplyDocuments.invoiceFile) {
           const storagePath = buildStorageObjectPath(
             `supplies/${newSupplyId}/documents`,
@@ -3057,27 +3165,15 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           )
           await uploadStoredFile(storagePath, supplyDocuments.invoiceFile)
 
-          const { data: docData, error: docError } = await supabase
-            .from('documents')
-            .insert({
-              owner_type: 'supply',
-              owner_id: newSupplyId,
-              name: supplyDocuments.invoiceFile.name,
-              storage_path: storagePath,
-              doc_type: 'INVOICE',
-              document_type_code: 'INVOICE',
-              uploaded_by: profileId ?? null,
-            })
-            .select('id')
-            .single()
-
-          if (docError) {
-            throw docError
-          }
-
-          if (docData) {
-            invoiceDocumentId = docData.id
-          }
+          invoiceDocumentId = await saveDocumentRecord({
+            ownerType: 'supply',
+            ownerId: newSupplyId,
+            documentTypeCode: 'INVOICE',
+            docType: 'INVOICE',
+            name: supplyDocuments.invoiceFile.name,
+            storagePath,
+            uploadedBy: profileId ?? null,
+          })
         }
         
         supplyDocumentsPayload.push({
@@ -3240,7 +3336,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
       })
       
       if (supplierSignOff.signatureType && supplierSignOff.signedByName) {
-        let signOffDocumentId = null
+        let signOffDocumentId: number | null = null
         
         if (supplierSignOff.signatureType === 'UPLOADED_DOCUMENT' && supplierSignOff.documentFile) {
           const storagePath = buildStorageObjectPath(
@@ -3249,27 +3345,15 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
           )
           await uploadStoredFile(storagePath, supplierSignOff.documentFile)
 
-          const { data: docData, error: docError } = await supabase
-            .from('documents')
-            .insert({
-              owner_type: 'supply',
-              owner_id: newSupplyId,
-              name: supplierSignOff.documentFile.name,
-              storage_path: storagePath,
-              doc_type: 'SIGNATURE',
-              document_type_code: 'SIGNATURE',
-              uploaded_by: profileId ?? null,
-            })
-            .select('id')
-            .single()
-
-          if (docError) {
-            throw docError
-          }
-
-          if (docData) {
-            signOffDocumentId = docData.id
-          }
+          signOffDocumentId = await saveDocumentRecord({
+            ownerType: 'supply',
+            ownerId: newSupplyId,
+            documentTypeCode: 'SIGNATURE',
+            docType: 'SIGNATURE',
+            name: supplierSignOff.documentFile.name,
+            storagePath,
+            uploadedBy: profileId ?? null,
+          })
         }
 
         const signOffPayload: {
@@ -3330,6 +3414,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
       toast.success('Supply captured successfully.')
       const createdSupplyId = newSupplyId
+      docNoManuallyEditedRef.current = false
       setFormData(getInitialFormData())
       setQualityEntriesByBatchKey({})
       setSupplyDocuments({
@@ -3747,6 +3832,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
     setIsModalOpen(false)
     setEditingSupplyId(null)
     setEditLoadDone(false)
+    docNoManuallyEditedRef.current = false
     setFormData(getInitialFormData())
     setQualityEntriesByBatchKey({})
     setSupplyDocuments({
@@ -5696,7 +5782,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
 
                             <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-12">
                               <div className="space-y-2 lg:col-span-7">
-                                <Label htmlFor={`coa_file_${index}`}>COA Certificate *</Label>
+                                <Label htmlFor={`coa_file_${index}`}>COA Certificate</Label>
                                 <Input
                                   id={`coa_file_${index}`}
                                   type="file"
@@ -5712,7 +5798,7 @@ function Supplies({ modalOnly = false, initialTab = 'product' }: SuppliesProps) 
                                     ? `Selected: ${batch.coa_file.name}`
                                     : batch.coa_document_name
                                       ? `Current: ${batch.coa_document_name}`
-                                      : 'Upload the COA document for this batch.'}
+                                      : 'Optional: upload the COA document for this batch.'}
                                 </p>
                               </div>
                               <div className="space-y-2 lg:col-span-5">
