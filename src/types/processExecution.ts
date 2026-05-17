@@ -17,6 +17,7 @@ export interface ProcessRunLot {
   process_lot_run_id: number
   supply_batch_id: number
   is_primary: boolean
+  allocated_qty: number
   created_at: string
   supply_batch?: {
     id: number

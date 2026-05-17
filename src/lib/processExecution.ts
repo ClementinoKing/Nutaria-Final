@@ -22,6 +22,16 @@ interface GlobalMetalDetectorSession {
   updated_at: string
 }
 
+export interface ProcessLotAllocationInput {
+  lotId: number
+  quantity: number
+}
+
+interface ProcessLotAllocation {
+  supply_batch_id: number
+  allocated_qty: number
+}
+
 /**
  * Get the default process for a product
  * 1. Check product_processes table for is_default = true
@@ -56,21 +66,29 @@ export async function getDefaultProcessForProduct(productId: number): Promise<nu
   return firstProcess?.id ?? null
 }
 
-async function getRunLotIds(lotRunId: number): Promise<number[]> {
+async function getRunLotAllocations(lotRunId: number): Promise<ProcessLotAllocation[]> {
   const { data: linkedLots, error: linkedLotsError } = await supabase
     .from('process_lot_run_batches')
-    .select('supply_batch_id')
+    .select('supply_batch_id, allocated_qty')
     .eq('process_lot_run_id', lotRunId)
 
   if (!linkedLotsError && linkedLots && linkedLots.length > 0) {
     return linkedLots
-      .map((row) => Number(row.supply_batch_id))
-      .filter((id) => Number.isFinite(id))
+      .map((row) => ({
+        supply_batch_id: Number(row.supply_batch_id),
+        allocated_qty: Number(row.allocated_qty) || 0,
+      }))
+      .filter((row) => Number.isFinite(row.supply_batch_id))
   }
 
   const { data: lotRun, error: lotRunError } = await supabase
     .from('process_lot_runs')
-    .select('supply_batch_id')
+    .select(`
+      supply_batch_id,
+      supply_batches:supply_batch_id (
+        current_qty
+      )
+    `)
     .eq('id', lotRunId)
     .maybeSingle()
 
@@ -78,11 +96,21 @@ async function getRunLotIds(lotRunId: number): Promise<number[]> {
     throw new Error(`Failed to resolve lots for process run ${lotRunId}`)
   }
 
-  return [Number(lotRun.supply_batch_id)]
+  return [
+    {
+      supply_batch_id: Number(lotRun.supply_batch_id),
+      allocated_qty: Number((lotRun as any).supply_batches?.current_qty) || 0,
+    },
+  ]
+}
+
+async function getRunLotIds(lotRunId: number): Promise<number[]> {
+  const allocations = await getRunLotAllocations(lotRunId)
+  return allocations.map((allocation) => allocation.supply_batch_id)
 }
 
 export async function deleteProcessLotRun(lotRunId: number): Promise<void> {
-  const linkedLotIds = await getRunLotIds(lotRunId)
+  const linkedLotAllocations = await getRunLotAllocations(lotRunId)
 
   const { data: stepRuns } = await supabase
     .from('process_step_runs')
@@ -162,54 +190,96 @@ export async function deleteProcessLotRun(lotRunId: number): Promise<void> {
     throw deleteError
   }
 
-  if (linkedLotIds.length > 0) {
+  for (const allocation of linkedLotAllocations) {
+    const { data: batch, error: batchError } = await supabase
+      .from('supply_batches')
+      .select('current_qty')
+      .eq('id', allocation.supply_batch_id)
+      .maybeSingle()
+
+    if (batchError) {
+      throw batchError
+    }
+
+    const restoredQty = (Number(batch?.current_qty) || 0) + (Number(allocation.allocated_qty) || 0)
     const { error: updateError } = await supabase
       .from('supply_batches')
-      .update({ process_status: 'UNPROCESSED' })
-      .in('id', linkedLotIds)
+      .update({
+        current_qty: restoredQty,
+        process_status: 'UNPROCESSED',
+      })
+      .eq('id', allocation.supply_batch_id)
 
-    if (updateError) {
-      throw updateError
-    }
+    if (updateError) throw updateError
   }
 }
 
-export async function createProcessRunWithLots(lotIds: number[]): Promise<ProcessLotRun> {
-  const normalizedLotIds = Array.from(
+function normalizeProcessLotAllocations(
+  allocationsOrLotIds: Array<number | ProcessLotAllocationInput>,
+  lotsById?: Map<number, { current_qty?: number | null; received_qty?: number | null }>
+): ProcessLotAllocationInput[] {
+  const normalized = new Map<number, ProcessLotAllocationInput>()
+
+  allocationsOrLotIds.forEach((allocationOrLotId) => {
+    const lotId = typeof allocationOrLotId === 'number' ? allocationOrLotId : allocationOrLotId.lotId
+    const fallbackQuantity = lotsById?.get(lotId)
+    const quantity =
+      typeof allocationOrLotId === 'number'
+        ? Number(fallbackQuantity?.current_qty ?? fallbackQuantity?.received_qty ?? 0)
+        : Number(allocationOrLotId.quantity)
+
+    if (!Number.isInteger(lotId) || lotId <= 0) return
+    normalized.set(lotId, { lotId, quantity })
+  })
+
+  return Array.from(normalized.values())
+}
+
+export async function createProcessRunWithLots(
+  allocationsOrLotIds: Array<number | ProcessLotAllocationInput>
+): Promise<ProcessLotRun> {
+  const initialLotIds = Array.from(
     new Set(
-      lotIds
+      allocationsOrLotIds
+        .map((allocationOrLotId) => (typeof allocationOrLotId === 'number' ? allocationOrLotId : allocationOrLotId.lotId))
         .map((id) => Number(id))
         .filter((id) => Number.isInteger(id) && id > 0)
     )
   )
 
-  if (normalizedLotIds.length === 0) {
+  if (initialLotIds.length === 0) {
     throw new Error('Select at least one lot to start processing')
   }
 
   const { data: lots, error: lotsError } = await supabase
     .from('supply_batches')
-    .select('id, product_id, process_status, quality_status')
-    .in('id', normalizedLotIds)
+    .select('id, product_id, process_status, quality_status, current_qty, received_qty')
+    .in('id', initialLotIds)
 
   if (lotsError) throw lotsError
-  if (!lots || lots.length !== normalizedLotIds.length) {
+  if (!lots || lots.length !== initialLotIds.length) {
     throw new Error('Some selected lots could not be loaded')
   }
 
-  const nonUnprocessedLots = lots.filter((lot) => (lot.process_status ?? '').toUpperCase() !== 'UNPROCESSED')
-  if (nonUnprocessedLots.length > 0) {
-    throw new Error('Only UNPROCESSED lots can be started')
+  const lotsById = new Map(lots.map((lot) => [Number(lot.id), lot]))
+  const allocations = normalizeProcessLotAllocations(allocationsOrLotIds, lotsById)
+
+  const invalidAllocation = allocations.find((allocation) => allocation.quantity <= 0)
+  if (invalidAllocation) {
+    throw new Error('Process quantity must be greater than zero for every selected lot')
   }
 
-  const { data: linkedRows, error: linkedError } = await supabase
-    .from('process_lot_run_batches')
-    .select('supply_batch_id')
-    .in('supply_batch_id', normalizedLotIds)
+  const overAllocatedLot = allocations.find((allocation) => {
+    const lot = lotsById.get(allocation.lotId)
+    const availableQty = Number(lot?.current_qty ?? lot?.received_qty ?? 0)
+    return allocation.quantity > availableQty
+  })
 
-  if (linkedError) throw linkedError
-  if ((linkedRows || []).length > 0) {
-    throw new Error('One or more selected lots are already linked to a process run')
+  if (overAllocatedLot) {
+    const lot = lotsById.get(overAllocatedLot.lotId)
+    throw new Error(
+      `Process quantity for lot ${overAllocatedLot.lotId} cannot exceed available quantity (${Number(lot?.current_qty ?? 0).toFixed(2)} kg)`
+    )
   }
 
   const processIds = await Promise.all(
@@ -227,46 +297,18 @@ export async function createProcessRunWithLots(lotIds: number[]): Promise<Proces
     throw new Error('Selected lots must belong to the same process')
   }
 
-  const primaryLotId = normalizedLotIds[0]
   const processId = uniqueProcessIds[0]
 
-  const { data: lotRun, error: createError } = await supabase
-    .from('process_lot_runs')
-    .insert({
-      supply_batch_id: primaryLotId,
-      process_id: processId,
-      status: 'IN_PROGRESS',
-      started_at: new Date().toISOString(),
-    })
-    .select('id, supply_batch_id, process_id, status, started_at, completed_at, created_at, updated_at')
-    .single()
+  const { data: lotRun, error: createError } = await supabase.rpc('create_process_run_with_allocations', {
+    p_process_id: processId,
+    p_allocations: allocations.map((allocation) => ({
+      supply_batch_id: allocation.lotId,
+      allocated_qty: allocation.quantity,
+    })),
+  })
 
   if (createError || !lotRun) {
     throw createError || new Error('Failed to create process lot run')
-  }
-
-  const runLotRows = normalizedLotIds.map((supplyBatchId) => ({
-    process_lot_run_id: lotRun.id,
-    supply_batch_id: supplyBatchId,
-    is_primary: supplyBatchId === primaryLotId,
-  }))
-
-  const { error: linkError } = await supabase
-    .from('process_lot_run_batches')
-    .insert(runLotRows)
-
-  if (linkError) {
-    await supabase.from('process_lot_runs').delete().eq('id', lotRun.id)
-    throw linkError
-  }
-
-  const { error: updateStatusError } = await supabase
-    .from('supply_batches')
-    .update({ process_status: 'PROCESSING' })
-    .in('id', normalizedLotIds)
-
-  if (updateStatusError) {
-    console.warn('Failed to update selected lots to PROCESSING:', updateStatusError)
   }
 
   const { data: stepRunsCheck } = await supabase
@@ -287,27 +329,23 @@ export async function createProcessRunWithLots(lotIds: number[]): Promise<Proces
  * Auto-generates process_step_runs via database trigger
  */
 export async function createProcessLotRun(supplyBatchId: number): Promise<ProcessLotRun | null> {
-  const { data: linkedRun, error: linkedRunError } = await supabase
-    .from('process_lot_run_batches')
-    .select('process_lot_run_id')
-    .eq('supply_batch_id', supplyBatchId)
+  const { data: lot, error: lotError } = await supabase
+    .from('supply_batches')
+    .select('id, current_qty, received_qty')
+    .eq('id', supplyBatchId)
     .maybeSingle()
 
-  if (!linkedRunError && linkedRun?.process_lot_run_id) {
+  if (lotError) throw lotError
+  if (!lot) {
     return null
   }
 
-  const { data: existingRun, error: existingRunError } = await supabase
-    .from('process_lot_runs')
-    .select('id')
-    .eq('supply_batch_id', supplyBatchId)
-    .maybeSingle()
-
-  if (!existingRunError && existingRun?.id) {
+  const quantity = Number(lot.current_qty ?? lot.received_qty ?? 0)
+  if (quantity <= 0) {
     return null
   }
 
-  return createProcessRunWithLots([supplyBatchId])
+  return createProcessRunWithLots([{ lotId: supplyBatchId, quantity }])
 }
 
 /**
@@ -585,6 +623,15 @@ export async function createProductionBatch(lotRunId: number, supplyBatchId?: nu
     throw new Error(`No supply batch linked to process run ${lotRunId}`)
   }
 
+  const { data: runLotAllocation } = await supabase
+    .from('process_lot_run_batches')
+    .select('allocated_qty')
+    .eq('process_lot_run_id', lotRunId)
+    .eq('supply_batch_id', resolvedSupplyBatchId)
+    .maybeSingle()
+
+  const allocatedQty = Number(runLotAllocation?.allocated_qty) || null
+
   const { data: supplyBatch, error: supplyBatchError } = await supabase
     .from('supply_batches')
     .select(`
@@ -669,7 +716,7 @@ export async function createProductionBatch(lotRunId: number, supplyBatchId?: nu
   }
 
   const derivedQuantity = await deriveFromCompletedSteps()
-  const quantity = derivedQuantity ?? (supplyBatch.current_qty || 0)
+  const quantity = derivedQuantity ?? allocatedQty ?? (supplyBatch.current_qty || 0)
   if (derivedQuantity == null) {
     console.warn(
       `[createProductionBatch] Falling back to supply batch quantity for run ${lotRunId}, lot ${resolvedSupplyBatchId}: ${quantity}`
@@ -754,19 +801,30 @@ export async function completeProcessLotRun(lotRunId: number): Promise<{
     throw updateError
   }
 
-  const linkedLotIds = await getRunLotIds(lotRunId)
+  const linkedLotAllocations = await getRunLotAllocations(lotRunId)
   const productionBatches: ProductionBatch[] = []
 
-  for (const lotId of linkedLotIds) {
-    const productionBatch = await createProductionBatch(lotRunId, lotId)
+  for (const allocation of linkedLotAllocations) {
+    const productionBatch = await createProductionBatch(lotRunId, allocation.supply_batch_id)
     productionBatches.push(productionBatch)
   }
 
-  if (linkedLotIds.length > 0) {
-    await supabase
+  for (const allocation of linkedLotAllocations) {
+    const { data: lot, error: lotError } = await supabase
       .from('supply_batches')
-      .update({ process_status: 'PROCESSED' })
-      .in('id', linkedLotIds)
+      .select('current_qty')
+      .eq('id', allocation.supply_batch_id)
+      .maybeSingle()
+
+    if (lotError) throw lotError
+
+    const remainingQty = Number(lot?.current_qty) || 0
+    const { error: statusError } = await supabase
+      .from('supply_batches')
+      .update({ process_status: remainingQty <= 0 ? 'PROCESSED' : 'UNPROCESSED' })
+      .eq('id', allocation.supply_batch_id)
+
+    if (statusError) throw statusError
   }
 
   return {
@@ -1318,6 +1376,7 @@ export async function createReworkedLot(
       process_lot_run_id: reworkLotRun.id,
       supply_batch_id: reworkBatch.id,
       is_primary: true,
+      allocated_qty: quantityKg,
     })
 
   if (runBatchLinkError) {
@@ -1334,7 +1393,7 @@ export async function createReworkedLot(
   // Update rework batch status to PROCESSING
   await supabase
     .from('supply_batches')
-    .update({ process_status: 'PROCESSING' })
+    .update({ current_qty: 0, process_status: 'PROCESSING' })
     .eq('id', reworkBatch.id)
 
   return {

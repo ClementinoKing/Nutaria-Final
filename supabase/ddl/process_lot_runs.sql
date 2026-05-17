@@ -10,8 +10,7 @@ create table if not exists public.process_lot_runs (
   updated_at timestamp with time zone not null default now(),
   constraint process_lot_runs_status_check check (
     status = any (array['IN_PROGRESS'::text, 'COMPLETED'::text])
-  ),
-  constraint process_lot_runs_batch_unique unique (supply_batch_id)
+  )
 ) tablespace pg_default;
 
 create index if not exists process_lot_runs_batch_idx
@@ -36,4 +35,3 @@ begin
   end if;
 end
 $$;
-

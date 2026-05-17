@@ -7,6 +7,7 @@ import { AlertTriangle, CheckCircle2, Plus, Trash2, Upload, XCircle, Package as 
 import { toast } from 'sonner'
 import { usePackagingRun } from '@/hooks/usePackagingRun'
 import { supabase } from '@/lib/supabaseClient'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import { buildStorageObjectPath, deleteStoredFile, getStoredFileUrls, uploadStoredFile } from '@/lib/fileStorage'
 import type {
   ProcessStepRun,
@@ -2222,6 +2223,19 @@ export function PackagingStep({ stepRun, loading: externalLoading = false }: Pac
     } finally {
       setSaving(false)
     }
+  }
+
+  if (
+    (loading &&
+      !packagingRun &&
+      packEntries.length === 0 &&
+      storageAllocations.length === 0 &&
+      weightChecks.length === 0 &&
+      photos.length === 0 &&
+      waste.length === 0) ||
+    loadingWips
+  ) {
+    return <StepDataLoader />
   }
 
   return (

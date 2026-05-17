@@ -1,5 +1,12 @@
+export type MixedPackSourceType = 'REMAINDER' | 'RAW_LOT' | 'PACKAGED_ALLOCATION'
+
 export interface MixedPackSourceOption {
+  source_key: string
+  source_type: MixedPackSourceType
+  source_id: number
   pack_entry_id: number
+  supply_batch_id: number | null
+  allocation_id: number | null
   product_id: number
   product_name: string
   product_sku: string | null
@@ -9,6 +16,7 @@ export interface MixedPackSourceOption {
   remainder_kg: number
   used_remainder_kg: number
   available_remainder_kg: number
+  available_qty: number
   quantity_kg: number
   pack_count: number | null
   packed_at: string | null
@@ -20,7 +28,7 @@ export interface MixedPackSourceOption {
 }
 
 export interface MixedPackCreateLine {
-  source_pack_entry_id: number
+  source_key: string
   quantity_used: string
   source: MixedPackSourceOption
 }
@@ -42,7 +50,10 @@ export interface CreateMixedPackPayload {
   p_packs_per_unit: number
   p_notes: string | null
   p_lines: Array<{
-    source_pack_entry_id: number
+    source_type: MixedPackSourceType
+    source_pack_entry_id: number | null
+    source_supply_batch_id: number | null
+    source_allocation_id: number | null
     quantity_used: number
   }>
 }
@@ -78,8 +89,10 @@ export interface MixedPackBatchRow {
 
 export interface MixedPackBatchItemDetail {
   id: number
+  source_type: MixedPackSourceType
   source_allocation_id: number | null
   source_pack_entry_id: number | null
+  source_supply_batch_id: number | null
   source_product_id: number | null
   source_lot_run_id: number | null
   quantity_used: number

@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useMetalDetection } from '@/hooks/useMetalDetection'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import type {
   ProcessStepRun,
   MetalDetectionFormData,
@@ -57,7 +58,7 @@ export function MetalDetectionStep({
   availableQuantity,
   onQuantityChange,
 }: MetalDetectionStepProps) {
-  const { session, rejections, waste, saveSession, addRejection, deleteRejection, addWaste, deleteWaste } =
+  const { session, rejections, waste, loading, saveSession, addRejection, deleteRejection, addWaste, deleteWaste } =
     useMetalDetection({
       stepRunId: stepRun.id,
       enabled: true,
@@ -205,6 +206,10 @@ export function MetalDetectionStep({
 
   const totalRejections = rejections.reduce((sum, r) => sum + (r.weight || 0), 0)
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
+
+  if (loading && !session && rejections.length === 0 && waste.length === 0) {
+    return <StepDataLoader />
+  }
 
   const handleWasteSubmit = async (e: FormEvent) => {
     e.preventDefault()

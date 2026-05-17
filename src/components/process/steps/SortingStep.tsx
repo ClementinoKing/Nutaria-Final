@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { useSortingRun } from '@/hooks/useSortingRun'
 import { useAuth } from '@/context/AuthContext'
 import { createReworkedLot } from '@/lib/processExecution'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import type { ProcessStepRun, SortingOutputFormData, SortingWasteFormData } from '@/types/processExecution'
 import {
   AlertDialog,
@@ -673,6 +674,10 @@ export function SortingStep({
 
   // Alias for backward compatibility in forms
   const remainingQty = remainingForOutputs // For output form
+
+  if ((loading && outputs.length === 0 && waste.length === 0) || (allowReworks && loadingReworks && reworks.length === 0)) {
+    return <StepDataLoader />
+  }
 
   return (
     <div className="space-y-6">

@@ -76,6 +76,7 @@ export function useProcessLotRun(options: UseProcessLotRunOptions): UseProcessLo
           process_lot_run_id,
           supply_batch_id,
           is_primary,
+          allocated_qty,
           created_at,
           supply_batches:supply_batch_id (
             id,
@@ -110,6 +111,7 @@ export function useProcessLotRun(options: UseProcessLotRunOptions): UseProcessLo
           process_lot_run_id: row.process_lot_run_id,
           supply_batch_id: row.supply_batch_id,
           is_primary: row.is_primary,
+          allocated_qty: row.allocated_qty,
           created_at: row.created_at,
           supply_batch: Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches,
         })),

@@ -6,6 +6,8 @@ import PageLayout from '@/components/layout/PageLayout'
 import { supabase } from '@/lib/supabaseClient'
 import { Spinner } from '@/components/ui/spinner'
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/context/AuthContext'
+import { isSuperAdminAccess } from '@/lib/rbac'
 
 interface ProcessNonConformanceRow {
   id: number
@@ -62,6 +64,8 @@ function addDetailEntry(entries: StepDetailEntry[], label: string, value: unknow
 function CompletedProcessDetail() {
   const { lotRunId } = useParams<{ lotRunId: string }>()
   const navigate = useNavigate()
+  const { accessContext } = useAuth()
+  const canEditCompletedRun = isSuperAdminAccess(accessContext)
   const [lotNo, setLotNo] = useState<string | null>(null)
   const [lotSummary, setLotSummary] = useState<string | null>(null)
   const [productName, setProductName] = useState<string | null>(null)
@@ -437,6 +441,13 @@ function CompletedProcessDetail() {
         <Button size="icon" variant="outline" onClick={() => navigate('/process/completed')} aria-label="Back to Completed Processes">
           <ArrowLeft className="h-4 w-4" />
         </Button>
+      }
+      actions={
+        canEditCompletedRun && lotRunId ? (
+          <Button variant="outline" onClick={() => navigate(`/process/completed/${lotRunId}/edit`)}>
+            Edit Run
+          </Button>
+        ) : null
       }
       contentClassName="px-4 sm:px-6 lg:px-8 py-8"
     >

@@ -6,6 +6,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDryingRun } from '@/hooks/useDryingRun'
 import { supabase } from '@/lib/supabaseClient'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import type { ProcessStepRun, DryingFormData, DryingWasteFormData } from '@/types/processExecution'
 import {
   AlertDialog,
@@ -69,7 +70,7 @@ export function DryingStep({
   loading: externalLoading = false,
   availableQuantity,
 }: DryingStepProps) {
-  const { dryingRun, waste, saveDryingRun, addWaste, deleteWaste } = useDryingRun({
+  const { dryingRun, waste, loading, saveDryingRun, addWaste, deleteWaste } = useDryingRun({
     stepRunId: stepRun.id,
     enabled: true,
   })
@@ -383,6 +384,10 @@ export function DryingStep({
   }
 
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
+
+  if ((loading && !dryingRun && waste.length === 0) || loadingWashedWips) {
+    return <StepDataLoader />
+  }
 
   return (
     <div className="space-y-6">

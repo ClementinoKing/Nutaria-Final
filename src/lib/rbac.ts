@@ -140,7 +140,7 @@ function getEffectivePermissions(accessContext: AccessContext | null | undefined
   return effective
 }
 
-function isSuperAdminAccess(accessContext: AccessContext | null | undefined): boolean {
+export function isSuperAdminAccess(accessContext: AccessContext | null | undefined): boolean {
   return Boolean(
     accessContext?.is_super_admin ||
       accessContext?.roles?.some((role) => role.name === 'Super Admin') ||

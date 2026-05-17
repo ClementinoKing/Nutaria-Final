@@ -24,6 +24,7 @@ export async function calculateAvailableQuantity(
     .from('process_lot_run_batches')
     .select(`
       supply_batch_id,
+      allocated_qty,
       supply_batches:supply_batch_id (
         current_qty
       )
@@ -39,7 +40,8 @@ export async function calculateAvailableQuantity(
   if (linkedLots && linkedLots.length > 0) {
     initialQty = linkedLots.reduce((sum, row: any) => {
       const batch = Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches
-      return sum + (Number(batch?.current_qty) || 0)
+      const allocatedQty = Number(row.allocated_qty) || 0
+      return sum + (allocatedQty > 0 ? allocatedQty : Number(batch?.current_qty) || 0)
     }, 0)
   } else {
     const { data: lotRun, error: lotRunError } = await supabase

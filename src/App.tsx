@@ -10,6 +10,7 @@ import {
 const Login = lazy(() => import('./pages/Login'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const DailyChecks = lazy(() => import('./pages/daily/DailyChecks'))
+const InspectionChecks = lazy(() => import('./pages/daily/InspectionChecks'))
 const Units = lazy(() => import('./pages/inventory/Units'))
 const Warehouses = lazy(() => import('./pages/inventory/Warehouses'))
 const Products = lazy(() => import('./pages/inventory/Products'))
@@ -145,6 +146,16 @@ function App() {
             <ProtectedRoute>
               <PermissionRoute anyOf={[PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE]}>
                 <DailyChecks />
+              </PermissionRoute>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/checks/inspection"
+          element={
+            <ProtectedRoute>
+              <PermissionRoute anyOf={[PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE]}>
+                <InspectionChecks />
               </PermissionRoute>
             </ProtectedRoute>
           }
@@ -502,6 +513,14 @@ function App() {
           element={
             <ProtectedRoute>
               <CompletedProcessDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/process/completed/:lotRunId/edit"
+          element={
+            <ProtectedRoute>
+              <ProcessStepsProgress completedEditMode />
             </ProtectedRoute>
           }
         />

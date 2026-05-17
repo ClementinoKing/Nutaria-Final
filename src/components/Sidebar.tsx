@@ -51,6 +51,7 @@ interface NavigationSubItem {
   icon: LucideIcon
   key: string
   path: string
+  badge?: number
 }
 
 interface NavigationItem {
@@ -84,7 +85,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
   const { remainingCount: dailyRemainingCount } = useDailyChecks()
   const { theme, toggleTheme } = useTheme()
   const { canAny } = usePermissions()
-  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users'
+  type ExpandedMenuKey = 'inventory' | 'process' | 'suppliersCustomers' | 'settings' | 'users' | 'checks'
   
   const [expandedMenus, setExpandedMenus] = useState<Record<ExpandedMenuKey, boolean>>({
     inventory: false,
@@ -92,6 +93,7 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
     suppliersCustomers: false,
     settings: false,
     users: false,
+    checks: false,
   })
 
   const navigationItems: NavigationItem[] = [
@@ -132,7 +134,17 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
       ]
     },
     { name: 'Shipments', icon: Truck, key: 'shipments', path: '/shipments', requiredPermissions: [PERMISSIONS.WORKFLOW_SHIPMENT_CREATE, PERMISSIONS.WORKFLOW_SHIPMENT_EDIT] },
-    { name: 'Daily Checks', icon: ListChecks, key: 'daily-checks', path: '/checks/daily', badge: dailyRemainingCount, requiredPermissions: [PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE] },
+    {
+      name: 'Daily Checks',
+      icon: ListChecks,
+      key: 'checks',
+      badge: dailyRemainingCount,
+      requiredPermissions: [PERMISSIONS.WORKFLOW_CHECKLIST_MANAGE],
+      submenu: [
+        { name: 'Daily Checks', icon: ListChecks, key: 'daily-checks', path: '/checks/daily', badge: dailyRemainingCount },
+        { name: 'Inspection', icon: CheckCircle2, key: 'inspection-checks', path: '/checks/inspection' },
+      ],
+    },
     {
       name: 'Users',
       icon: UsersIcon,
@@ -196,9 +208,11 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
     '/settings/packaging',
   ]
   const processPaths = ['/process/view', '/process/process-steps', '/process/completed', '/process/mixed-packs']
+  const checksPaths = ['/checks/daily', '/checks/inspection']
   const isInventoryActive = inventoryPaths.some(path => location.pathname.startsWith(path))
   const isSettingsActive = settingsPaths.some(path => location.pathname.startsWith(path))
   const isProcessActive = processPaths.some(path => location.pathname.startsWith(path))
+  const isChecksActive = checksPaths.some(path => location.pathname.startsWith(path))
   const isSuppliersCustomersActive = location.pathname.startsWith('/suppliers-customers')
   const isUsersActive = ['/user-management', '/role-management'].some(path => location.pathname.startsWith(path))
  
@@ -219,7 +233,10 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
     if (isUsersActive) {
       setExpandedMenus(prev => ({ ...prev, users: true }))
     }
-  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive])
+    if (isChecksActive) {
+      setExpandedMenus(prev => ({ ...prev, checks: true }))
+    }
+  }, [isInventoryActive, isSettingsActive, isProcessActive, isSuppliersCustomersActive, isUsersActive, isChecksActive])
 
   const toggleMenu = (menuKey: ExpandedMenuKey) => {
     setExpandedMenus(prev => ({
@@ -240,6 +257,8 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
         return isSuppliersCustomersActive
       case 'users':
         return isUsersActive
+      case 'checks':
+        return isChecksActive
       default:
         return false
     }
@@ -329,19 +348,26 @@ function Sidebar({ sidebarOpen, setSidebarOpen, activeItem, user, profile, acces
                     {item.submenu.map((subItem) => {
                       const SubIcon = subItem.icon
                       const isSubActive = location.pathname === subItem.path
+                      const showSubBadge =
+                        subItem.badge !== undefined && Number.isFinite(subItem.badge) && subItem.badge > 0
                       return (
                         <button
                           key={subItem.key}
                           onClick={() => handleNavigation(subItem)}
                           className={cn(
-                            'flex w-full items-center space-x-3 rounded-lg px-4 py-2 text-sm transition-colors',
+                            'flex w-full items-center gap-3 rounded-lg px-4 py-2 text-sm transition-colors',
                             isSubActive
                               ? 'bg-olive/50 text-white'
                               : 'text-white/70 hover:bg-white/10 hover:text-white'
                           )}
                         >
                           <SubIcon className="h-5 w-5 flex-shrink-0" />
-                          <span className="text-sm font-medium">{subItem.name}</span>
+                          <span className="min-w-0 flex-1 text-left text-sm font-medium">{subItem.name}</span>
+                          {showSubBadge && (
+                            <span className="inline-flex min-h-[1.35rem] min-w-[1.35rem] items-center justify-center rounded-full bg-orange-500 px-1.5 text-[11px] font-semibold text-white">
+                              {subItem.badge}
+                            </span>
+                          )}
                         </button>
                       )
                     })}

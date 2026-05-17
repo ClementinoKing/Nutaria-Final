@@ -19,7 +19,7 @@ create table if not exists public.supply_batches (
     quality_status = any (array['PENDING'::text, 'PASSED'::text, 'FAILED'::text, 'HOLD'::text])
   ),
   constraint supply_batches_process_status_check check (
-    process_status = any (array['UNPROCESSED'::text, 'PROCESSED'::text])
+    process_status = any (array['UNPROCESSED'::text, 'PROCESSING'::text, 'PROCESSED'::text])
   )
 ) tablespace pg_default;
 

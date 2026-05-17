@@ -7,6 +7,7 @@ import { Activity, CheckCircle2, ChevronLeft, ChevronRight, CornerUpLeft, MapPin
 import { toast } from 'sonner'
 import PageLayout from '@/components/layout/PageLayout'
 import { useAuth } from '@/context/AuthContext'
+import { isSuperAdminAccess } from '@/lib/rbac'
 import { useProcessLotRun } from '@/hooks/useProcessLotRun'
 import { useProcessStepRuns } from '@/hooks/useProcessStepRuns'
 import { useNonConformances } from '@/hooks/useNonConformances'
@@ -39,6 +40,7 @@ import { NonConformanceList } from '@/components/process/NonConformanceList'
 import { NonConformanceForm } from '@/components/process/NonConformanceForm'
 import { StepQCCheck } from '@/components/process/StepQCCheck'
 import { ProcessSignoffs } from '@/components/process/ProcessSignoffs'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import { WashingStep } from '@/components/process/steps/WashingStep'
 import { DryingStep } from '@/components/process/steps/DryingStep'
 import { SortingStep } from '@/components/process/steps/SortingStep'
@@ -128,6 +130,7 @@ interface Lot {
   current_qty: number
   process_status: string
   quality_status: string
+  allocated_qty?: number | null
   expiry_date?: string | null
   created_at: string
   supplies?: {
@@ -180,13 +183,18 @@ function formatLotStatus(status: string | null | undefined): string {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-function ProcessStepsProgress() {
+interface ProcessStepsProgressProps {
+  completedEditMode?: boolean
+}
+
+function ProcessStepsProgress({ completedEditMode = false }: ProcessStepsProgressProps) {
   const { lotId: lotIdParam, lotRunId: lotRunIdParam } = useParams()
   const lotId = Number.parseInt(lotIdParam ?? '', 10)
   const routeLotRunId = Number.parseInt(lotRunIdParam ?? '', 10)
   const navigate = useNavigate()
 
-  const { user } = useAuth()
+  const { user, accessContext, accessLoading } = useAuth()
+  const canEditCompletedRun = isSuperAdminAccess(accessContext)
   const [currentStepIndex, setCurrentStepIndex] = useState(0)
   const [saving, setSaving] = useState(false)
   const [skipAlertOpen, setSkipAlertOpen] = useState(false)
@@ -220,6 +228,7 @@ function ProcessStepsProgress() {
           `
           id,
           is_primary,
+          allocated_qty,
           supply_batches:supply_batch_id (
             id,
             lot_no,
@@ -259,7 +268,10 @@ function ProcessStepsProgress() {
         setSelectedLotError(rowsError.message ?? 'Failed to load run lots')
       } else {
         const lotsInRun: Lot[] = ((rows || []) as any[])
-          .map((row) => (Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches))
+          .map((row) => {
+            const batch = Array.isArray(row.supply_batches) ? row.supply_batches[0] : row.supply_batches
+            return batch ? { ...batch, allocated_qty: Number(row.allocated_qty) || null } : null
+          })
           .filter((row) => row != null) as Lot[]
         setSelectedLots(lotsInRun)
         const primary = ((rows || []) as any[])
@@ -345,6 +357,8 @@ function ProcessStepsProgress() {
       .from('process_lot_run_batches')
       .select('process_lot_run_id')
       .eq('supply_batch_id', lotId)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
       .then(async ({ data }) => {
         if (isCancelled || requestId !== lotRunLookupRequestId.current) return
@@ -409,6 +423,7 @@ function ProcessStepsProgress() {
     totalWaste: number
   } | null>(null)
   const [gradedWipOutputs, setGradedWipOutputs] = useState<GradedWipOutput[]>([])
+  const [loadingGradedWipOutputs, setLoadingGradedWipOutputs] = useState(false)
   const [washingModalOpen, setWashingModalOpen] = useState(false)
   const [selectedWashingOutput, setSelectedWashingOutput] = useState<GradedWipOutput | null>(null)
   const [washingCardsVersion, setWashingCardsVersion] = useState(0)
@@ -497,6 +512,7 @@ function ProcessStepsProgress() {
     const stepCode = activeStep?.step_code?.toUpperCase() || ''
     if (stepCode !== 'WASH' || !lotRunId || !activeStepRun || stepRuns.length === 0) {
       setGradedWipOutputs([])
+      setLoadingGradedWipOutputs(false)
       return
     }
 
@@ -506,10 +522,12 @@ function ProcessStepsProgress() {
 
     if (gradingStepRunIds.length === 0) {
       setGradedWipOutputs([])
+      setLoadingGradedWipOutputs(false)
       return
     }
 
     let cancelled = false
+    setLoadingGradedWipOutputs(true)
     Promise.all([
       supabase
         .from('process_grading_outputs')
@@ -525,6 +543,7 @@ function ProcessStepsProgress() {
         if (gradingOutputsResult.error || washingRunsResult.error) {
           console.error('Failed to load graded WIP outputs for washing:', gradingOutputsResult.error ?? washingRunsResult.error)
           setGradedWipOutputs([])
+          setLoadingGradedWipOutputs(false)
           return
         }
         const washingRuns = (washingRunsResult.data ?? []) as Array<{
@@ -558,11 +577,13 @@ function ProcessStepsProgress() {
           }
         })
         setGradedWipOutputs(outputs)
+        setLoadingGradedWipOutputs(false)
       })
       .catch((error) => {
         if (!cancelled) {
           console.error('Failed to load graded WIP outputs for washing:', error)
           setGradedWipOutputs([])
+          setLoadingGradedWipOutputs(false)
         }
       })
 
@@ -593,7 +614,7 @@ function ProcessStepsProgress() {
   )
 
   const runTotalAvailableQty = useMemo(
-    () => selectedLots.reduce((sum, lot) => sum + (Number(lot.current_qty ?? lot.received_qty) || 0), 0),
+    () => selectedLots.reduce((sum, lot) => sum + (Number(lot.allocated_qty ?? lot.current_qty ?? lot.received_qty) || 0), 0),
     [selectedLots]
   )
   const runUnitSymbol = useMemo(() => {
@@ -605,7 +626,7 @@ function ProcessStepsProgress() {
   const isSortingStep = activeStepCode === 'SORT' || activeStepCode === 'GRAD'
 
   const handleBack = () => {
-    navigate('/process/process-steps')
+    navigate(completedEditMode && lotRunId ? `/process/completed/${lotRunId}` : '/process/process-steps')
   }
 
   const performCreateLotRun = async () => {
@@ -672,6 +693,7 @@ function ProcessStepsProgress() {
   // When user opens a step that is PENDING, auto-set to IN_PROGRESS and set started_at
   const hasAutoStartedRef = useRef<number | null>(null)
   useEffect(() => {
+    if (completedEditMode) return
     if (!activeStepRun || !user?.id || activeStepRun.status !== 'PENDING') return
     if (hasAutoStartedRef.current === activeStepRun.id) return
 
@@ -689,7 +711,7 @@ function ProcessStepsProgress() {
         console.error('Error auto-starting step:', err)
         hasAutoStartedRef.current = null
       })
-  }, [activeStepRun?.id, activeStepRun?.status, user?.id])
+  }, [activeStepRun?.id, activeStepRun?.status, completedEditMode, user?.id])
 
   const nextStep = () => {
     if (currentStepIndex < stepRuns.length - 1) {
@@ -1148,9 +1170,39 @@ function ProcessStepsProgress() {
     }
   }, [user?.id])
 
+  if (completedEditMode && accessLoading) {
+    return (
+      <PageLayout
+        title="Edit Completed Process"
+        activeItem="process"
+        stickyHeader={false}
+        contentClassName="py-4 space-y-3"
+      >
+        <ProcessStepsProgressSkeleton />
+      </PageLayout>
+    )
+  }
+
+  if (completedEditMode && !canEditCompletedRun) {
+    return (
+      <PageLayout
+        title="Edit Completed Process"
+        activeItem="process"
+        stickyHeader={false}
+        contentClassName="py-4 space-y-3"
+      >
+        <Card className="border-orange-200 bg-orange-50">
+          <CardContent className="py-4 text-sm text-orange-800">
+            Only super admins can edit a completed process run.
+          </CardContent>
+        </Card>
+      </PageLayout>
+    )
+  }
+
   return (
     <PageLayout
-      title="Process Steps Progress"
+      title={completedEditMode ? 'Edit Completed Process' : 'Process Steps Progress'}
       activeItem="process"
       stickyHeader={false}
       contentClassName="py-4 space-y-3"
@@ -1159,11 +1211,11 @@ function ProcessStepsProgress() {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={handleBack} className="flex items-center gap-2">
             <CornerUpLeft className="h-4 w-4" />
-            Back to Available Lots
+            {completedEditMode ? 'Back to Completed Process' : 'Back to Available Lots'}
           </Button>
         </div>
         <div className="flex items-center gap-2">
-          {!isMetalTimerRunning && (
+          {!completedEditMode && !isMetalTimerRunning && (
             <Button
               type="button"
               size="sm"
@@ -1194,7 +1246,7 @@ function ProcessStepsProgress() {
               key={lot.id}
               className="inline-flex items-center rounded-full border border-olive-light/40 bg-olive-light/15 px-3 py-1 text-xs text-text-dark/80 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
             >
-              {lot.lot_no} · {lot.current_qty ?? lot.received_qty ?? '—'} {lot.units?.symbol ?? ''}
+              {lot.lot_no} · {Number(lot.allocated_qty ?? lot.current_qty ?? lot.received_qty).toFixed(2)} {lot.units?.symbol ?? ''}
             </span>
           ))}
         </div>
@@ -1281,7 +1333,7 @@ function ProcessStepsProgress() {
             </CardHeader>
             <CardContent className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
               <div>
-                <p className="text-xs uppercase tracking-wide text-text-dark/50">Available Qty</p>
+                <p className="text-xs uppercase tracking-wide text-text-dark/50">Process Qty</p>
                 <p className="text-base font-semibold text-text-dark">
                   {runTotalAvailableQty.toFixed(2)} {runUnitSymbol}
                 </p>
@@ -1309,9 +1361,13 @@ function ProcessStepsProgress() {
 
           <Card className="bg-white border-olive-light/30 dark:bg-slate-900/80 dark:border-slate-700">
             <CardHeader>
-              <CardTitle className="text-text-dark">Process Steps Progress</CardTitle>
+              <CardTitle className="text-text-dark">
+                {completedEditMode ? 'Completed Process Corrections' : 'Process Steps Progress'}
+              </CardTitle>
               <CardDescription>
-                {selectedLot
+                {completedEditMode
+                  ? 'Super admin edit mode for missed waste, QC, non-conformance, and step recordings.'
+                  : selectedLot
                   ? `Tracking: ${selectedLots.length > 1 ? `${selectedLots.length} combined lots` : selectedLot.lot_no} — ${selectedLot.products?.name ?? 'Unknown product'}`
                   : 'Select a lot to capture process execution data'}
               </CardDescription>
@@ -1603,8 +1659,11 @@ function ProcessStepsProgress() {
                         {(() => {
                           const stepCode = activeStep.step_code?.toUpperCase() || ''
                           if (stepCode === 'WASH') {
+                            if (loadingGradedWipOutputs) {
+                              return <StepDataLoader />
+                            }
                             if (gradedWipOutputs.length === 0) {
-                              return <WashingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                              return <WashingStep key={activeStepRun.id} stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                             }
 
                             return (
@@ -1652,11 +1711,12 @@ function ProcessStepsProgress() {
                             )
                           }
                           if (stepCode === 'DRY' || stepCode === 'DRYI') {
-                            return <DryingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                            return <DryingStep key={activeStepRun.id} stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
                           if (stepCode === 'SORT' || stepCode === 'GRAD') {
                             return (
                               <SortingStep
+                                key={activeStepRun.id}
                                 stepRun={activeStepRun}
                                 mode={stepCode === 'GRAD' ? 'grading' : 'sorting'}
                                 allowOutputs
@@ -1684,10 +1744,10 @@ function ProcessStepsProgress() {
                             )
                           }
                           if (stepCode === 'METAL' || stepCode === 'META') {
-                            return <MetalDetectionStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                            return <MetalDetectionStep key={activeStepRun.id} stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
                           if (stepCode === 'PACK') {
-                            return <PackagingStep stepRun={activeStepRun} loading={saving || loadingStepRuns} />
+                            return <PackagingStep key={activeStepRun.id} stepRun={activeStepRun} loading={saving || loadingStepRuns} />
                           }
                           return (
                             <div className="rounded-lg border border-olive-light/30 bg-olive-light/10 p-4">
@@ -1764,7 +1824,7 @@ function ProcessStepsProgress() {
                   )}
 
                   {/* Signoffs and Completion */}
-                  {allStepsCompleted && (
+                  {allStepsCompleted && !completedEditMode && (
                     <div className="border-t border-olive-light/20 pt-4 space-y-4">
                       <div className="flex items-center justify-between">
                         <h4 className="text-sm font-semibold text-text-dark">Process Completion</h4>

@@ -17,6 +17,7 @@ import type {
   MixedPackBatchRow,
   MixedPackCreateLine,
   MixedPackSourceOption,
+  MixedPackSourceType,
 } from '@/types/mixedPack'
 
 interface PackagingUnitOption {
@@ -96,6 +97,26 @@ function mapPackagingTypeToPackingType(
   }
 }
 
+const sourceTypeLabels: Record<MixedPackSourceType, string> = {
+  REMAINDER: 'Remainder',
+  RAW_LOT: 'Raw lot',
+  PACKAGED_ALLOCATION: 'Packaged allocation',
+}
+
+function getSourceTypeLabel(sourceType: MixedPackSourceType): string {
+  return sourceTypeLabels[sourceType]
+}
+
+function getSourceAvailabilityLabel(source: MixedPackSourceOption): string {
+  if (source.source_type === 'REMAINDER') {
+    return `Available remainder: ${formatQuantity(source.available_qty)}`
+  }
+  if (source.source_type === 'RAW_LOT') {
+    return `Available raw stock: ${formatQuantity(source.available_qty, source.unit_symbol ?? 'kg')}`
+  }
+  return `Available allocation: ${formatQuantity(source.available_qty)}`
+}
+
 function MixedPacks() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -103,6 +124,7 @@ function MixedPacks() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [createStep, setCreateStep] = useState<1 | 2>(1)
   const [sourceSearch, setSourceSearch] = useState('')
+  const [sourceTypeFilter, setSourceTypeFilter] = useState<'ALL' | MixedPackSourceType>('ALL')
   const [form, setForm] = useState<FormState>(defaultFormState)
   const [sourceRows, setSourceRows] = useState<MixedPackSourceOption[]>([])
   const [batchRows, setBatchRows] = useState<MixedPackBatchRow[]>([])
@@ -118,7 +140,7 @@ function MixedPacks() {
     setLoading(true)
     setError(null)
 
-    const [sourcesRes, batchesRes, unitsRes, rulesRes, mixedProductsRes] = await Promise.all([
+    const [sourcesRes, rawLotsRes, allocationSourcesRes, batchesRes, unitsRes, rulesRes, mixedProductsRes] = await Promise.all([
       supabase
         .from('process_packaging_pack_entries')
         .select(`
@@ -161,6 +183,54 @@ function MixedPacks() {
         .gt('remainder_kg', 0)
         .order('created_at', { ascending: false }),
       supabase
+        .from('supply_batches')
+        .select(`
+          id,
+          product_id,
+          unit_id,
+          lot_no,
+          current_qty,
+          received_qty,
+          quality_status,
+          created_at,
+          products(id, name, sku, product_type, base_unit_id, units(name, symbol)),
+          units:units!supply_batches_unit_id_fkey(name, symbol),
+          supplies(
+            warehouse_id,
+            warehouses(name)
+          )
+        `)
+        .gt('current_qty', 0)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('mixed_pack_source_allocations')
+        .select(`
+          allocation_id,
+          pack_entry_id,
+          product_id,
+          product_name,
+          product_sku,
+          product_type,
+          pack_identifier,
+          lot_run_id,
+          lot_no,
+          warehouse_id,
+          warehouse_name,
+          unit_id,
+          unit_name,
+          unit_symbol,
+          units_count,
+          packs_per_unit,
+          total_quantity_kg,
+          shipped_units,
+          mixed_pack_consumed_qty,
+          remaining_quantity_kg,
+          remaining_units,
+          allocated_at
+        `)
+        .gt('remaining_quantity_kg', 0)
+        .order('allocated_at', { ascending: false }),
+      supabase
         .from('mixed_pack_batches')
         .select('id, batch_no, pack_name, status, inventory_type, defined_pack_size, actual_total_qty, warehouse_id, unit_id, require_exact_total, notes, created_at, storage_allocation_id, pack_entry_id, created_by')
         .order('created_at', { ascending: false }),
@@ -180,10 +250,10 @@ function MixedPacks() {
         .order('name', { ascending: true }),
     ])
 
-    if (sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error) {
+    if (sourcesRes.error || rawLotsRes.error || allocationSourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error) {
       setError(
         getUserFriendlyErrorMessage(
-          sourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error,
+          sourcesRes.error || rawLotsRes.error || allocationSourcesRes.error || batchesRes.error || unitsRes.error || rulesRes.error || mixedProductsRes.error,
           'We could not load the mixed-pack workspace right now. Please refresh and try again.',
         ),
       )
@@ -199,7 +269,7 @@ function MixedPacks() {
     const unwrap = <T,>(value: T | T[] | null | undefined): T | null =>
       Array.isArray(value) ? value[0] ?? null : value ?? null
 
-    const nextSources = ((sourcesRes.data ?? []) as any[])
+    const remainderSources: MixedPackSourceOption[] = ((sourcesRes.data ?? []) as any[])
       .map((row) => {
         const usageRows = Array.isArray(row.usages) ? row.usages : []
         const usedRemainderKg = usageRows.reduce((sum: number, usage: { quantity_kg?: number | null }) => {
@@ -217,7 +287,12 @@ function MixedPacks() {
         const availableRemainderKg = Math.max(0, remainderKg - usedRemainderKg)
 
         return {
+          source_key: `REMAINDER:${Number(row.id)}`,
+          source_type: 'REMAINDER' as const,
+          source_id: Number(row.id),
           pack_entry_id: Number(row.id),
+          supply_batch_id: null,
+          allocation_id: null,
           product_id: Number(product?.id ?? row.product_id ?? 0),
           product_name: String(product?.name ?? 'Unknown product'),
           product_sku: product?.sku ? String(product.sku) : null,
@@ -227,6 +302,7 @@ function MixedPacks() {
           remainder_kg: remainderKg,
           used_remainder_kg: usedRemainderKg,
           available_remainder_kg: availableRemainderKg,
+          available_qty: availableRemainderKg,
           quantity_kg: Number(row.quantity_kg) || 0,
           pack_count: row.pack_count == null ? null : Number(row.pack_count),
           packed_at: row.created_at ? String(row.created_at) : null,
@@ -239,9 +315,87 @@ function MixedPacks() {
       })
       .filter((row) =>
         row.pack_entry_id > 0 &&
-        row.available_remainder_kg > 0 &&
+        row.available_qty > 0 &&
         row.product_id > 0,
       )
+
+    const rawLotSources: MixedPackSourceOption[] = ((rawLotsRes.data ?? []) as any[])
+      .filter((row) => {
+        const product = unwrap(row.products)
+        return String(product?.product_type ?? '').toUpperCase() === 'RAW'
+      })
+      .map((row) => {
+        const product = unwrap(row.products)
+        const supply = unwrap(row.supplies)
+        const warehouse = unwrap(supply?.warehouses)
+        const unit = unwrap(row.units ?? product?.units ?? null)
+        const availableQty = Number(row.current_qty) || 0
+
+        return {
+          source_key: `RAW_LOT:${Number(row.id)}`,
+          source_type: 'RAW_LOT' as const,
+          source_id: Number(row.id),
+          pack_entry_id: 0,
+          supply_batch_id: Number(row.id),
+          allocation_id: null,
+          product_id: Number(product?.id ?? row.product_id ?? 0),
+          product_name: String(product?.name ?? 'Unknown raw product'),
+          product_sku: product?.sku ? String(product.sku) : null,
+          pack_identifier: null,
+          lot_no: row.lot_no ? String(row.lot_no) : null,
+          lot_run_id: null,
+          remainder_kg: 0,
+          used_remainder_kg: 0,
+          available_remainder_kg: 0,
+          available_qty: availableQty,
+          quantity_kg: availableQty,
+          pack_count: null,
+          packed_at: row.created_at ? String(row.created_at) : null,
+          warehouse_id: Number(supply?.warehouse_id ?? 0),
+          warehouse_name: warehouse?.name ? String(warehouse.name) : null,
+          unit_id: row.unit_id == null ? (product?.base_unit_id ? Number(product.base_unit_id) : null) : Number(row.unit_id),
+          unit_name: unit?.name ? String(unit.name) : null,
+          unit_symbol: unit?.symbol ? String(unit.symbol) : null,
+        }
+      })
+      .filter((row) => row.supply_batch_id != null && row.available_qty > 0 && row.product_id > 0)
+
+    const packagedAllocationSources: MixedPackSourceOption[] = ((allocationSourcesRes.data ?? []) as any[])
+      .map((row) => {
+        const availableQty = Number(row.remaining_quantity_kg) || 0
+        const allocationId = Number(row.allocation_id) || 0
+        const packEntryId = Number(row.pack_entry_id) || 0
+
+        return {
+          source_key: `PACKAGED_ALLOCATION:${allocationId}`,
+          source_type: 'PACKAGED_ALLOCATION' as const,
+          source_id: allocationId,
+          pack_entry_id: packEntryId,
+          supply_batch_id: null,
+          allocation_id: allocationId,
+          product_id: Number(row.product_id ?? 0),
+          product_name: String(row.product_name ?? 'Unknown allocation product'),
+          product_sku: row.product_sku ? String(row.product_sku) : null,
+          pack_identifier: row.pack_identifier ? String(row.pack_identifier) : null,
+          lot_no: row.lot_no ? String(row.lot_no) : null,
+          lot_run_id: row.lot_run_id == null ? null : Number(row.lot_run_id),
+          remainder_kg: 0,
+          used_remainder_kg: Number(row.mixed_pack_consumed_qty) || 0,
+          available_remainder_kg: 0,
+          available_qty: availableQty,
+          quantity_kg: Number(row.total_quantity_kg) || 0,
+          pack_count: row.remaining_units == null ? null : Number(row.remaining_units),
+          packed_at: row.allocated_at ? String(row.allocated_at) : null,
+          warehouse_id: Number(row.warehouse_id ?? 0),
+          warehouse_name: row.warehouse_name ? String(row.warehouse_name) : null,
+          unit_id: row.unit_id == null ? null : Number(row.unit_id),
+          unit_name: row.unit_name ? String(row.unit_name) : null,
+          unit_symbol: row.unit_symbol ? String(row.unit_symbol) : null,
+        }
+      })
+      .filter((row) => row.allocation_id != null && row.allocation_id > 0 && row.available_qty > 0 && row.product_id > 0)
+
+    const nextSources = [...remainderSources, ...rawLotSources, ...packagedAllocationSources]
 
     const nextUnits = ((unitsRes.data ?? []) as PackagingUnitOption[]).filter((unit) => unit.is_active)
     const nextRules = ((rulesRes.data ?? []) as BoxPackRuleOption[]).filter((rule) => rule.is_active)
@@ -425,15 +579,15 @@ function MixedPacks() {
   }, [definedPackSizeValue, form.requireExactTotal, selectedTotalQty])
 
   const lineErrors = useMemo(() => {
-    const next = new Map<number, string>()
+    const next = new Map<string, string>()
     selectedLines.forEach((line) => {
       const quantityUsed = Number(line.quantity_used)
       if (!Number.isFinite(quantityUsed) || quantityUsed <= 0) {
-        next.set(line.source_pack_entry_id, 'Enter a quantity greater than zero.')
+        next.set(line.source_key, 'Enter a quantity greater than zero.')
         return
       }
-      if (quantityUsed > line.source.available_remainder_kg + 0.000001) {
-        next.set(line.source_pack_entry_id, `Cannot exceed ${formatQuantity(line.source.available_remainder_kg)} available remainder.`)
+      if (quantityUsed > line.source.available_qty + 0.000001) {
+        next.set(line.source_key, `Cannot exceed ${formatQuantity(line.source.available_qty, line.source.unit_symbol ?? 'kg')} available from this source.`)
       }
     })
     return next
@@ -496,38 +650,40 @@ function MixedPacks() {
     const term = sourceSearch.trim().toLowerCase()
     return sourceRows.filter((row) => {
       if (selectedWarehouseId != null && row.warehouse_id !== selectedWarehouseId) return false
+      if (sourceTypeFilter !== 'ALL' && row.source_type !== sourceTypeFilter) return false
       if (!term) return true
-      return [row.product_name, row.product_sku ?? '', row.pack_identifier ?? '', row.lot_no ?? '', row.warehouse_name ?? '']
+      return [getSourceTypeLabel(row.source_type), row.product_name, row.product_sku ?? '', row.pack_identifier ?? '', row.lot_no ?? '', row.warehouse_name ?? '']
         .join(' ')
         .toLowerCase()
         .includes(term)
     })
-  }, [selectedWarehouseId, sourceRows, sourceSearch])
+  }, [selectedWarehouseId, sourceRows, sourceSearch, sourceTypeFilter])
 
   const addSourceLine = useCallback((source: MixedPackSourceOption) => {
     setSelectedLines((previous) => {
-      const existing = previous.find((line) => line.source_pack_entry_id === source.pack_entry_id)
+      const existing = previous.find((line) => line.source_key === source.source_key)
       if (existing) {
-        return previous.map((line) => (line.source_pack_entry_id === source.pack_entry_id ? { ...line, source } : line))
+        return previous.filter((line) => line.source_key !== source.source_key)
       }
-      return [...previous, { source_pack_entry_id: source.pack_entry_id, quantity_used: '', source }]
+      return [...previous, { source_key: source.source_key, quantity_used: '', source }]
     })
   }, [])
 
-  const updateLineQuantity = useCallback((packEntryId: number, quantity: string) => {
+  const updateLineQuantity = useCallback((sourceKey: string, quantity: string) => {
     setSelectedLines((previous) =>
-      previous.map((line) => (line.source_pack_entry_id === packEntryId ? { ...line, quantity_used: quantity } : line)),
+      previous.map((line) => (line.source_key === sourceKey ? { ...line, quantity_used: quantity } : line)),
     )
   }, [])
 
-  const removeLine = useCallback((packEntryId: number) => {
-    setSelectedLines((previous) => previous.filter((line) => line.source_pack_entry_id !== packEntryId))
+  const removeLine = useCallback((sourceKey: string) => {
+    setSelectedLines((previous) => previous.filter((line) => line.source_key !== sourceKey))
   }, [])
 
   const resetCreateModal = useCallback(() => {
     setForm(defaultFormState)
     setSelectedLines([])
     setSourceSearch('')
+    setSourceTypeFilter('ALL')
     setCreateStep(1)
     setShowCreateModal(false)
   }, [])
@@ -539,7 +695,7 @@ function MixedPacks() {
 
     const { data: itemsData, error: itemsError } = await supabase
       .from('mixed_pack_batch_items')
-      .select('id, source_allocation_id, source_pack_entry_id, source_product_id, source_lot_run_id, quantity_used')
+      .select('id, source_type, source_allocation_id, source_pack_entry_id, source_supply_batch_id, source_product_id, source_lot_run_id, quantity_used')
       .eq('mixed_pack_batch_id', batch.id)
       .order('created_at', { ascending: true })
 
@@ -551,8 +707,10 @@ function MixedPacks() {
 
     const items = (itemsData ?? []) as Array<{
       id: number
+      source_type: MixedPackSourceType | null
       source_allocation_id: number | null
       source_pack_entry_id: number | null
+      source_supply_batch_id: number | null
       source_product_id: number | null
       source_lot_run_id: number | null
       quantity_used: number
@@ -560,11 +718,15 @@ function MixedPacks() {
 
     const productIds = Array.from(new Set(items.map((item) => item.source_product_id).filter((value): value is number => value != null)))
     const packEntryIds = Array.from(new Set(items.map((item) => item.source_pack_entry_id).filter((value): value is number => value != null)))
+    const sourceBatchIds = Array.from(new Set(items.map((item) => item.source_supply_batch_id).filter((value): value is number => value != null)))
+    const sourceAllocationIds = Array.from(new Set(items.map((item) => item.source_allocation_id).filter((value): value is number => value != null)))
     const lotRunIds = Array.from(new Set(items.map((item) => item.source_lot_run_id).filter((value): value is number => value != null)))
 
-    const [productsRes, packEntriesRes, lotRunsRes] = await Promise.all([
+    const [productsRes, packEntriesRes, sourceBatchesRes, sourceAllocationsRes, lotRunsRes] = await Promise.all([
       productIds.length > 0 ? supabase.from('products').select('id, name, sku').in('id', productIds) : Promise.resolve({ data: [], error: null }),
       packEntryIds.length > 0 ? supabase.from('process_packaging_pack_entries').select('id, pack_identifier').in('id', packEntryIds) : Promise.resolve({ data: [], error: null }),
+      sourceBatchIds.length > 0 ? supabase.from('supply_batches').select('id, lot_no, supplies(warehouses(name))').in('id', sourceBatchIds) : Promise.resolve({ data: [], error: null }),
+      sourceAllocationIds.length > 0 ? supabase.from('process_packaging_storage_allocations').select('id, storage_type, box_unit_code').in('id', sourceAllocationIds) : Promise.resolve({ data: [], error: null }),
       lotRunIds.length > 0
         ? supabase
             .from('process_lot_runs')
@@ -581,9 +743,9 @@ function MixedPacks() {
         : Promise.resolve({ data: [], error: null }),
     ])
 
-    if (productsRes.error || packEntriesRes.error || lotRunsRes.error) {
+    if (productsRes.error || packEntriesRes.error || sourceBatchesRes.error || sourceAllocationsRes.error || lotRunsRes.error) {
       toast.error(
-        getUserFriendlyErrorMessage(productsRes.error || packEntriesRes.error || lotRunsRes.error, 'We loaded the batch, but not all composition details could be resolved.'),
+        getUserFriendlyErrorMessage(productsRes.error || packEntriesRes.error || sourceBatchesRes.error || sourceAllocationsRes.error || lotRunsRes.error, 'We loaded the batch, but not all composition details could be resolved.'),
       )
     }
 
@@ -592,6 +754,19 @@ function MixedPacks() {
     )
     const packEntryMap = new Map(((packEntriesRes.data ?? []) as Array<{ id: number; pack_identifier: string | null }>).map((row) => [row.id, row.pack_identifier ?? null]))
     const unwrapSingle = <T,>(value: T | T[] | null | undefined): T | null => (Array.isArray(value) ? value[0] ?? null : value ?? null)
+    const sourceBatchMap = new Map<number, { lot_no: string | null; warehouse_name: string | null }>()
+    ;((sourceBatchesRes.data ?? []) as Array<{
+      id: number
+      lot_no: string | null
+      supplies?: { warehouses?: { name?: string | null } | { name?: string | null }[] | null } | { warehouses?: { name?: string | null } | { name?: string | null }[] | null }[] | null
+    }>).forEach((row) => {
+      const supply = unwrapSingle(row.supplies ?? null)
+      const warehouse = unwrapSingle(supply?.warehouses ?? null)
+      sourceBatchMap.set(row.id, { lot_no: row.lot_no ?? null, warehouse_name: warehouse?.name ?? null })
+    })
+    const sourceAllocationMap = new Map(
+      ((sourceAllocationsRes.data ?? []) as Array<{ id: number; storage_type: string | null; box_unit_code: string | null }>).map((row) => [row.id, row]),
+    )
     const lotRunMap = new Map<number, { lot_no: string | null; warehouse_name: string | null }>()
 
     ;((lotRunsRes.data ?? []) as Array<{
@@ -610,16 +785,20 @@ function MixedPacks() {
     setDetailRows(
       items.map((item) => ({
         id: item.id,
+        source_type: item.source_type ?? 'REMAINDER',
         source_allocation_id: item.source_allocation_id,
         source_pack_entry_id: item.source_pack_entry_id,
+        source_supply_batch_id: item.source_supply_batch_id,
         source_product_id: item.source_product_id,
         source_lot_run_id: item.source_lot_run_id,
         quantity_used: Number(item.quantity_used) || 0,
         product_name: item.source_product_id ? productMap.get(item.source_product_id)?.name ?? 'Unknown product' : 'Unknown product',
         product_sku: item.source_product_id ? productMap.get(item.source_product_id)?.sku ?? null : null,
-        lot_no: item.source_lot_run_id ? lotRunMap.get(item.source_lot_run_id)?.lot_no ?? null : null,
-        pack_identifier: item.source_pack_entry_id ? packEntryMap.get(item.source_pack_entry_id) ?? null : null,
-        warehouse_name: item.source_lot_run_id ? lotRunMap.get(item.source_lot_run_id)?.warehouse_name ?? null : null,
+        lot_no: item.source_supply_batch_id ? sourceBatchMap.get(item.source_supply_batch_id)?.lot_no ?? null : item.source_lot_run_id ? lotRunMap.get(item.source_lot_run_id)?.lot_no ?? null : null,
+        pack_identifier: item.source_allocation_id
+          ? `Allocation #${item.source_allocation_id}${sourceAllocationMap.get(item.source_allocation_id)?.storage_type ? ` · ${sourceAllocationMap.get(item.source_allocation_id)?.storage_type}` : ''}`
+          : item.source_pack_entry_id ? packEntryMap.get(item.source_pack_entry_id) ?? null : null,
+        warehouse_name: item.source_supply_batch_id ? sourceBatchMap.get(item.source_supply_batch_id)?.warehouse_name ?? null : item.source_lot_run_id ? lotRunMap.get(item.source_lot_run_id)?.warehouse_name ?? null : null,
       })),
     )
     setDetailLoading(false)
@@ -649,7 +828,10 @@ function MixedPacks() {
       p_packs_per_unit: Number(form.packsPerUnit),
       p_notes: form.notes.trim() || null,
       p_lines: selectedLines.map((line) => ({
-        source_pack_entry_id: line.source_pack_entry_id,
+        source_type: line.source.source_type,
+        source_pack_entry_id: line.source.source_type === 'REMAINDER' ? line.source.pack_entry_id : null,
+        source_supply_batch_id: line.source.source_type === 'RAW_LOT' ? line.source.supply_batch_id : null,
+        source_allocation_id: line.source.source_type === 'PACKAGED_ALLOCATION' ? line.source.allocation_id : null,
         quantity_used: Number(line.quantity_used),
       })),
     }
@@ -763,13 +945,13 @@ function MixedPacks() {
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-sm text-text-dark/70">
-            Create mixed packs from packaging remainders, then finish them through the same Step 5 outputs: a pack entry plus a storage allocation.
+            Create mixed packs from remainders, raw lots, and packaged allocations, then finish them through the same Step 5 outputs: a pack entry plus a storage allocation.
           </p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card className="border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Eligible Sources</CardDescription><CardTitle className="text-2xl font-semibold text-text-dark">{sourceRows.length}</CardTitle></CardHeader></Card>
-          <Card className="border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Available Remainders</CardDescription><CardTitle className="text-2xl font-semibold text-text-dark">{sourceRows.reduce((sum, row) => sum + row.available_remainder_kg, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} kg</CardTitle></CardHeader></Card>
-          <Card className="border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Created Mixed Packs</CardDescription><CardTitle className="text-2xl font-semibold text-text-dark">{batchRows.length}</CardTitle></CardHeader></Card>
+        <div className="grid w-full gap-4 sm:grid-cols-3 lg:w-auto lg:grid-cols-[minmax(12rem,1fr)_minmax(16rem,1.25fr)_minmax(12rem,1fr)]">
+          <Card className="min-w-48 border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Eligible Sources</CardDescription><CardTitle className="text-2xl font-semibold text-text-dark">{sourceRows.length}</CardTitle></CardHeader></Card>
+          <Card className="min-w-64 border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Available Source Qty</CardDescription><CardTitle className="whitespace-nowrap text-2xl font-semibold text-text-dark">{sourceRows.reduce((sum, row) => sum + row.available_qty, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} kg</CardTitle></CardHeader></Card>
+          <Card className="min-w-48 border-olive-light/30"><CardHeader className="pb-2"><CardDescription>Created Mixed Packs</CardDescription><CardTitle className="text-2xl font-semibold text-text-dark">{batchRows.length}</CardTitle></CardHeader></Card>
         </div>
       </div>
 
@@ -801,7 +983,7 @@ function MixedPacks() {
                   Create Mixed Pack
                 </h2>
                 <p className="mt-1 text-sm text-text-dark/70">
-                  Select packaging remainders, then define the packet unit and storage allocation the way Step 5 packaging does.
+                  Select source stock, then define the packet unit and storage allocation the way Step 5 packaging does.
                 </p>
               </div>
               <Button variant="ghost" size="icon" onClick={resetCreateModal}>
@@ -817,8 +999,8 @@ function MixedPacks() {
                       1
                     </div>
                     <div className="min-w-[120px]">
-                      <p className={`text-sm font-semibold ${createStep === 1 ? 'text-text-dark' : 'text-text-dark/60'}`}>Select Remainders</p>
-                      <p className="text-xs text-text-dark/50">Choose the remainder sources</p>
+                      <p className={`text-sm font-semibold ${createStep === 1 ? 'text-text-dark' : 'text-text-dark/60'}`}>Select Sources</p>
+                      <p className="text-xs text-text-dark/50">Choose stock sources</p>
                     </div>
                     <div className="hidden h-px min-w-16 flex-1 bg-olive-light/30 md:block" />
                     <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${createStep === 2 ? 'bg-olive text-white' : 'bg-beige/40 text-text-dark/70'}`}>
@@ -850,18 +1032,32 @@ function MixedPacks() {
               {createStep === 1 ? (
                 <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
                   <div className="rounded-2xl border border-olive-light/30 bg-white p-5">
-                    <h4 className="mb-2 text-sm font-semibold text-text-dark">Available Remainders</h4>
+                    <h4 className="mb-2 text-sm font-semibold text-text-dark">Available Sources</h4>
                     <p className="mb-3 text-xs text-text-dark/60">
-                      Select packaging remainders that will make up this mixed pack.
+                      Select remainders, raw lots, or packaged allocations that will make up this mixed pack.
                     </p>
 
                     <div className="mb-4 flex flex-col gap-3">
+                      <div className="flex flex-wrap gap-2">
+                        {(['ALL', 'REMAINDER', 'RAW_LOT', 'PACKAGED_ALLOCATION'] as Array<'ALL' | MixedPackSourceType>).map((type) => (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() => setSourceTypeFilter(type)}
+                            className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                              sourceTypeFilter === type ? 'bg-olive text-white' : 'border border-olive-light/40 bg-white text-text-dark hover:bg-beige/30'
+                            }`}
+                          >
+                            {type === 'ALL' ? 'All sources' : getSourceTypeLabel(type)}
+                          </button>
+                        ))}
+                      </div>
                       <div className="relative">
                         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-dark/40" />
                         <Input
                           value={sourceSearch}
                           onChange={(event) => setSourceSearch(event.target.value)}
-                          placeholder="Search by product, SKU, lot, pack, or warehouse"
+                          placeholder="Search by source type, product, SKU, lot, pack, allocation, or warehouse"
                           className="pl-9"
                         />
                       </div>
@@ -875,14 +1071,14 @@ function MixedPacks() {
                     <div className="max-h-[56vh] space-y-3 overflow-y-auto pr-1">
                       {filteredSources.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-olive-light/60 bg-beige/20 px-4 py-6 text-center text-sm text-text-dark/60">
-                          No eligible remainders match the current search or warehouse selection.
+                          No eligible sources match the current search, type, or warehouse selection.
                         </div>
                       ) : (
                         filteredSources.map((source) => {
-                          const isSelected = selectedLines.some((line) => line.source_pack_entry_id === source.pack_entry_id)
+                          const isSelected = selectedLines.some((line) => line.source_key === source.source_key)
                           return (
                             <button
-                              key={source.pack_entry_id}
+                              key={source.source_key}
                               type="button"
                               onClick={() => addSourceLine(source)}
                               className={`w-full rounded-lg border p-4 text-left transition ${
@@ -897,18 +1093,21 @@ function MixedPacks() {
                                     {source.product_name}
                                     {source.product_sku ? ` (${source.product_sku})` : ''}
                                   </p>
+                                  <p className="mt-1 text-xs font-medium text-olive-dark">{getSourceTypeLabel(source.source_type)}</p>
                                   <p className="text-xs text-text-dark/60">
-                                    Lot {source.lot_no ?? '—'} · Pack {source.pack_identifier ?? '—'} · Packed {source.packed_at ? new Date(source.packed_at).toLocaleDateString() : '—'}
+                                    Lot {source.lot_no ?? '—'} · {source.allocation_id ? `Allocation #${source.allocation_id}` : `Pack ${source.pack_identifier ?? '—'}`} · {source.packed_at ? new Date(source.packed_at).toLocaleDateString() : '—'}
                                   </p>
                                   <p className="mt-1 text-xs text-text-dark/60">
                                     {source.warehouse_name ?? 'Unknown warehouse'}
                                   </p>
                                   <p className="mt-2 text-xs text-text-dark/70">
-                                    Available remainder: {formatQuantity(source.available_remainder_kg)}
+                                    {getSourceAvailabilityLabel(source)}
                                   </p>
-                                  <p className="text-xs text-text-dark/60">
-                                    Used: {formatQuantity(source.used_remainder_kg)} · Source remainder: {formatQuantity(source.remainder_kg)}
-                                  </p>
+                                  {source.source_type === 'REMAINDER' ? (
+                                    <p className="text-xs text-text-dark/60">
+                                      Used: {formatQuantity(source.used_remainder_kg)} · Source remainder: {formatQuantity(source.remainder_kg)}
+                                    </p>
+                                  ) : null}
                                 </div>
                                 <span
                                   className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
@@ -927,46 +1126,47 @@ function MixedPacks() {
 
                   <div className="rounded-2xl border border-olive-light/30 bg-white">
                     <div className="border-b border-olive-light/20 px-5 py-3 text-xs font-medium uppercase tracking-[0.08em] text-text-dark/50">
-                      Selected Remainders
+                      Selected Sources
                     </div>
                     <div className="divide-y divide-olive-light/20">
                       {selectedLines.length === 0 ? (
-                        <div className="px-5 py-10 text-sm text-text-dark/60">No remainders selected yet.</div>
+                        <div className="px-5 py-10 text-sm text-text-dark/60">No sources selected yet.</div>
                       ) : (
                         selectedLines.map((line) => {
                           const quantityUsed = Number(line.quantity_used) || 0
-                          const remainingAfterSelection = Math.max(0, line.source.available_remainder_kg - quantityUsed)
-                          const lineError = lineErrors.get(line.source_pack_entry_id)
+                          const remainingAfterSelection = Math.max(0, line.source.available_qty - quantityUsed)
+                          const lineError = lineErrors.get(line.source_key)
                           return (
-                            <div key={line.source_pack_entry_id} className="px-5 py-4">
+                            <div key={line.source_key} className="px-5 py-4">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <p className="font-medium text-text-dark">
                                     {line.source.product_name}
                                     {line.source.product_sku ? ` (${line.source.product_sku})` : ''}
                                   </p>
+                                  <p className="text-xs font-medium text-olive-dark">{getSourceTypeLabel(line.source.source_type)}</p>
                                   <p className="text-xs text-text-dark/60">
-                                    Lot {line.source.lot_no ?? '—'} · Pack {line.source.pack_identifier ?? '—'} · Produced {line.source.pack_count ?? '—'} packs
+                                    Lot {line.source.lot_no ?? '—'} · {line.source.allocation_id ? `Allocation #${line.source.allocation_id}` : `Pack ${line.source.pack_identifier ?? '—'}`}
                                   </p>
                                   <p className="text-xs text-text-dark/60">
-                                    Available remainder {formatQuantity(line.source.available_remainder_kg)} · Remaining after selection {formatQuantity(remainingAfterSelection)}
+                                    Available {formatQuantity(line.source.available_qty, line.source.unit_symbol ?? 'kg')} · Remaining after selection {formatQuantity(remainingAfterSelection, line.source.unit_symbol ?? 'kg')}
                                   </p>
                                 </div>
-                                <Button type="button" variant="ghost" size="sm" onClick={() => removeLine(line.source_pack_entry_id)}>
+                                <Button type="button" variant="ghost" size="sm" onClick={() => removeLine(line.source_key)}>
                                   <X className="mr-1 h-4 w-4" />
                                   Remove
                                 </Button>
                               </div>
                               <div className="mt-3 grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
                                 <div className="space-y-2">
-                                  <Label htmlFor={`line-${line.source_pack_entry_id}`}>Quantity to Use (kg)</Label>
+                                  <Label htmlFor={`line-${line.source_key}`}>Quantity to Use (kg)</Label>
                                   <Input
-                                    id={`line-${line.source_pack_entry_id}`}
+                                    id={`line-${line.source_key}`}
                                     type="number"
                                     min="0"
                                     step="0.001"
                                     value={line.quantity_used}
-                                    onChange={(event) => updateLineQuantity(line.source_pack_entry_id, event.target.value)}
+                                    onChange={(event) => updateLineQuantity(line.source_key, event.target.value)}
                                     placeholder="Enter quantity"
                                   />
                                 </div>
@@ -975,7 +1175,7 @@ function MixedPacks() {
                                     <div className="w-full rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{lineError}</div>
                                   ) : (
                                     <div className="w-full rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                                      Quantity is within the current available remainder.
+                                      Quantity is within the current available source balance.
                                     </div>
                                   )}
                                 </div>
@@ -997,7 +1197,7 @@ function MixedPacks() {
                   <div className="xl:col-span-2">
                     <div className="flex flex-col gap-3 border-t border-olive-light/20 pt-4 sm:flex-row sm:items-center sm:justify-between">
                       <div className="text-sm text-text-dark/60">
-                        Select at least one valid remainder source to continue.
+                        Select at least one valid source to continue.
                       </div>
                       <div className="flex justify-end gap-2">
                         <Button type="button" variant="outline" onClick={resetCreateModal} disabled={submitting}>
@@ -1294,7 +1494,8 @@ function MixedPacks() {
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                           <p className="font-medium text-text-dark">{item.product_name}{item.product_sku ? ` (${item.product_sku})` : ''}</p>
-                          <p className="text-xs text-text-dark/60">Lot {item.lot_no ?? '—'} · Pack {item.pack_identifier ?? '—'} · {item.warehouse_name ?? 'Unknown warehouse'}</p>
+                          <p className="text-xs font-medium text-olive-dark">{getSourceTypeLabel(item.source_type)}</p>
+                          <p className="text-xs text-text-dark/60">Lot {item.lot_no ?? '—'} · {item.pack_identifier ?? '—'} · {item.warehouse_name ?? 'Unknown warehouse'}</p>
                         </div>
                         <div className="text-right text-sm font-semibold text-text-dark">{formatQuantity(item.quantity_used)}</div>
                       </div>

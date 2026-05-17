@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useWashingRun } from '@/hooks/useWashingRun'
+import { StepDataLoader } from '@/components/process/StepDataLoader'
 import type { ProcessStepRun, WashingFormData, WashingWasteFormData } from '@/types/processExecution'
 import {
   AlertDialog,
@@ -215,6 +216,10 @@ export function WashingStep({
   }
 
   const totalWaste = waste.reduce((sum, w) => sum + w.quantity_kg, 0)
+
+  if (loading && !washingRun && waste.length === 0) {
+    return <StepDataLoader />
+  }
 
   return (
     <div className="space-y-6">
